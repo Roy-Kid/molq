@@ -25,9 +25,9 @@ class JobStatus:
     def __repr__(self):
         return f"<Job{self.job_id}: {self.status}>"
 
-def get_submitor(cluster_name: str, cluster_type: str, is_local_test: bool = False):
+def get_submitor(cluster_name: str, cluster_type: str):
     if cluster_type == "slurm":
-        return SlurmSubmitor(cluster_name, is_local_test)
+        return SlurmSubmitor(cluster_name,)
     else:
         raise ValueError(f"Cluster type {cluster_type} not supported.")
     
@@ -37,14 +37,9 @@ class BaseSubmitor(ABC):
     registered_clusters = dict()
     queue = dict()  # [job_id, status]
 
-    def __init__(self, cluster_name: str, is_local_test:bool = False):
+    def __init__(self, cluster_name: str):
         self.cluster_name = cluster_name
         self.registered_clusters[cluster_name] = self
-        self._is_local_test = is_local_test
-
-    @property
-    def is_local_test(self):
-        return self._is_local_test
 
     def __repr__(self):
         return f"<{self.cluster_type.capitalize()}Adapter: {self.cluster_name}>"
@@ -132,10 +127,7 @@ class SlurmSubmitor(BaseSubmitor):
 
         self.gen_script(Path(script_name), cmd, **slurm_kwargs)
 
-        if self.is_local_test:
-            submit_cmd = ['bash']
-        else:
-            submit_cmd = ["sbatch", "--parsable"]
+        submit_cmd = ["sbatch", "--parsable"]
 
         if test_only:
             submit_cmd.append("--test-only")
@@ -176,7 +168,7 @@ class SlurmSubmitor(BaseSubmitor):
         return script_path
 
     def query(self, job_id: int) -> JobStatus:
-        cmd = ['squeue', '-j', job_id]
+        cmd = ['squeue', '-j', str(job_id)]
         proc = subprocess.run(cmd, capture_output=True)
         header, job = proc.stdout.split("\n")
         status = {k: v for k, v in zip(header.split(), job.split())}

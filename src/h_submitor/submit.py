@@ -1,6 +1,7 @@
 from functools import wraps
 from inspect import isgeneratorfunction, signature
 from typing import Callable
+
 from h_submitor.submitor import BaseSubmitor, get_submitor
 
 
@@ -13,17 +14,15 @@ class submit:
         cls,
         cluster_name: str,
         cluster_type: str | None = None,
-        is_local_test: bool = False,
     ):
         if cluster_name not in cls.CLUSTERS:
-            cls.CLUSTERS[cluster_name] = get_submitor(cluster_name, cluster_type, is_local_test)
+            cls.CLUSTERS[cluster_name] = get_submitor(cluster_name, cluster_type)
         return super().__new__(cls)
 
     def __init__(
         self,
         cluster_name: str,
         cluster_type: str | None = None,
-        is_local_test: bool = False,
     ):
         self._adapter = submit.CLUSTERS[cluster_name]
 
