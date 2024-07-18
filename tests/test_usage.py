@@ -19,13 +19,11 @@ class TestRegisterCluster:
             # workload
             job_id = yield dict()
 
-class TestConfigMarker:
-    ...
+        assert submit.get_n_clusters() == 1
 
-class TestInquery:
+    def test_get_cluster_external(self):
+
+        cluster_alpha = submit('cluster_alpha')
+        # cluster_alpha.block_until_complete()
+
     
-    def test_query(self):
-        ...
-
-    def test_cancel(self):
-        ...

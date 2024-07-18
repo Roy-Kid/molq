@@ -1,49 +1,50 @@
-from abc import ABC, abstractmethod, ABCMeta
+from abc import abstractmethod, ABC
 import subprocess
-import logging
 from pathlib import Path
-
-logger = logging.getLogger("h_submitor")
-
+import time
+import enum
 
 class JobStatus:
-    def __init__(self):
-        pass
+
+    class Status(enum.Enum):
+        PENDING = 1
+        RUNNING = 2
+        COMPLETED = 3
+        FAILED = 4
+
+    def __init__(self, job_id: int, partition: str, name: str, user: str, status: str, time: str, nodes: int, nodelist: str):
+        self.job_id:int = job_id
+        self.partition:str = partition
+        self.name:str = name
+        self.user:str = user
+        self.status:str = status
+        self.time:str = time
+        self.nodes:int = nodes
+        self.nodelist:str = nodelist
 
     def __repr__(self):
-        return f"<JobStatus: {self.status}>"
+        return f"<Job{self.job_id}: {self.status}>"
 
-
-class SubmitRegistry(ABCMeta):
-
-    CLUSTER_REGISTRY: dict[str, "SlurmSubmitor"] = dict()
-
-    def __new__(mcs, name, bases, dct):
-        cls = super().__new__(mcs, name, bases, dct)
-        if name != "BaseSubmitor":
-            logger.debug(f"Registering {cls.cluster_type} adapter")
-            SubmitRegistry.CLUSTER_REGISTRY[cls.cluster_type] = cls
-        return cls
-
-    def __call__(
-        cls, cluster_name: str, cluster_type: str | None = None, *args, **kwargs
-    ):
-        if cluster_type is None:
-            cluster_type = cls.cluster_type
-        if cluster_type in SubmitRegistry.CLUSTER_REGISTRY:
-            return SubmitRegistry.CLUSTER_REGISTRY[cluster_type].__new__(
-                cls, cluster_name, *args, **kwargs
-            )
-        else:
-            raise ValueError(f"Unknown cluster_type: {cluster_type}")
-
-
-class BaseSubmitor(ABC, metaclass=SubmitRegistry):
+def get_submitor(cluster_name: str, cluster_type: str, is_local_test: bool = False):
+    if cluster_type == "slurm":
+        return SlurmSubmitor(cluster_name, is_local_test)
+    else:
+        raise ValueError(f"Cluster type {cluster_type} not supported.")
+    
+class BaseSubmitor(ABC):
 
     cluster_type: str
+    registered_clusters = dict()
+    queue = dict()  # [job_id, status]
 
-    def __init__(self, cluster_name: str):
+    def __init__(self, cluster_name: str, is_local_test:bool = False):
         self.cluster_name = cluster_name
+        self.registered_clusters[cluster_name] = self
+        self._is_local_test = is_local_test
+
+    @property
+    def is_local_test(self):
+        return self._is_local_test
 
     def __repr__(self):
         return f"<{self.cluster_type.capitalize()}Adapter: {self.cluster_name}>"
@@ -59,7 +60,7 @@ class BaseSubmitor(ABC, metaclass=SubmitRegistry):
         work_dir: Path | str | None = None,
         account: str | None = None,
         script_name: str | Path = "submit.sh",
-        is_monitor: bool = False,
+        is_block: bool = False,
         test_only: bool = False,
         **extra_kwargs,
     ):
@@ -74,19 +75,28 @@ class BaseSubmitor(ABC, metaclass=SubmitRegistry):
         pass
 
     @abstractmethod
-    def _gen_script(self, script_name: str, **args):
+    def query(self, job_id: int | None)->JobStatus:
         pass
 
-    @abstractmethod
-    def query(self, job_id: int | None):
-        pass
+    def add_task(self, job_id: int):
+        self.queue[job_id] = self.query(job_id)
+
+    def monitor(self, /, job_id: int|list[int]|None = None, interval: int = 60):
+        if job_id is None:
+            job_id = self.queue.keys()
+        elif isinstance(job_id, int):
+            job_id = [job_id]
+
+        while job_id:
+            for jid in job_id:
+                status = self.query(jid)
+                print(status)  # TODO: print as a panel
+                if status.status == "COMPLETED" or status.status == "FAILED":
+                    job_id.remove(jid)
+            time.sleep(interval)
 
     @abstractmethod
-    def watch(self, job_id: int):
-        pass
-
-    @abstractmethod
-    def monitor(self, job_id: int):
+    def gen_script(self, script_path: Path, cmd: list[str], **args) -> Path:
         pass
 
 
@@ -104,7 +114,7 @@ class SlurmSubmitor(BaseSubmitor):
         work_dir: Path | str | None = None,
         account: str | None = None,
         script_name: str | Path = "run_slurm.sh",
-        is_monitor: bool = False,
+        is_block: bool = False,
         test_only: bool = False,
         **slurm_kwargs,
     ) -> int:
@@ -120,17 +130,12 @@ class SlurmSubmitor(BaseSubmitor):
         if account:
             slurm_kwargs["--account"] = account
 
-        self._gen_script(Path(script_name), cmd, **slurm_kwargs)
+        self.gen_script(Path(script_name), cmd, **slurm_kwargs)
 
-        job_id = self._submit(script_name, test_only)
-
-        if is_monitor:
-            self.watch(job_id)
-
-        return job_id
-
-    def _submit(self, script_name, test_only: bool) -> int:
-        submit_cmd = ["sbatch", "--parsable"]
+        if self.is_local_test:
+            submit_cmd = ['bash']
+        else:
+            submit_cmd = ["sbatch", "--parsable"]
 
         if test_only:
             submit_cmd.append("--test-only")
@@ -145,15 +150,21 @@ class SlurmSubmitor(BaseSubmitor):
         if test_only:
             # sbatch: Job 3676091 to start at 2024-04-26T20:02:12 using 256 processors on nodes nid001000 in partition main
             job_id = int(proc.stderr.split()[2])
+        elif self.is_local_test:
+            job_id = 0
         else:
             job_id = int(proc.stdout)
 
+        self.add_task(job_id)
+
+        if is_block:
+            self.monitor(job_id)
         return job_id
 
     def remote_submit(self):
         pass
 
-    def _gen_script(self, script_path: Path, cmd: list[str], **args) -> Path:
+    def gen_script(self, script_path: Path, cmd: list[str], **args) -> Path:
         # assert script_path.exists(), f"Script path {script_path} does not exist."
         script_path = Path(script_path)
         with open(script_path, "w") as f:
@@ -166,14 +177,24 @@ class SlurmSubmitor(BaseSubmitor):
 
     def query(self, job_id: int) -> JobStatus:
         cmd = ['squeue', '-j', job_id]
-        status = subprocess.run(cmd, capture_output=True)
-        if status.returncode != 0:
-            raise ValueError(f"Job {job_id} not found.")
+        proc = subprocess.run(cmd, capture_output=True)
+        header, job = proc.stdout.split("\n")
+        status = {k: v for k, v in zip(header.split(), job.split())}
+        if status["ST"] == "R":
+            enum_status = "RUNNING"
+        elif status["ST"] == "PD":
+            enum_status = "PENDING"
+        elif status["ST"] == "CD":
+            enum_status = "COMPLETED"
         else:
-            return JobStatus(status)
-
-    def watch(self):
-        pass
-
-    def monitor(self):
-        pass
+            enum_status = "FAILED"
+        return JobStatus(
+            job_id=int(status["JOBID"]),
+            partition=status["PARTITION"],
+            name=status["NAME"],
+            user=status["USER"],
+            status=JobStatus.Status[enum_status],
+            time=status["TIME"],
+            nodes=int(status["NODES"]),
+            nodelist=status["NODELIST(REASON)"],
+        )

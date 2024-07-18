@@ -2,6 +2,8 @@ from h_submitor.submitor import SlurmSubmitor
 from pytest_mock import MockerFixture
 from unittest.mock import MagicMock
 import subprocess
+import pytest
+from pathlib import Path
 
 
 class MockedSlurm:
@@ -11,11 +13,16 @@ class MockedSlurm:
 
         if cmd[0] == "sbatch":
             return MockedSlurm.sbatch(cmd)
+        elif cmd[0] == "squeue":
+            return MockedSlurm.squeue(cmd)
+        elif cmd[0] == "scancel":
+            return MockedSlurm.scancel(cmd)
     
     @staticmethod
     def sbatch(cmd):
 
         mock = MagicMock()
+        mock.returncode = 0
         if cmd[-1] == "--test-only":
             mock.stderr = f"sbatch: Job 3676091 to start at 2024-04-26T20:02:12 using 256 processors on nodes nid001000 in partition main"
 
@@ -41,11 +48,18 @@ class MockedSlurm:
 
 class TestSlurmAdapter:
 
+    @pytest.fixture(scope='class', autouse=True)
+    def delete_script(self):
+        yield
+        script_path = Path("run_slurm.sh")
+        if script_path.exists():
+            script_path.unlink()
+
     def test_gen_script(self):
 
         submitor = SlurmSubmitor("test_submitor")
         config = {"--job-name": "test", "--ntasks": 1}
-        path = submitor._gen_script(script_path="run_slurm.sh", cmd=["ls"], **config)
+        path = submitor.gen_script(script_path="run_slurm.sh", cmd=["ls"], **config)
         with open(path, "r") as f:
             lines = f.readlines()
 
@@ -54,7 +68,6 @@ class TestSlurmAdapter:
         assert lines[2] == "#SBATCH --ntasks=1\n"
         assert lines[3] == "\n"
         assert lines[4] == "ls"
-        path.unlink()
 
     def test_submit(self, mocker: MockerFixture):
 
@@ -70,4 +83,13 @@ class TestSlurmAdapter:
 
         submitor = SlurmSubmitor("test_submitor")
         job_id = submitor.submit(cmd=["ls"], job_name="test", n_cores=1, test_only=True)
+        assert isinstance(job_id, int)
+
+    def test_monitoring(self, mocker: MockerFixture):
+
+        mocker.patch.object(subprocess, "run", MockedSlurm.run)
+
+        submitor = SlurmSubmitor("test_submitor")
+        job_id = submitor.submit(cmd=["sleep 1"], job_name="test1", n_cores=1, is_block=False)  # not block inplace
+        submitor.monitor(interval=1)  # block here
         assert isinstance(job_id, int)

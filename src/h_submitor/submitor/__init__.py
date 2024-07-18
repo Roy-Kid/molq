@@ -1,1 +1,1 @@
-from .base import SlurmSubmitor
+from .base import SlurmSubmitor, BaseSubmitor, get_submitor

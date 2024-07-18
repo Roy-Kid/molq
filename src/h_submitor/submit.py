@@ -1,19 +1,30 @@
 from functools import wraps
 from inspect import isgeneratorfunction, signature
 from typing import Callable
-from h_submitor._submit import BaseSubmitor
+from h_submitor.submitor import BaseSubmitor, get_submitor
+
 
 class submit:
 
     CONFIG = dict()
     CLUSTERS: dict[str, BaseSubmitor] = dict()
 
-    def __new__(cls, cluster_name: str, cluster_type: str | None = None):
+    def __new__(
+        cls,
+        cluster_name: str,
+        cluster_type: str | None = None,
+        is_local_test: bool = False,
+    ):
         if cluster_name not in cls.CLUSTERS:
-            cls.CLUSTERS[cluster_name] = BaseSubmitor(cluster_name, cluster_type)
+            cls.CLUSTERS[cluster_name] = get_submitor(cluster_name, cluster_type, is_local_test)
         return super().__new__(cls)
 
-    def __init__(self, cluster_name: str, cluster_type: str | None = None):
+    def __init__(
+        self,
+        cluster_name: str,
+        cluster_type: str | None = None,
+        is_local_test: bool = False,
+    ):
         self._adapter = submit.CLUSTERS[cluster_name]
 
     @classmethod
@@ -47,3 +58,6 @@ class submit:
         # get the return type and set it as the return type of the wrapper
         wrapper.__annotations__["return"] = signature(func).return_annotation
         return wrapper
+
+    def monitor(self, job_id: int|list[int]|None, internal: int = 60):
+        self._adapter.monitor(job_id, internal)
