@@ -4,7 +4,8 @@ from pathlib import Path
 import time
 import enum
 from typing import Callable
-import random
+import tempfile
+import multiprocessing, threading
 
 class JobStatus:
 
@@ -13,6 +14,7 @@ class JobStatus:
         RUNNING = 2
         COMPLETED = 3
         FAILED = 4
+        FINISHED = 5
 
     def __init__(self, job_id: int, status: Status, name: str = "", **others: str):
         self.name: str = name
@@ -23,6 +25,10 @@ class JobStatus:
 
     def __repr__(self):
         return f"<Job {self.name}({self.job_id}): {self.status}>"
+    
+    @property
+    def is_finish(self) -> bool:
+        return self.status in [JobStatus.Status.COMPLETED, JobStatus.Status.FAILED, JobStatus.Status.FINISHED]
 
 
 def get_submitor(cluster_name: str, cluster_type: str):
@@ -43,39 +49,46 @@ class Monitor:
     job_pool: dict[int, JobStatus] = dict()
 
     def __init__(
-        self, query_fn: Callable[[int], JobStatus], interval: int | float | bool = 60
+        self, query_fn: Callable[[int], JobStatus]
     ):
         self.query_fn = query_fn
-        self.interval = float(interval)
 
     @property
     def job_id_list(self):
         return list(self.job_pool.keys())
-    
+
     @property
     def jobs(self):
         return self.job_pool.copy()
 
-    def monitor(self, job_id: int | list[int]):
+    def add_job(self, job_id: int):
+        self.job_pool[job_id] = self.query_fn(job_id)
 
-        if isinstance(job_id, int):
-            job_id = [job_id]
+    def add_jobs(self, job_ids: list[int]):
+        for id_ in job_ids:
+            self.job_pool[id_] = self.query_fn(id_)
 
-        self.job_pool.update({id_: self.query_fn(id_) for id_ in job_id})
-
+    def monitor_all(self, interval: int = 60):
         while self.job_pool:
             for job_id in self.job_id_list:
                 job_status = self.query_fn(job_id)
-                if (
-                    job_status.status == JobStatus.Status.COMPLETED
-                    or job_status.status == JobStatus.Status.FAILED
-                ):
+                if job_status.is_finish:
                     self.job_pool.pop(job_id)
                 else:
                     self.job_pool[job_id] = job_status
-                time.sleep(self.interval)
+                time.sleep(interval)
 
             self.print_status()
+
+    def block_until_complete(self, job_id: int, interval: int = 60):
+        while True:
+            job_status = self.query_fn(job_id)
+            print(job_status)
+            if job_status.is_finish:
+                if job_id in self.job_pool:
+                    self.job_pool.pop(job_id)
+                break
+            time.sleep(interval)
 
     def print_status(self):
         """print job status in a nice table
@@ -84,19 +97,19 @@ class Monitor:
             pool (dict[int, JobStatus]): job pool to be printed
         """
         for i, status in enumerate(self.jobs.values(), 1):
-            print(f"{status} | {i}/{len(self.job_pool)}")
+            print(f"{status} | {i}/{len(self.job_pool)}", flush=True)
 
 
 class BaseSubmitor(ABC):
 
     cluster_type: str
     registered_clusters = dict()
-    queue = dict()  # [job_id, status]
     monitor = None
 
     def __init__(self, cluster_name: str):
         self.cluster_name = cluster_name
         self.registered_clusters[cluster_name] = self
+        self.monitor = Monitor(self.query)
 
     def __repr__(self):
         return f"<{self.cluster_type.capitalize()}Adapter: {self.cluster_name}>"
@@ -113,6 +126,7 @@ class BaseSubmitor(ABC):
         account: str | None = None,
         script_name: str | Path = "submit.sh",
         monitor: int | bool = 0,
+        block: bool | int | float = False,
         test_only: bool = False,
         **extra_kwargs,
     ):
@@ -121,12 +135,24 @@ class BaseSubmitor(ABC):
     def _base_submit(
         self,
         job_id: int,
-        monitor: int = 0,
+        monitor: bool = 0,
+        block: int | float | bool = True,
     ) -> int:
+        """common submit process for all submitors
+
+        Args:
+            job_id (int): job id
+            block (bool, optional): if block here until complete. Defaults to False.
+            monitor (bool, optional): 0 if not add job to monitor list, else as an intervel(in second) for query. Defaults to 0.
+
+        Returns:
+            int: job_id
+        """
         if monitor:
-            if self.monitor is None:
-                self.monitor = Monitor(self.query, monitor)
-            self.monitor.monitor(job_id)
+            self.monitor.add_job(job_id)
+
+        if block:
+            self.monitor.block_until_complete(job_id, float(block))
 
         return job_id
 
@@ -141,9 +167,6 @@ class BaseSubmitor(ABC):
     @abstractmethod
     def query(self, job_id: int | None) -> JobStatus:
         pass
-
-    def add_task(self, job_id: int):
-        self.queue[job_id] = self.query(job_id)
 
     @abstractmethod
     def gen_script(self, script_path: Path, cmd: list[str], **args) -> Path:
@@ -164,7 +187,8 @@ class SlurmSubmitor(BaseSubmitor):
         work_dir: Path | str | None = None,
         account: str | None = None,
         script_name: str | Path = "run_slurm",
-        monitor: bool = False,
+        block: bool = True,
+        monitor: int | float = 0,
         test_only: bool = False,
         **slurm_kwargs,
     ) -> int:
@@ -201,9 +225,7 @@ class SlurmSubmitor(BaseSubmitor):
         else:
             job_id = int(proc.stdout)
 
-        self.add_task(job_id)
-
-        return self._base_submit(job_id)
+        return self._base_submit(job_id, monitor, block)
 
     def remote_submit(self):
         pass
@@ -257,13 +279,14 @@ class LocalSubmitor(BaseSubmitor):
         run_time_max: str | int | None = None,
         work_dir: Path | str | None = None,
         account: str | None = None,
-        script_name: str | Path = "run_local",
-        monitor: int | float | bool = False,
+        script_path: str | Path | None = None,
+        monitor: bool = True,
+        block: int | float | bool = False,
         test_only: bool = False,
-        **slurm_kwargs,
+        **kwargs,
     ) -> int:
 
-        script_path = self.gen_script(Path(script_name), cmd, **slurm_kwargs)
+        script_path = self.gen_script(script_path, cmd, **kwargs)
 
         submit_cmd = ["bash", script_path]
 
@@ -271,22 +294,33 @@ class LocalSubmitor(BaseSubmitor):
 
         job_id = int(proc.pid)
 
-        self.add_task(job_id)
-        script_path.unlink()
-        return self._base_submit(job_id, monitor)
+        return self._base_submit(job_id, monitor, block)
 
     def remote_submit(self):
         pass
 
-    def gen_script(self, script_path: Path, cmd: list[str], **args) -> Path:
-        # assert script_path.exists(), f"Script path {script_path} does not exist."
-        path = Path(script_path).parent
-        name = Path(script_path).name + format(random.randint(0, 255), '02x') + ".sh"
-        script_path = path / name
-        with open(script_path, "w") as f:
+    def gen_script(self, script_path: Path|str|None, cmd: list[str], **args) -> Path:
+        """generate a temporary script file, and return the path. The file will be deleted after used, or dump for debug.
+
+        Args:
+            script_path (Path): path to the script file
+            cmd (list[str]): command to be executed
+
+        Returns:
+            Path: path to the script file
+        """
+        if script_path is None:
+            pass
+        elif isinstance(script_path, str):
+            script_path = Path(script_path)
+            
+        with tempfile.NamedTemporaryFile(delete=False, dir=script_path, mode='w') as f:
             f.write("#!/bin/bash\n")
             f.write("\n")
             f.write("\n".join(cmd))
+
+        script_path = Path(f.name)
+
         return script_path
 
     def query(self, job_id: int) -> JobStatus:
@@ -298,9 +332,13 @@ class LocalSubmitor(BaseSubmitor):
         }
         query_str = [f"-o{v}" for v in query_status.values()]
         cmd.extend(query_str)
-        proc = subprocess.run(cmd, capture_output=True, check=True)
-        if proc.stderr.decode().strip():
-            raise SystemError(f"Job {job_id} does not exist.")
+        proc = subprocess.run(cmd, capture_output=True)
+
+        if proc.returncode:
+            return JobStatus(
+                job_id=job_id,
+                status=JobStatus.Status.FINISHED,
+            )
 
         out = proc.stdout.decode().strip()
         status = {k: v for k, v in zip(query_status.keys(), out.split())}

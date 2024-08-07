@@ -2,7 +2,7 @@ from functools import wraps
 from inspect import isgeneratorfunction, signature
 from typing import Callable
 
-from h_submitor.submitor import BaseSubmitor, get_submitor
+from h_submitor.submitor import BaseSubmitor, get_submitor, Monitor
 
 
 class submit:
@@ -58,5 +58,6 @@ class submit:
         wrapper.__annotations__["return"] = signature(func).return_annotation
         return wrapper
 
-    def monitor(self, job_id: int|list[int]|None, internal: int = 60):
-        self._adapter.monitor(job_id, internal)
+    @property
+    def monitor(self) -> Monitor:
+        return self._adapter.monitor

@@ -1,40 +1,51 @@
-from typing import Callable
-
 from hamilton import driver
 from hamilton.ad_hoc_utils import create_temporary_module
 from hamilton.execution import executors
+
+from typing import Callable
+
 from hamilton.htypes import Collect, Parallelizable
 
 from h_submitor import submit
+
+from time import perf_counter
 
 def mapper(seconds: list[int]) -> Parallelizable[int]:
     for sec in seconds:
         yield sec
 
+
 @submit("local_thread", "local")
 def worker(mapper: int) -> int:
-    import time
-
-    print(f"start sleep {mapper}")
+    print(f"start work {mapper}s")
+    start = perf_counter()
     yield {
-        'job_name': f"sleep_{mapper}",
-        'cmd': [f'sleep {str(mapper)}'],
-        'monitor' : 1
+        "job_name": f"sleep_{mapper}",
+        "cmd": [f"sleep {str(mapper)}"],
+        "monitor": False,
+        "block": True,
     }
-    print(f"end sleep {mapper}")
+    end = perf_counter()
+    print(f"end stop {end - start:.2f}s work")
     return mapper
 
 
-def reducer(worker: Collect[int], reduce_fn: Callable = sum) -> int:
+def reducer(worker: Collect[int], reduce_fn: Callable = lambda x: x) -> int:
+
     return reduce_fn(worker)
 
 
-module = create_temporary_module(mapper, worker, reducer, module_name="temp_module")
+logic = create_temporary_module(
+    mapper,
+    worker,
+    reducer,
+    module_name="logic",
+)
 
 if __name__ == "__main__":
     dr = (
         driver.Builder()
-        .with_modules(module)
+        .with_modules(logic)
         .enable_dynamic_execution(allow_experimental_mode=True)
         .with_local_executor(executors.SynchronousLocalTaskExecutor())
         .with_remote_executor(
@@ -42,4 +53,6 @@ if __name__ == "__main__":
         )  # default is MultiThreadedExecutor(max_tasks=10)
         .build()
     )
-    dr.execute(["reducer"], inputs={"seconds": [5, 10]})
+    start = perf_counter()
+    dr.execute(["reducer"], inputs={"seconds": [3, 6]})
+    print(f"Time taken: {perf_counter() - start: .2f} seconds")
