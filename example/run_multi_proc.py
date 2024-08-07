@@ -7,7 +7,7 @@ import multi_proc
 if __name__ == "__main__":
     dr = (
         driver.Builder()
-        .with_modules(multi_proc)
+        .with_modules(multi_proc)  # can not pickle temporary module?
         .enable_dynamic_execution(allow_experimental_mode=True)
         .with_local_executor(executors.SynchronousLocalTaskExecutor())
         .with_remote_executor(
@@ -18,3 +18,5 @@ if __name__ == "__main__":
     start = perf_counter()
     dr.execute(["reducer"], inputs={"seconds": [3, 6]})
     print(f"Time taken: {perf_counter() - start: .2f} seconds")
+
+    # ERROR: can not sync job_id from focked process

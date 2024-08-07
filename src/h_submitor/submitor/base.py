@@ -5,7 +5,6 @@ import time
 import enum
 from typing import Callable
 import tempfile
-import multiprocessing, threading
 
 class JobStatus:
 
@@ -47,6 +46,30 @@ def get_submitor(cluster_name: str, cluster_type: str):
 class Monitor:
 
     job_pool: dict[int, JobStatus] = dict()
+
+    def __new__(cls, query_fn: Callable[[int], JobStatus]):
+        
+        # check if in multiprocessing environment and its master
+        # cls.job_pool = multiprocesing.Manager().dict()
+        # Error: 
+        """Traceback (most recent call last):
+  File "/home/jicli594/work/Hamilton-HPC-Orchestra/example/run_multi_proc.py", line 19, in <module>
+    dr.execute(["reducer"], inputs={"seconds": [3, 6]})
+  File "/home/jicli594/miniconda3/envs/work/lib/python3.10/site-packages/hamilton/driver.py", line 556, in execute
+    outputs = self.raw_execute(_final_vars, overrides, display_graph, inputs=inputs)
+  File "/home/jicli594/miniconda3/envs/work/lib/python3.10/site-packages/hamilton/driver.py", line 674, in raw_execute
+    results = self.graph_executor.execute(
+  File "/home/jicli594/miniconda3/envs/work/lib/python3.10/site-packages/hamilton/driver.py", line 232, in execute
+    executors.run_graph_to_completion(execution_state, self.execution_manager)
+  File "/home/jicli594/miniconda3/envs/work/lib/python3.10/site-packages/hamilton/execution/executors.py", line 374, in run_graph_to_completion
+    while not GraphState.is_terminal(execution_state.get_graph_state()):
+  File "/home/jicli594/miniconda3/envs/work/lib/python3.10/site-packages/hamilton/execution/state.py", line 441, in get_graph_state
+    [state == TaskState.INITIALIZED for state in self.task_states.values()]
+  File "/home/jicli594/miniconda3/envs/work/lib/python3.10/site-packages/hamilton/execution/state.py", line 441, in <listcomp>
+    [state == TaskState.INITIALIZED for state in self.task_states.values()]
+KeyboardInterrupt
+        """
+        return super().__new__(cls)
 
     def __init__(
         self, query_fn: Callable[[int], JobStatus]
