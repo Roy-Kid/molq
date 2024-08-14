@@ -15,13 +15,12 @@ def mapper(seconds: list[int]) -> Parallelizable[int]:
 
 
 @submit("local_thread", "local")
-def worker(mapper: int) -> Generator[dict, None, int]:
+def worker(mapper: int) -> int:
     print(f"start work {mapper}s")
     start = perf_counter()
     yield {
         "job_name": f"sleep_{mapper}",
         "cmd": [f"sleep {str(mapper)}"],
-        "monitor": False,
         "block": True,
     }
     end = perf_counter()

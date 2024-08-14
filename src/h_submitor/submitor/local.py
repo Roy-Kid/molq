@@ -2,43 +2,36 @@ import subprocess
 import tempfile
 from pathlib import Path
 
-from .base import BaseSubmitor, JobStatus
+from h_submitor import BaseSubmitor, JobStatus
 
 
 class LocalSubmitor(BaseSubmitor):
 
-    cluster_type = "local"
-
-    def submit(
+    def local_submit(
         self,
-        cmd: list[str],
         job_name: str,
-        n_cores: int = 0,
-        memory_max: int | None = None,
-        run_time_max: str | int | None = None,
-        work_dir: Path | str | None = None,
-        account: str | None = None,
-        script_path: str | Path | None = None,
-        monitor: bool = True,
-        block: int | float | bool = False,
-        test_only: bool = False,
+        cmd: list[str],
+        script_name: str | Path = "run_local.sh",
         **kwargs,
     ) -> int:
 
-        script_path = self.gen_script(script_path, cmd, **kwargs)
+        script_path = self._gen_script(Path(script_name), cmd, **kwargs)
 
-        submit_cmd = ["bash", script_path]
-
+        submit_cmd = ["bash", str(script_path.absolute())]
         proc = subprocess.Popen(submit_cmd)
+        if proc.returncode:
+            raise Exception(f"Failed to submit job: {proc.stderr}")
+        
+        # script_path.unlink()
 
         job_id = int(proc.pid)
 
-        return self._base_submit(job_id, monitor, block)
+        return job_id
 
     def remote_submit(self):
         pass
 
-    def gen_script(self, script_path: Path|str|None, cmd: list[str], **args) -> Path:
+    def _gen_script(self, script_path, cmd: list[str], **args) -> Path:
         """generate a temporary script file, and return the path. The file will be deleted after used, or dump for debug.
 
         Args:
@@ -48,17 +41,11 @@ class LocalSubmitor(BaseSubmitor):
         Returns:
             Path: path to the script file
         """
-        if script_path is None:
-            pass
-        elif isinstance(script_path, str):
-            script_path = Path(script_path)
             
-        with tempfile.NamedTemporaryFile(delete=False, dir=script_path, mode='w') as f:
+        with open(script_path, mode='w') as f:
             f.write("#!/bin/bash\n")
             f.write("\n")
             f.write("\n".join(cmd))
-
-        script_path = Path(f.name)
 
         return script_path
 
@@ -91,3 +78,11 @@ class LocalSubmitor(BaseSubmitor):
         status["status"] = status_map[status["status"][0]]
 
         return JobStatus(**status)
+
+    def validate_config(self, config: dict) -> dict:
+        return super().validate_config(config)
+    
+    def cancel(self, job_id: int):
+        cmd = ["kill", str(job_id)]
+        proc = subprocess.run(cmd, capture_output=True)
+        return proc.returncode

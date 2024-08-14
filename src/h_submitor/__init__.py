@@ -1,2 +1,5 @@
+from .base import BaseSubmitor
 from .submit import submit
-from .cmdline import CMDLineExecutionManager, cmdline
+from .monitor import Monitor, JobStatus
+from .cmdline import CMDLineExecutionManager
+cmdline = submit("_local_cmdline", "local")

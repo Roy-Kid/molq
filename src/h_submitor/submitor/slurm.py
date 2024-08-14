@@ -1,41 +1,38 @@
 import subprocess
 from pathlib import Path
 
-from .base import BaseSubmitor, JobStatus
+from ..base import BaseSubmitor, JobStatus
 
 
 class SlurmSubmitor(BaseSubmitor):
 
-    cluster_type = "slurm"
-
-    def submit(
+    def local_submit(
         self,
-        cmd: list[str],
         job_name: str,
+        cmd: list[str],
         n_cores: int,
         memory_max: int | None = None,
         run_time_max: str | int | None = None,
-        work_dir: Path | str | None = None,
+        work_dir: Path = None,
         account: str | None = None,
         script_name: str | Path = "run_slurm",
-        block: bool = True,
-        monitor: int | float = 0,
         test_only: bool = False,
         **slurm_kwargs,
     ) -> int:
+        submit_config = slurm_kwargs.copy()
 
-        slurm_kwargs["--job-name"] = job_name
-        slurm_kwargs["--ntasks"] = n_cores
+        submit_config["--job-name"] = job_name
+        submit_config["--ntasks"] = n_cores
         if memory_max:
-            slurm_kwargs["--mem"] = memory_max
+            submit_config["--mem"] = memory_max
         if run_time_max:
-            slurm_kwargs["--time"] = run_time_max
+            submit_config["--time"] = run_time_max
         if work_dir:
-            slurm_kwargs["--chdir"] = work_dir
+            submit_config["--chdir"] = work_dir
         if account:
-            slurm_kwargs["--account"] = account
+            submit_config["--account"] = account
 
-        script_path = self.gen_script(Path(script_name), cmd, **slurm_kwargs)
+        script_path = self._gen_script(Path(script_name), cmd, **submit_config)
 
         submit_cmd = ["sbatch", "--parsable"]
 
@@ -51,22 +48,22 @@ class SlurmSubmitor(BaseSubmitor):
             raise e
 
         if test_only:
+            # example output:
             # sbatch: Job 3676091 to start at 2024-04-26T20:02:12 using 256 processors on nodes nid001000 in partition main
             job_id = int(proc.stderr.split()[2])
         else:
             job_id = int(proc.stdout)
 
-        return self._base_submit(job_id, monitor, block)
+        return job_id
 
     def remote_submit(self):
         pass
 
-    def gen_script(self, script_path: Path, cmd: list[str], **args) -> Path:
-        # assert script_path.exists(), f"Script path {script_path} does not exist."
-        script_path = Path(script_path)
+    def _gen_script(self, script_path: Path, cmd: list[str], **kwargs) -> Path:
+        assert script_path.parent.exists(), f"{script_path.parent} does not exist"
         with open(script_path, "w") as f:
             f.write("#!/bin/bash\n")
-            for key, value in args.items():
+            for key, value in kwargs.items():
                 f.write(f"#SBATCH {key}={value}\n")
             f.write("\n")
             f.write("\n".join(cmd))
@@ -96,4 +93,10 @@ class SlurmSubmitor(BaseSubmitor):
             nodelist=status["NODELIST(REASON)"],
         )
 
-
+    def validate_config(self, config: dict) -> dict:
+        return super().validate_config(config)
+    
+    def cancel(self, job_id: int):
+        cmd = ["scancel", str(job_id)]
+        proc = subprocess.run(cmd, capture_output=True)
+        return proc.returncode

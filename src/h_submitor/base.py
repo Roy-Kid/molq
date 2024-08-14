@@ -1,29 +1,19 @@
-from abc import ABC, ABCMeta, abstractmethod
+from abc import ABC, abstractmethod
 from functools import wraps
 from inspect import isgeneratorfunction, signature
 from typing import Any, Callable
 
-from hamilton.function_modifiers import tag
+from .monitor import JobStatus, Monitor
 
 
-class YieldDecoratorMeta(ABCMeta):
-
-    def __call__(cls, *args, **kwargs):
-        
-        if len(args) == 1 and isgeneratorfunction(args[0]):
-            ins = cls.__new__(cls)
-            return ins.__call__(args[0])
-        else:
-            return super().__call__(*args, **kwargs)
-
-class YieldDecorator(metaclass=YieldDecoratorMeta):
+class YieldDecorator:
 
     def __call__(self, func: Callable):
 
         if not isgeneratorfunction(func):
             raise TypeError(f"Function {func.__name__} must be a generator function")
         
-        func = self.modify_func(func)
+        func = self.modify_node(func)
 
         @wraps(func)
         def wrapper(*args, **kwargs):
@@ -50,8 +40,8 @@ class YieldDecorator(metaclass=YieldDecoratorMeta):
         return wrapper
     
     @abstractmethod
-    def modify_func(self, func: Callable)->Callable:
-        pass
+    def modify_node(self, func: Callable)->Callable:
+        return func
 
     @abstractmethod
     def do(self, config: dict):
@@ -61,3 +51,62 @@ class YieldDecorator(metaclass=YieldDecoratorMeta):
     def validate_config(self, config: dict)->dict:
         pass
 
+class BaseSubmitor(ABC):
+
+    def __init__(self, cluster_name: str, cluster_config: dict = {}):
+        self.cluster_name = cluster_name
+        self.cluster_config = cluster_config  # TODO: for remote submitor
+        self.monitor = Monitor(self)
+
+    def __repr__(self):
+        return f"<{self.__class__.__name__} for {self.cluster_name}>"
+
+    def submit(self, config: dict, remote: bool = False):
+        config = self.validate_config(config)
+        block = config.get("block", False)
+        if remote:
+            job_id = self.remote_submit(**config)
+        else:
+            job_id = self.local_submit(**config)
+        return self.after_submit(job_id, block)
+
+    def after_submit(self, job_id: int, block: bool):
+        self.monitor.add_job(job_id)
+        if block:
+            self.monitor.block_until_complete(job_id)
+        print(f"Job {job_id} finish.")
+        return job_id
+    
+    @abstractmethod
+    def local_submit(
+        self,
+        job_name: str,
+        cmd: list[str],
+        block: bool = False,
+        **extra_kwargs,
+    ):
+        pass
+
+    @abstractmethod
+    def remote_submit(self):
+        # TODO: use ssh and scp to submit job to remote cluster
+        # third-party library: paramiko
+        # license: LGPL
+        # https://www.paramiko.org/
+        pass
+
+
+    @abstractmethod
+    def query(self, job_id: int | None) -> JobStatus:
+        pass
+
+    @abstractmethod
+    def cancel(self, job_id: int):
+        pass
+
+    @abstractmethod
+    def validate_config(self, config: dict) -> dict:
+        return config
+
+    def modify_node(self, node: Callable[..., Any]) -> Callable[..., Any]:
+        return node
