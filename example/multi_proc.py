@@ -1,17 +1,11 @@
-from hamilton import driver
-from hamilton.ad_hoc_utils import create_temporary_module
-from hamilton.execution import executors
-
-from typing import Callable
+import multiprocessing
+from time import perf_counter
+from typing import Callable, Generator, Any
 
 from hamilton.htypes import Collect, Parallelizable
 
 from h_submitor import submit
 
-from time import perf_counter
-
-
-import multiprocessing
 
 def mapper(seconds: list[int]) -> Parallelizable[int]:
     for sec in seconds:
@@ -19,7 +13,7 @@ def mapper(seconds: list[int]) -> Parallelizable[int]:
 
 
 @submit("local_thread", "local")
-def worker(mapper: int) -> int:
+def worker(mapper: int) -> Generator[dict, Any, int]:
     print(f"start work {mapper}s")
     start = perf_counter()
     print(multiprocessing.current_process())
@@ -27,7 +21,7 @@ def worker(mapper: int) -> int:
         "job_name": f"sleep_{mapper}",
         "cmd": [f"sleep {str(mapper)}"],
         "monitor": True,
-        "block": False,
+        "block": True,
     }
     end = perf_counter()
     print(f"end stop {end - start:.2f}s work")

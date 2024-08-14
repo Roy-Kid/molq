@@ -1,6 +1,6 @@
-import functools
-import inspect
 import subprocess
+from typing import Callable
+from .base import YieldDecorator
 
 from hamilton.execution.executors import DefaultExecutionManager, TaskExecutor
 from hamilton.execution.grouping import TaskImplementation
@@ -22,34 +22,37 @@ class CMDLineExecutionManager(DefaultExecutionManager):
         return self.local_executor
 
 
-def cmdline(func):
-    """Decorator to run the result of a function as a command line command."""
-    func = tag(cmdline='true')(func)
-    @functools.wraps(func)
-    def wrapper(*args, **kwargs):
-        if inspect.isgeneratorfunction(func):
-            # If the function is a generator, then we need to run it and capture the output
-            # in order to return it
-            gen = func(*args, **kwargs)
-            cmd = next(gen)
-            # Run the command and capture the output
-            result = subprocess.run(cmd, shell=True, capture_output=True, text=True)
-            try:
-                gen.send(result)
-                raise ValueError("Generator cannot have multiple yields.")
-            except StopIteration as e:
-                return e.value
-        else:
-            # Get the command from the function
-            cmd = func(*args, **kwargs)
+class cmdline(YieldDecorator):
+    """Decorator to run the result of a function as a command line command.
+    """
 
-            # Run the command and capture the output
-            result = subprocess.run(cmd, shell=True, capture_output=True, text=True)
+    def modify_func(self, func: Callable)->Callable:
+        func = tag(cmdline='true')(func)
+        return func
 
-            # Return the output
-            return result.stdout
+    def validate_config(self, config: dict)->dict:
 
-    if inspect.isgeneratorfunction(func):
-        # get the return type and set it as the return type of the wrapper
-        wrapper.__annotations__["return"] = inspect.signature(func).return_annotation
-    return wrapper
+        default_config = {
+            'block': True,
+            'kwargs': {
+                'capture_output': True,
+                'shell': False,
+            }
+        }
+
+        config |= default_config
+        
+        cmd = config.get('cmd')
+        assert isinstance(cmd, (list, str)), ValueError(f"cmd must be a list of string or a string, got {type(cmd)}")
+
+        return config
+
+    def do(self, config: dict) -> subprocess.CompletedProcess:
+
+        cmd = config.get('cmd')
+        kwargs = config.get('kwargs')
+
+        result = subprocess.run(cmd, **kwargs)
+
+        return result
+        

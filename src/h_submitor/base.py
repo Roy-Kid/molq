@@ -1,10 +1,10 @@
+from abc import ABC, ABCMeta, abstractmethod
 from functools import wraps
-from typing import Callable, Any
 from inspect import isgeneratorfunction, signature
-from abc import ABC, abstractmethod, ABCMeta
+from typing import Any, Callable
+
 from hamilton.function_modifiers import tag
 
-import subprocess
 
 class YieldDecoratorMeta(ABCMeta):
 
@@ -61,37 +61,3 @@ class YieldDecorator(metaclass=YieldDecoratorMeta):
     def validate_config(self, config: dict)->dict:
         pass
 
-class cmdline(YieldDecorator):
-    """Decorator to run the result of a function as a command line command.
-    """
-
-    def modify_func(self, func: Callable)->Callable:
-        func = tag(cmdline='true')(func)
-        return func
-
-    def validate_config(self, config: dict)->dict:
-
-        default_config = {
-            'block': True,
-            'kwargs': {
-                'capture_output': True,
-                'shell': False,
-            }
-        }
-
-        config |= default_config
-        
-        cmd = config.get('cmd')
-        assert isinstance(cmd, (list, str)), ValueError(f"cmd must be a list of string or a string, got {type(cmd)}")
-
-        return config
-
-    def do(self, config: dict) -> subprocess.CompletedProcess:
-
-        cmd = config.get('cmd')
-        kwargs = config.get('kwargs')
-
-        result = subprocess.run(cmd, **kwargs)
-
-        return result
-        

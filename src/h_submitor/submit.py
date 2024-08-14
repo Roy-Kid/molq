@@ -1,11 +1,11 @@
-from functools import wraps
-from inspect import isgeneratorfunction, signature
-from typing import Callable
+from typing import Callable, Any
 
-from h_submitor.submitor import BaseSubmitor, get_submitor, Monitor
+from h_submitor.submitor import BaseSubmitor, Monitor, get_submitor
+
+from .base import YieldDecorator
 
 
-class submit:
+class submit(YieldDecorator):
 
     CONFIG = dict()
     CLUSTERS: dict[str, BaseSubmitor] = dict()
@@ -24,40 +24,17 @@ class submit:
         cluster_name: str,
         cluster_type: str | None = None,
     ):
-        self._adapter = submit.CLUSTERS[cluster_name]
+        self._current_submitor = submit.CLUSTERS[cluster_name]
 
-    @classmethod
-    def get_n_clusters(self):
-        return len(submit.CLUSTERS)
+    def modify_node(self, node: Callable[..., Any]) -> Callable[..., Any]:
+        return self._current_submitor.modify_node(node)
 
-    def __call__(self, func: Callable):
+    def do(self, config: dict) -> Any:
+        return self._current_submitor.submit(config)
 
-        if not isgeneratorfunction(func):
-            raise TypeError(
-                f"Function {func.__name__} to be submitted to {self._adapter.type} must be a  generator function"
-            )
-
-        @wraps(func)
-        def wrapper(*args, **kwargs):
-
-            generator = func(*args, **kwargs)
-            submit_config: dict = next(generator)
-            job_id = self._adapter.submit(**submit_config)
-
-            try:
-                generator.send(job_id)
-                # ValueError should not be hit because a StopIteration should be raised, unless
-                # there are multiple yields in the generator.
-                raise ValueError("Generator cannot have multiple yields.")
-            except StopIteration as e:
-                result = e.value
-
-            return result
-
-        # get the return type and set it as the return type of the wrapper
-        wrapper.__annotations__["return"] = signature(func).return_annotation
-        return wrapper
+    def validate_config(self, config: dict) -> dict:
+        return self._current_submitor.validate_config(config)
 
     @property
     def monitor(self) -> Monitor:
-        return self._adapter.monitor
+        return self._current_submitor.monitor
