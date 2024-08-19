@@ -102,6 +102,30 @@ Between these two APIs, I abstract a new `YieldDecorator` abstract class. To ext
 - [x] implement slurm submitor
 - [x] abstract Yield-like decorator
 - [x] refactor `@cmdline` with abstract decorator
-- [ ] refactor `@submit` with abstract decorator
-- [ ] config validator
-- [ ] typing for this kind of function
+- [x] refactor `@submit` with abstract decorator
+- [x] config validator
+- [ ] typing for this kind of function: 
+        Return type of generator function must be compatible with "Generator[Any, Any, Any]"  "Generator[Any, Any,  Any]" is incompatible with "Path"
+        ```python
+        @cmdline
+        def prepgen(name: str, param_monomer: Path) -> Generator[dict, (str, str, str), Path]:
+
+            yield {
+                "cmd": f"prepgen -i {param_monomer} -o {name}.prepi -f prepi -rn {name} -rf {name}.res",
+                "block": True
+            }
+
+            return Path(f"{name}.prepi")
+        ```
+
+
+- [ ] tag cached node: 
+        if not tag it, when cache it the function will return result instead of config dict
+        potential solution: tag it in `run_after_node_execution`
+        if detect it's cached, skip submit:
+        ```python
+        generator = func(*args, **kwargs)
+        if generator has tag:
+            return generator
+        config: dict = next(generator)
+        ```

@@ -10,19 +10,16 @@ class LocalSubmitor(BaseSubmitor):
     def local_submit(
         self,
         job_name: str,
-        cmd: list[str],
+        cmd: str|list[str],
         script_name: str | Path = "run_local.sh",
         **kwargs,
     ) -> int:
-
+        if isinstance(cmd, str):
+            cmd = [cmd]
         script_path = self._gen_script(Path(script_name), cmd, **kwargs)
 
         submit_cmd = ["bash", str(script_path.absolute())]
         proc = subprocess.Popen(submit_cmd)
-        if proc.returncode:
-            raise Exception(f"Failed to submit job: {proc.stderr}")
-        
-        # script_path.unlink()
 
         job_id = int(proc.pid)
 
@@ -40,8 +37,7 @@ class LocalSubmitor(BaseSubmitor):
 
         Returns:
             Path: path to the script file
-        """
-            
+        """            
         with open(script_path, mode='w') as f:
             f.write("#!/bin/bash\n")
             f.write("\n")
@@ -80,6 +76,8 @@ class LocalSubmitor(BaseSubmitor):
         return JobStatus(**status)
 
     def validate_config(self, config: dict) -> dict:
+        if "job_name" not in config:
+            config["job_name"] = "local_job"
         return super().validate_config(config)
     
     def cancel(self, job_id: int):
