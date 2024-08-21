@@ -1,12 +1,9 @@
 import multiprocessing
 from time import perf_counter
 from typing import Callable
-
-from hamilton.ad_hoc_utils import create_temporary_module
-from hamilton.function_modifiers import tag
 from hamilton.htypes import Collect, Parallelizable
 
-from h_submitor.base import cmdline
+from h_submitor import cmdline
 
 
 def mapper(seconds: list[int]) -> Parallelizable[int]:
