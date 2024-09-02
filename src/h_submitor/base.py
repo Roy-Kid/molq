@@ -1,5 +1,5 @@
 from abc import ABC, abstractmethod
-from functools import wraps
+from functools import wraps, partial
 from inspect import isgeneratorfunction, signature
 from typing import Any, Callable
 
@@ -11,6 +11,15 @@ class YieldDecorator:
     def __call__(self, func: Callable):
         
         func = self.modify_node(func)
+        # if isinstance(func, partial):
+        #     _to_be_test_fn = func.func
+        # else:
+        #     _to_be_test_fn = func
+
+        # if not isgeneratorfunction(_to_be_test_fn):
+        #     IS_GENERATOR = True
+        # else:
+        #     IS_GENERATOR = False
 
         @wraps(func)
         def wrapper(*args, **kwargs):

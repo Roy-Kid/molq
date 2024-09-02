@@ -104,24 +104,8 @@ Between these two APIs, I abstract a new `YieldDecorator` abstract class. To ext
 - [x] refactor `@cmdline` with abstract decorator
 - [x] refactor `@submit` with abstract decorator
 - [x] config validator
-- [ ] typing for this kind of function: 
-        
-        ```python
-        # Return type of generator function must be compatible with "Generator[Any, Any, Any]"  "Generator[Any, Any,  Any]" is incompatible with "Path"
-      
-        @cmdline
-        def prepgen(name: str, param_monomer: Path) -> Generator[dict, (str, str, str), Path]:
 
-            yield {
-                "cmd": f"prepgen -i {param_monomer} -o {name}.prepi -f prepi -rn {name} -rf {name}.res",
-                "block": True
-            }
-
-            return Path(f"{name}.prepi")
-        ```
-
-
-- [ ] tag cached node: 
+- [x] tag cached node: 
         if not tag it, when cache it the function will return result instead of config dict
         potential solution: tag it in `run_after_node_execution`
         if detect it's cached, skip submit:
@@ -131,3 +115,5 @@ Between these two APIs, I abstract a new `YieldDecorator` abstract class. To ext
             return generator
         config: dict = next(generator)
         ```
+- [ ] not compatible with `@inject`:
+        RuntimeError: Error running task md_eq: module, class, method, function, traceback, frame, or code object was expected, got partial

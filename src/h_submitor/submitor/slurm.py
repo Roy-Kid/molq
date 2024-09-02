@@ -17,7 +17,7 @@ class SlurmSubmitor(BaseSubmitor):
         account: str | None = None,
         script_name: str | Path = "run_slurm",
         test_only: bool = False,
-        job_deps: list[str] | dict[str, list[str]] | None = None,
+        job_deps: str | None = None,
         **slurm_kwargs,
     ) -> int:
         submit_config = slurm_kwargs.copy()
@@ -34,17 +34,21 @@ class SlurmSubmitor(BaseSubmitor):
             submit_config["--account"] = account
         if job_deps:
             self.monitor.refresh_all()
-            job_mapping = {name: self.monitor.get_status_by_name(name) for name in job_deps}
-            if isinstance(job_deps, list):
-                submit_config["--dependency"] = "afterok:" + ":".join(
-                    map(str, job_mapping.values())
-                )
-            elif isinstance(job_deps, dict):
-                condition = job_deps.pop("condition", ",")  # default to AND
-                submit_config["--dependency"] = condition.join(
-                    f"{k}:{':'.join(map(str, [job_mapping[j] for j in v]))}"
-                    for k, v in job_deps.items()
-                )
+            
+            if isinstance(job_deps, str):
+                job_id = self.monitor.get_status_by_name(job_deps).job_id
+                submit_config["--dependency"] = f"afterok:{job_id}"
+
+            # if isinstance(job_deps, list):
+            #     submit_config["--dependency"] = "afterok:" + ":".join(
+            #         map(str, job_deps)
+            #     )
+            # elif isinstance(job_deps, dict):
+            #     condition = job_deps.pop("condition", ",")  # default to AND
+            #     submit_config["--dependency"] = condition.join(
+            #         f"{k}:{':'.join(map(str, [job_mapping[j] for j in v]))}"
+            #         for k, v in job_deps.items()
+            #     )
 
         script_path = self._gen_script(Path(script_name), cmd, **submit_config)
 
@@ -88,6 +92,8 @@ class SlurmSubmitor(BaseSubmitor):
         proc = subprocess.run(cmd, capture_output=True)
         header, job = proc.stdout.decode().split("\n")[:2]
         status = {k: v for k, v in zip(header.split(), job.split())}
+        if 'ST' not in status:
+            raise ValueError(f'can not find {job_id} status in {status}')
         if status["ST"] == "R":
             enum_status = "RUNNING"
         elif status["ST"] == "PD":
