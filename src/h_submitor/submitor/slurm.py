@@ -43,7 +43,7 @@ class SlurmSubmitor(BaseSubmitor):
 
         try:
             proc = subprocess.run(submit_cmd, capture_output=True)
-            script_path.unlink()
+            # script_path.unlink()
         except subprocess.CalledProcessError as e:
             raise e
 
@@ -72,7 +72,7 @@ class SlurmSubmitor(BaseSubmitor):
     def query(self, job_id: int) -> JobStatus:
         cmd = ["squeue", "-j", str(job_id)]
         proc = subprocess.run(cmd, capture_output=True)
-        header, job = proc.stdout.split("\n")
+        header, job = proc.stdout.decode().split("\n")[:2]
         status = {k: v for k, v in zip(header.split(), job.split())}
         if status["ST"] == "R":
             enum_status = "RUNNING"

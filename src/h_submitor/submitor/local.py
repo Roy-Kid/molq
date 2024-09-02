@@ -1,5 +1,4 @@
 import subprocess
-import tempfile
 from pathlib import Path
 
 from h_submitor import BaseSubmitor, JobStatus
