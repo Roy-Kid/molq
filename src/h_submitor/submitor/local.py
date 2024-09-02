@@ -21,7 +21,6 @@ class LocalSubmitor(BaseSubmitor):
         proc = subprocess.Popen(submit_cmd)
 
         job_id = int(proc.pid)
-
         return job_id
 
     def remote_submit(self):

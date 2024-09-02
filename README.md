@@ -105,8 +105,10 @@ Between these two APIs, I abstract a new `YieldDecorator` abstract class. To ext
 - [x] refactor `@submit` with abstract decorator
 - [x] config validator
 - [ ] typing for this kind of function: 
-        Return type of generator function must be compatible with "Generator[Any, Any, Any]"  "Generator[Any, Any,  Any]" is incompatible with "Path"
+        
         ```python
+        # Return type of generator function must be compatible with "Generator[Any, Any, Any]"  "Generator[Any, Any,  Any]" is incompatible with "Path"
+      
         @cmdline
         def prepgen(name: str, param_monomer: Path) -> Generator[dict, (str, str, str), Path]:
 

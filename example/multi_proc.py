@@ -13,7 +13,7 @@ def mapper(seconds: list[int]) -> Parallelizable[int]:
 
 
 @submit("local_thread", "local")
-def worker(mapper: int) -> Generator[dict, Any, int]:
+def worker(mapper: int) -> int:
     print(f"start work {mapper}s")
     start = perf_counter()
     print(multiprocessing.current_process())

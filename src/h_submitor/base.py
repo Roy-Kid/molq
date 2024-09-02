@@ -9,14 +9,17 @@ from .monitor import JobStatus, Monitor
 class YieldDecorator:
 
     def __call__(self, func: Callable):
-
-        if not isgeneratorfunction(func):
-            raise TypeError(f"Function {func.__name__} must be a generator function")
         
         func = self.modify_node(func)
 
         @wraps(func)
         def wrapper(*args, **kwargs):
+
+            # if function is not generator,
+            # either it's cached or it's just impl wrong
+            # return the result directly
+            if not isgeneratorfunction(func):
+                return func(*args, **kwargs)
 
             generator = func(*args, **kwargs)
             config: dict = next(generator)
@@ -74,8 +77,10 @@ class BaseSubmitor(ABC):
         self.monitor.add_job(job_id)
         if block:
             self.monitor.block_until_complete(job_id)
-        print(f"Job {job_id} finish.")
         return job_id
+    
+    def refresh_status(self):
+        self.monitor.add_jobs(self.monitor.job_id_list)
     
     @abstractmethod
     def local_submit(

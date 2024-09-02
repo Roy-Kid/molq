@@ -17,6 +17,7 @@ class SlurmSubmitor(BaseSubmitor):
         account: str | None = None,
         script_name: str | Path = "run_slurm",
         test_only: bool = False,
+        job_deps: list[str] | dict[str, list[str]] | None = None,
         **slurm_kwargs,
     ) -> int:
         submit_config = slurm_kwargs.copy()
@@ -31,6 +32,19 @@ class SlurmSubmitor(BaseSubmitor):
             submit_config["--chdir"] = work_dir
         if account:
             submit_config["--account"] = account
+        if job_deps:
+            self.monitor.refresh_all()
+            job_mapping = {name: self.monitor.get_status_by_name(name) for name in job_deps}
+            if isinstance(job_deps, list):
+                submit_config["--dependency"] = "afterok:" + ":".join(
+                    map(str, job_mapping.values())
+                )
+            elif isinstance(job_deps, dict):
+                condition = job_deps.pop("condition", ",")  # default to AND
+                submit_config["--dependency"] = condition.join(
+                    f"{k}:{':'.join(map(str, [job_mapping[j] for j in v]))}"
+                    for k, v in job_deps.items()
+                )
 
         script_path = self._gen_script(Path(script_name), cmd, **submit_config)
 
@@ -95,7 +109,7 @@ class SlurmSubmitor(BaseSubmitor):
 
     def validate_config(self, config: dict) -> dict:
         return super().validate_config(config)
-    
+
     def cancel(self, job_id: int):
         cmd = ["scancel", str(job_id)]
         proc = subprocess.run(cmd, capture_output=True)

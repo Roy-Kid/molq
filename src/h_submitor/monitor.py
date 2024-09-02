@@ -72,6 +72,16 @@ class Monitor:
                 break
             time.sleep(interval)
 
+    def get_status_by_name(self, name: str):
+        for status in self.jobs.values():
+            if status.name == name:
+                return status
+        return None
+    
+    def refresh_all(self):
+        for job_id in self.job_id_list:
+            self.job_pool[job_id] = self.submitor.query(job_id)
+
     def print_status(self):
         """print job status in a nice table
 
@@ -79,4 +89,4 @@ class Monitor:
             pool (dict[int, JobStatus]): job pool to be printed
         """
         for i, status in enumerate(self.jobs.values(), 1):
-            print(f"{status} | {i}/{len(self.job_pool)}", flush=True)
+            print(f"{status} | {i}/{len(self.job_pool)} \r", flush=True)
