@@ -31,17 +31,17 @@ class YieldDecorator:
                 return func(*args, **kwargs)
 
             generator = func(*args, **kwargs)
-            config: dict = next(generator)
-            config = self.validate_config(config)
-
-            # do something
-            result = self.do(config)
-
+            result = None
             try:
-                generator.send(result)
+                config: dict = next(generator)
+                while True:
+                    config = self.validate_config(config)
+                    result = self.do(config)
+                    config = generator.send(result)
                 # ValueError should not be hit because a StopIteration should be raised, unless
                 # there are multiple yields in the generator.
-                raise ValueError("Generator cannot have multiple yields.")
+                # raise ValueError("Generator cannot have multiple yields.")
+                # raise StopIteration(result)
             except StopIteration as e:
                 result = e.value
 
