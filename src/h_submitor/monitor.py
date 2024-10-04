@@ -74,7 +74,7 @@ class Monitor:
 
     def get_status_by_name(self, name: str):
         for status in self.jobs.values():
-            if status.name == name:
+            if name.startswith(status.name):
                 return status
         return None
     

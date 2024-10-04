@@ -36,8 +36,10 @@ class SlurmSubmitor(BaseSubmitor):
             self.monitor.refresh_all()
             
             if isinstance(job_deps, str):
-                job_id = self.monitor.get_status_by_name(job_deps).job_id
-                submit_config["--dependency"] = f"afterok:{job_id}"
+                job_status = self.monitor.get_status_by_name(job_deps)
+                if not job_status:
+                    raise ValueError(f"job {job_deps} not found in {[j.name for j in self.monitor.job_pool.values()]}")
+                submit_config["--dependency"] = f"afterok:{job_status.job_id}"
 
             # if isinstance(job_deps, list):
             #     submit_config["--dependency"] = "afterok:" + ":".join(
@@ -90,7 +92,11 @@ class SlurmSubmitor(BaseSubmitor):
     def query(self, job_id: int) -> JobStatus:
         cmd = ["squeue", "-j", str(job_id)]
         proc = subprocess.run(cmd, capture_output=True)
-        header, job = proc.stdout.decode().split("\n")[:2]
+        try:
+            out = proc.stdout.decode()
+            header, job = out.split("\n")[:2]
+        except Exception as e:
+            raise ValueError(f"can not find {job_id} in {out}") from e
         status = {k: v for k, v in zip(header.split(), job.split())}
         if 'ST' not in status:
             raise ValueError(f'can not find {job_id} status in {status}')
