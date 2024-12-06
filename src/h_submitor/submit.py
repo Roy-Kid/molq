@@ -1,7 +1,9 @@
 from typing import Callable, Any
-
-from .base import BaseSubmitor, YieldDecorator
-from .monitor import Monitor
+from abc import ABC, abstractmethod
+from .base import YieldDecorator
+import enum
+import time
+from pathlib import Path
 
 
 def get_submitor(cluster_name: str, cluster_type: str):
@@ -27,9 +29,169 @@ def get_submitor(cluster_name: str, cluster_type: str):
         raise ValueError(f"Cluster type {cluster_type} not supported.")
 
 
+class JobStatus:
+
+    class Status(enum.Enum):
+        PENDING = 1
+        RUNNING = 2
+        COMPLETED = 3
+        FAILED = 4
+        FINISHED = 5
+
+    def __init__(self, job_id: int, status: Status, name: str = "", **others: str):
+        self.name: str = name
+        self.job_id: int = job_id
+        self.status: str = status
+
+        self.others: dict[str] = others
+
+    def __repr__(self):
+        return f"<Job {self.name}({self.job_id}): {self.status}>"
+
+    @property
+    def is_finish(self) -> bool:
+        return self.status in [
+            JobStatus.Status.COMPLETED,
+            JobStatus.Status.FAILED,
+            JobStatus.Status.FINISHED,
+        ]
+
+
+class BaseSubmitor(ABC):
+    """Base class for submitor which is responsible for submitting jobs to different clusters
+    """
+
+    GLOBAL_JOB_POOL: dict[int, JobStatus] = dict()
+
+    def __init__(self, cluster_name: str, cluster_config: dict = {}):
+        self.cluster_name = cluster_name
+        self.cluster_config = cluster_config
+
+    def __repr__(self):
+        return f"<{self.cluster_name} {self.__class__.__name__}>"
+
+    def submit(self, config: dict):
+        config = self.validate_config(config)
+        block = config.get("block", False)
+        remote = config.get("remote", False)
+        if remote:
+            job_id = self.remote_submit(**config)
+        else:
+            job_id = self.local_submit(**config)
+        return self.after_submit(job_id, block)
+
+    def after_submit(self, job_id: int, block: bool):
+        self.add_job(job_id)
+        if block:
+            self.block_all_until_complete(job_id)
+        return job_id
+    
+    @abstractmethod
+    def local_submit(
+        self,
+        job_name: str,
+        cmd: str | list[str],
+        cwd: str | Path = Path.cwd(),
+        **extra_kwargs,
+    ):
+        pass
+
+    @abstractmethod
+    def remote_submit(self):
+        # TODO: use ssh and scp to submit job to remote cluster
+        # third-party library: paramiko
+        # license: LGPL
+        # https://www.paramiko.org/
+        pass
+
+
+    @abstractmethod
+    def query(self, job_id: int | None) -> dict[int, JobStatus]:
+        pass
+
+    @abstractmethod
+    def cancel(self, job_id: int):
+        pass
+
+    @abstractmethod
+    def validate_config(self, config: dict) -> dict:
+        return config
+
+    def modify_node(self, node: Callable[..., Any]) -> Callable[..., Any]:
+        return node
+    
+    @property
+    def job_id_list(self):
+        return list(self.GLOBAL_JOB_POOL.keys())
+    
+    @property
+    def jobs(self):
+        return self.GLOBAL_JOB_POOL.copy()
+    
+    def add_job(self, job_id: int):
+        if job_id not in self.GLOBAL_JOB_POOL:
+            self.GLOBAL_JOB_POOL[job_id] = self.query(job_id)
+        else:
+            # not sure if two clusters can have the same job id
+            raise ValueError(f"Job {job_id} already exists")
+        
+    def add_jobs(self, job_ids: list[int]):
+        for id_ in job_ids:
+            self.add_job(id_)
+
+    def update_status(self, status: dict[int, JobStatus], verbose: bool = False):
+        self.GLOBAL_JOB_POOL |= status
+        self.GLOBAL_JOB_POOL = {k: v for k, v in self.GLOBAL_JOB_POOL.items() if not v.is_finish}
+        if verbose:
+            self.print_status()
+
+    def monitor_all(self, interval: int = 60, verbose: bool = True, callback: Callable = None):
+        while self.GLOBAL_JOB_POOL:
+            self.refresh_status()
+            time.sleep(interval)
+            if callback:
+                callback()
+
+    def block_all_until_complete(self, interval: int = 2, verbose: bool = True):
+        while self.GLOBAL_JOB_POOL:
+            status = self.query_all()
+            self.update_status(status, verbose=verbose)
+            if status:
+                break
+
+    def block_one_until_complete(self, job_id: int, interval: int = 2, verbose: bool = True):
+        while True:
+            status = self.query(job_id)
+            self.update_status({job_id: status}, verbose=verbose)
+            if status.is_finish:
+                break
+            time.sleep(interval)
+
+    def get_status_by_name(self, name: str):
+        for status in self.jobs.values():
+            if name.startswith(status.name):
+                return status
+        return None
+    
+    def refresh_status(self, verbose: bool = True):
+        status = self.query_all()
+        self.update_status(status, verbose=verbose)
+
+    def print_status(self):
+        """print job status in a nice table
+
+        Args:
+            pool (dict[int, JobStatus]): job pool to be printed
+        """
+        for i, status in enumerate(self.jobs.values(), 1):
+            print(f"{status} | {i}/{len(self.job_pool)} \r", flush=True)
+
+
 class submit(YieldDecorator):
 
-    CONFIG = dict()
+    """ Decorator to submit jobs to different clusters
+    """
+
     CLUSTERS: dict[str, BaseSubmitor] = dict()
 
     def __new__(
@@ -48,15 +210,16 @@ class submit(YieldDecorator):
     ):
         self._current_submitor = submit.CLUSTERS[cluster_name]
 
-    def modify_node(self, node: Callable[..., Any]) -> Callable[..., Any]:
-        return self._current_submitor.modify_node(node)
+    def before_call(self, func: Callable):
+        ...
 
-    def do(self, config: dict) -> Any:
+    def after_call(self, result):
+        # we may can validate output file here
+        ...
+
+    def validate_yield(self, config):
+        # submitor handles the config validation
+        ...
+
+    def after_yield(self, config):
         return self._current_submitor.submit(config)
-
-    def validate_config(self, config: dict) -> dict:
-        return self._current_submitor.validate_config(config)
-
-    @property
-    def monitor(self) -> Monitor:
-        return self._current_submitor.monitor

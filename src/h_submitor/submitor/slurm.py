@@ -1,8 +1,7 @@
 import subprocess
 from pathlib import Path
 
-from ..base import BaseSubmitor, JobStatus
-
+from ..submit import BaseSubmitor, JobStatus
 
 class SlurmSubmitor(BaseSubmitor):
 
@@ -13,11 +12,11 @@ class SlurmSubmitor(BaseSubmitor):
         n_cores: int,
         memory_max: int | None = None,
         run_time_max: str | int | None = None,
-        work_dir: Path = None,
+        cwd: Path = None,
         account: str | None = None,
         script_name: str | Path = "run_slurm",
         test_only: bool = False,
-        job_deps: str | None = None,
+        # job_deps: str | None = None,
         **slurm_kwargs,
     ) -> int:
         submit_config = slurm_kwargs.copy()
@@ -28,18 +27,18 @@ class SlurmSubmitor(BaseSubmitor):
             submit_config["--mem"] = memory_max
         if run_time_max:
             submit_config["--time"] = run_time_max
-        if work_dir:
-            submit_config["--chdir"] = work_dir
+        if cwd:
+            submit_config["--chdir"] = cwd
         if account:
             submit_config["--account"] = account
-        if job_deps:
-            self.monitor.refresh_all()
+        # if job_deps:
+        #     self.refresh_status()
             
-            if isinstance(job_deps, str):
-                job_status = self.monitor.get_status_by_name(job_deps)
-                if not job_status:
-                    raise ValueError(f"job {job_deps} not found in {[j.name for j in self.monitor.job_pool.values()]}")
-                submit_config["--dependency"] = f"afterok:{job_status.job_id}"
+        #     if isinstance(job_deps, str):
+        #         job_status = self.get_status_by_name(job_deps)
+        #         if not job_status:
+        #             raise ValueError(f"job {job_deps} not found in {[j.name for j in self.monitor.job_pool.values()]}")
+        #         submit_config["--dependency"] = f"afterok:{job_status.job_id}"
 
             # if isinstance(job_deps, list):
             #     submit_config["--dependency"] = "afterok:" + ":".join(
@@ -52,9 +51,9 @@ class SlurmSubmitor(BaseSubmitor):
             #         for k, v in job_deps.items()
             #     )
 
-        script_path = self._gen_script(Path(script_name), cmd, **submit_config)
+        script_path = self._gen_script(Path(cwd) / script_name, cmd, **submit_config)
 
-        submit_cmd = ["sbatch", "--parsable"]
+        submit_cmd = ["sbatch", str(script_path.absolute), "--parsable"]
 
         if test_only:
             submit_cmd.append("--test-only")
