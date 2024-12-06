@@ -1,8 +1,7 @@
 import subprocess
 from pathlib import Path
 
-from ..submit import BaseSubmitor
-from ..monitor import JobStatus
+from ..submit import BaseSubmitor, JobStatus
 
 
 class LocalSubmitor(BaseSubmitor):
@@ -22,7 +21,10 @@ class LocalSubmitor(BaseSubmitor):
         if cwd is None:
             script_path = Path(script_name)
         else:
-            script_path = Path(cwd) / script_name
+            cwd = Path(cwd)
+            if not cwd.exists():
+                cwd.mkdir(parents=True, exist_ok=True)
+            script_path = cwd / script_name
         script_path = self._gen_script(script_path, cmd, **kwargs)
 
         submit_cmd = ["bash", str(script_path.absolute())]
@@ -51,36 +53,37 @@ class LocalSubmitor(BaseSubmitor):
 
         return script_path
 
-    def query(self, job_id: int|None) -> JobStatus:
+    def query(self, job_id: int|None = None) -> dict[int, JobStatus]:
 
-        cmd = ["ps"]
+        cmd = ["ps", "--no-headers"]
         query_status = {
-            "job_id": "pid=",
-            "user": "user=",
-            "status": "stat=",
+            "job_id": "pid",
+            "user": "user",
+            "status": "stat",
         }
-        query_str = [f"-o{v}" for v in query_status.values()]
-        cmd.extend(query_str)
+        query_str = ','.join(query_status.values())
+        cmd.extend(["-o", query_str])
+        if job_id:
+            cmd.extend(["-p", str(job_id)])
         proc = subprocess.run(cmd, capture_output=True)
-
-        # if proc.returncode:
-        #     return JobStatus(
-        #         job_id=job_id,
-        #         status=JobStatus.Status.FINISHED,
-        #     )
+        # WARNING: will return all jobs in this computer
+        if proc.stderr:
+            raise RuntimeError(proc.stderr.decode())
 
         out = proc.stdout.decode().strip()
-        status = {k: v for k, v in zip(query_status.keys(), out.split())}
+        status = {}
+        if out:
+            lines = [line.split() for line in out.split("\n")]
 
-        status_map = {
-            "S": JobStatus.Status.RUNNING,
-            "R": JobStatus.Status.RUNNING,
-            "D": JobStatus.Status.PENDING,
-            "Z": JobStatus.Status.COMPLETED,
-        }
-        status["status"] = status_map[status["status"][0]]
+            status_map = {
+                "S": JobStatus.Status.RUNNING,
+                "R": JobStatus.Status.RUNNING,
+                "D": JobStatus.Status.PENDING,
+                "Z": JobStatus.Status.COMPLETED,
+            }
+            status = {int(line[0]): JobStatus(int(line[0]), status_map[line[2][0]]) for line in lines}
 
-        return JobStatus(**status)
+        return status
 
     def validate_config(self, config: dict) -> dict:
         if "job_name" not in config:

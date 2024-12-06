@@ -11,7 +11,6 @@ class YieldDecorator(ABC):
         # if func is burr action
         # if func is hamilton node
         # if func is partial
-        self.before_call(func)
 
         @wraps(func)
         def wrapper(*args, **kwargs):
@@ -20,17 +19,19 @@ class YieldDecorator(ABC):
             # either it's cached or it's just impl wrong
             # return the result directly
             if not isgeneratorfunction(func):
+                self.before_call(func)
                 result = func(*args, **kwargs)
                 return self.after_call(result)
             
+            self.before_call(*args, **kwargs)
             generator:Generator = func(*args, **kwargs)
             result = None
             try:
-                config: dict = next(generator)
+                yield_result: Any = next(generator)
                 while True:
-                    config = self.validate_yield(config)
-                    result = self.after_yield(config)
-                    config = generator.send(result)
+                    yield_result = self.validate_yield(yield_result)
+                    result = self.after_yield(yield_result)
+                    yield_result = generator.send(result)
                 # ValueError should not be hit because a StopIteration should be raised, unless
                 # there are multiple yields in the generator.
                 # raise ValueError("Generator cannot have multiple yields.")
@@ -43,18 +44,15 @@ class YieldDecorator(ABC):
         wrapper.__annotations__["return"] = signature(func).return_annotation
         return wrapper
 
-    @abstractmethod
-    def before_call(self, func: Callable):
-        pass
+    def before_call(self, *args, **kwargs):
+        ...
+
+    def validate_yield(self, yield_result: Any) -> Any:
+        return yield_result
 
     @abstractmethod
-    def validate_yield(self, config: dict) -> dict:
+    def after_yield(self, yield_result: Any) -> Any:
         pass
 
-    @abstractmethod
-    def after_yield(self, config: dict) -> Any:
-        pass
-
-    @abstractmethod
     def after_call(self, result: Any) -> Any:
-        pass
+        return result

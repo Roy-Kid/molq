@@ -23,7 +23,6 @@ def get_submitor(cluster_name: str, cluster_type: str):
         return SlurmSubmitor(cluster_name)
     elif cluster_type == "local":
         from .submitor.local import LocalSubmitor
-
         return LocalSubmitor(cluster_name)
     else:
         raise ValueError(f"Cluster type {cluster_type} not supported.")
@@ -81,9 +80,9 @@ class BaseSubmitor(ABC):
         return self.after_submit(job_id, block)
 
     def after_submit(self, job_id: int, block: bool):
-        self.add_job(job_id)
+        self.refresh_status()
         if block:
-            self.block_all_until_complete(job_id)
+            self.block_one_until_complete(job_id)
         return job_id
     
     @abstractmethod
@@ -106,7 +105,7 @@ class BaseSubmitor(ABC):
 
 
     @abstractmethod
-    def query(self, job_id: int | None) -> dict[int, JobStatus]:
+    def query(self, job_id: int | None = None) -> dict[int, JobStatus]:
         pass
 
     @abstractmethod
@@ -128,20 +127,12 @@ class BaseSubmitor(ABC):
     def jobs(self):
         return self.GLOBAL_JOB_POOL.copy()
     
-    def add_job(self, job_id: int):
-        if job_id not in self.GLOBAL_JOB_POOL:
-            self.GLOBAL_JOB_POOL[job_id] = self.query(job_id)
-        else:
-            # not sure if two clusters can have the same job id
-            raise ValueError(f"Job {job_id} already exists")
-        
-    def add_jobs(self, job_ids: list[int]):
-        for id_ in job_ids:
-            self.add_job(id_)
+    def get_status(self, job_id: int) -> JobStatus:
+        return self.GLOBAL_JOB_POOL.get(job_id, None)
 
     def update_status(self, status: dict[int, JobStatus], verbose: bool = False):
-        self.GLOBAL_JOB_POOL |= status
-        self.GLOBAL_JOB_POOL = {k: v for k, v in self.GLOBAL_JOB_POOL.items() if not v.is_finish}
+        self.GLOBAL_JOB_POOL = status
+        # self.GLOBAL_JOB_POOL = {k: v for k, v in self.GLOBAL_JOB_POOL.items() if not v.is_finish}
         if verbose:
             self.print_status()
 
@@ -154,16 +145,14 @@ class BaseSubmitor(ABC):
 
     def block_all_until_complete(self, interval: int = 2, verbose: bool = True):
         while self.GLOBAL_JOB_POOL:
-            status = self.query_all()
-            self.update_status(status, verbose=verbose)
-            if status:
-                break
+            self.refresh_status()
+            time.sleep(interval)
 
     def block_one_until_complete(self, job_id: int, interval: int = 2, verbose: bool = True):
         while True:
-            status = self.query(job_id)
-            self.update_status({job_id: status}, verbose=verbose)
-            if status.is_finish:
+            self.refresh_status()
+            jobstatus = self.get_status(job_id)
+            if jobstatus is None or jobstatus.is_finish:
                 break
             time.sleep(interval)
 
@@ -174,7 +163,7 @@ class BaseSubmitor(ABC):
         return None
     
     def refresh_status(self, verbose: bool = True):
-        status = self.query_all()
+        status = self.query()
         self.update_status(status, verbose=verbose)
 
     def print_status(self):
@@ -184,7 +173,7 @@ class BaseSubmitor(ABC):
             pool (dict[int, JobStatus]): job pool to be printed
         """
         for i, status in enumerate(self.jobs.values(), 1):
-            print(f"{status} | {i}/{len(self.job_pool)} \r", flush=True)
+            print(f"{status} | {i}/{len(self.GLOBAL_JOB_POOL)} \r", flush=True)
 
 
 class submit(YieldDecorator):
@@ -210,16 +199,9 @@ class submit(YieldDecorator):
     ):
         self._current_submitor = submit.CLUSTERS[cluster_name]
 
-    def before_call(self, func: Callable):
-        ...
-
-    def after_call(self, result):
-        # we may can validate output file here
-        ...
-
     def validate_yield(self, config):
         # submitor handles the config validation
-        ...
+        return config
 
     def after_yield(self, config):
         return self._current_submitor.submit(config)

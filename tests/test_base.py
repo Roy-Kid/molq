@@ -1,5 +1,3 @@
-import pytest
-
 from h_submitor.base import YieldDecorator
 
 class YieldDecoratorTester(YieldDecorator):
