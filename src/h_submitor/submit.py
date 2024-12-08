@@ -80,7 +80,7 @@ class BaseSubmitor(ABC):
         return self.after_submit(job_id, block)
 
     def after_submit(self, job_id: int, block: bool):
-        self.refresh_status()
+        self.query(job_id=job_id)
         if block:
             self.block_one_until_complete(job_id)
         return job_id
@@ -150,7 +150,7 @@ class BaseSubmitor(ABC):
 
     def block_one_until_complete(self, job_id: int, interval: int = 2, verbose: bool = True):
         while True:
-            self.refresh_status()
+            self.refresh_status(verbose=False)
             jobstatus = self.get_status(job_id)
             if jobstatus is None or jobstatus.is_finish:
                 break

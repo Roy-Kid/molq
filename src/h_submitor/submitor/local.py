@@ -55,7 +55,9 @@ class LocalSubmitor(BaseSubmitor):
 
     def query(self, job_id: int|None = None) -> dict[int, JobStatus]:
 
-        cmd = ["ps", "--no-headers"]
+        cmd = ["ps", "--no-headers", ]
+        if job_id:
+            cmd.extend(["-p", str(job_id)])
         query_status = {
             "job_id": "pid",
             "user": "user",
@@ -63,8 +65,6 @@ class LocalSubmitor(BaseSubmitor):
         }
         query_str = ','.join(query_status.values())
         cmd.extend(["-o", query_str])
-        if job_id:
-            cmd.extend(["-p", str(job_id)])
         proc = subprocess.run(cmd, capture_output=True)
         # WARNING: will return all jobs in this computer
         if proc.stderr:

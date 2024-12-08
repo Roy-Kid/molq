@@ -12,7 +12,7 @@ class SlurmSubmitor(BaseSubmitor):
         n_cores: int,
         memory_max: int | None = None,
         run_time_max: str | int | None = None,
-        cwd: Path = None,
+        cwd: Path = Path.cwd(),
         account: str | None = None,
         script_name: str | Path = "run_slurm",
         test_only: bool = False,
