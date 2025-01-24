@@ -1,7 +1,8 @@
 import subprocess
 from pathlib import Path
 
-from ..submit import BaseSubmitor, JobStatus
+from .base import BaseSubmitor, JobStatus
+
 
 class SlurmSubmitor(BaseSubmitor):
 
@@ -9,51 +10,34 @@ class SlurmSubmitor(BaseSubmitor):
         self,
         job_name: str,
         cmd: list[str],
-        n_cores: int,
-        memory_max: int | None = None,
-        run_time_max: str | int | None = None,
-        cwd: Path = Path.cwd(),
-        account: str | None = None,
-        script_name: str | Path = "run_slurm",
-        test_only: bool = False,
+        n_cores: int,  # --ntasks
+        memory_max: int | None = None,  # --mem
+        run_time_max: str | int | None = None,  # --time
+        partition: str | None = None,  # --partition
+        account: str | None = None,  # --account
         # job_deps: str | None = None,
+        script_name: str | Path = "run_slurm",
+        work_dir: Path = Path.cwd(),  # --chdir
+        test_only: bool = False,
         **slurm_kwargs,
     ) -> int:
         submit_config = slurm_kwargs.copy()
-
         submit_config["--job-name"] = job_name
         submit_config["--ntasks"] = n_cores
-        if memory_max:
-            submit_config["--mem"] = memory_max
-        if run_time_max:
-            submit_config["--time"] = run_time_max
-        if cwd:
-            submit_config["--chdir"] = cwd
-        if account:
-            submit_config["--account"] = account
-        # if job_deps:
-        #     self.refresh_status()
-            
-        #     if isinstance(job_deps, str):
-        #         job_status = self.get_status_by_name(job_deps)
-        #         if not job_status:
-        #             raise ValueError(f"job {job_deps} not found in {[j.name for j in self.monitor.job_pool.values()]}")
-        #         submit_config["--dependency"] = f"afterok:{job_status.job_id}"
 
-            # if isinstance(job_deps, list):
-            #     submit_config["--dependency"] = "afterok:" + ":".join(
-            #         map(str, job_deps)
-            #     )
-            # elif isinstance(job_deps, dict):
-            #     condition = job_deps.pop("condition", ",")  # default to AND
-            #     submit_config["--dependency"] = condition.join(
-            #         f"{k}:{':'.join(map(str, [job_mapping[j] for j in v]))}"
-            #         for k, v in job_deps.items()
-            #     )
+        options = {
+            "--mem": memory_max,
+            "--time": run_time_max,
+            "--chdir": str(work_dir.absolute()),
+            "--account": account,
+            "--partition": partition,
+            # "--dependency": job_deps,
+        }
+        submit_config.update({k: v for k, v in options.items() if v is not None})
 
-        script_path = self._gen_script(Path(cwd) / script_name, cmd, **submit_config)
+        script_path = self._gen_script(Path(work_dir) / script_name, cmd, **submit_config)
 
-        submit_cmd = ["sbatch", str(script_path.absolute), "--parsable"]
+        submit_cmd = ["sbatch", str(script_path.absolute()), "--parsable"]
 
         if test_only:
             submit_cmd.append("--test-only")
@@ -97,8 +81,8 @@ class SlurmSubmitor(BaseSubmitor):
         except Exception as e:
             raise ValueError(f"can not find {job_id} in {out}") from e
         status = {k: v for k, v in zip(header.split(), job.split())}
-        if 'ST' not in status:
-            raise ValueError(f'can not find {job_id} status in {status}')
+        if "ST" not in status:
+            raise ValueError(f"can not find {job_id} status in {status}")
         if status["ST"] == "R":
             enum_status = "RUNNING"
         elif status["ST"] == "PD":
