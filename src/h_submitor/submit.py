@@ -3,15 +3,18 @@ from .base import YieldDecorator
 
 
 def get_submitor(cluster_name: str, cluster_type: str):
-    """factory function to get submitor instance
+    """
+    Get the submitor for the given cluster name and type.
 
-    :param cluster_name: a unique custom name representing the cluster
-    :type cluster_name: str
-    :param cluster_type: type of the cluster, e.g. "slurm", "local"
-    :type cluster_type: str
-    :raises ValueError: if cluster type not supported
-    :return: submitor instance
-    :rtype: BaseSubmitor
+    Args:
+        cluster_name (str): identify name of the cluster
+        cluster_type (str): type of the cluster, e.g. slurm, local
+
+    Raises:
+        ValueError: if the cluster type is not supported
+
+    Returns:
+        _type_: submitor class
     """
     if cluster_type == "slurm":
         from .submitor.slurm import SlurmSubmitor
