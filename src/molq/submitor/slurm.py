@@ -5,6 +5,7 @@ from .base import BaseSubmitor, JobStatus
 
 
 class SlurmSubmitor(BaseSubmitor):
+    """Submit jobs to a SLURM workload manager."""
 
     def local_submit(
         self,

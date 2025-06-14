@@ -1,3 +1,9 @@
+"""Public interface for job submission.
+
+This module exposes the :class:`submit` decorator used to register and submit
+jobs to different compute backends.
+"""
+
 from .submitor.base import BaseSubmitor
 from .base import YieldDecorator
 
@@ -29,7 +35,7 @@ def get_submitor(cluster_name: str, cluster_type: str):
 
 
 class submit(YieldDecorator):
-    """Decorator to submit jobs to different clusters"""
+    """Decorator that sends generator-based tasks to a registered submitter."""
 
     CLUSTERS: dict[str, BaseSubmitor] = dict()
 
@@ -38,6 +44,7 @@ class submit(YieldDecorator):
         cluster_name: str,
         cluster_type: str | None = None,
     ):
+        """Create or reuse a submitter bound to ``cluster_name``."""
         if cluster_name not in cls.CLUSTERS:
             cls.CLUSTERS[cluster_name] = get_submitor(cluster_name, cluster_type)
         return super().__new__(cls)
@@ -47,13 +54,15 @@ class submit(YieldDecorator):
         cluster_name: str,
         cluster_type: str | None = None,
     ):
+        """Store reference to the submitter created in :py:meth:`__new__`."""
         self._current_submitor = submit.CLUSTERS[cluster_name]
 
     def validate_yield(self, config):
-        # submitor handles the config validation
+        """Defer validation to the underlying submitter."""
         return config
 
     def after_yield(self, config):
+        """Submit the job using the current submitter."""
         return self._current_submitor.submit(config)
 
     # ------------------------------------------------------------------

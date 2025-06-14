@@ -1,3 +1,5 @@
+"""Submitter base classes used by ``molq.submit`` decorators."""
+
 import enum
 import time
 from abc import ABC, abstractmethod
@@ -6,6 +8,7 @@ from typing import Any, Callable
 
 
 class JobStatus:
+    """Lightweight representation of a job's state."""
 
     class Status(enum.Enum):
         PENDING = 1
@@ -34,7 +37,7 @@ class JobStatus:
 
 
 class BaseSubmitor(ABC):
-    """Base class for submitor which is responsible for submitting jobs to different clusters"""
+    """Abstract interface for cluster-specific submitters."""
 
     GLOBAL_JOB_POOL: dict[int, JobStatus] = dict()
 

@@ -5,6 +5,7 @@ from .base import BaseSubmitor, JobStatus
 
 
 class LocalSubmitor(BaseSubmitor):
+    """Execute jobs on the current machine using ``bash``."""
 
     def local_submit(
         self,

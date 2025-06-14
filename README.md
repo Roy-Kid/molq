@@ -1,5 +1,9 @@
 # Hamilton-HPC-Orchestra
-[WIP] An extension for sf-hamilton to delegate node/task to HPC resource management system
+[WIP] An extension for sf-hamilton to delegate node/task to HPC resource management system.
+
+This repository provides the **molq** library which offers a small set of
+decorators for submitting Hamilton tasks to local machines or to SLURM based
+clusters.
 
 ## Proposal
 [Hamilton](https://hamilton.dagworks.io/en/latest/) is a general-purpose, extensible workflow framework with high-quality code. The data flow or workflow is constructed using pure Python functions, which are compiled into a DAG (Directed Acyclic Graph) and executed by different executors. To scale up the Python code for parallel and remote execution, several [GraphAdapters](https://hamilton.dagworks.io/en/latest/reference/graph-adapters/) have been implemented. These extensions allow pure Python code to be orchestrated with third-party unified compute frameworks, such as Ray, Dask, Spark, etc.
@@ -95,11 +99,31 @@ def foo(Any) -> Generator[dict, Any, Any]
 
 Between these two APIs, I abstract a new `YieldDecorator` abstract class. To extend it, just implement `self.do` and `self.valid_config` methods. Sometime we need to tag the function internally. For `CMDLineExecutionManager`, it checks the tag `cmdline` on the node and decide which executor it should use. So I provide another api called `self.modify_function` to tag function: `def modify_func(func)->tag(cmdline=true)(func)`.
 
+## Quick Start
+
+Install dependencies and the library in editable mode::
+
+    pip install -e .
+
+Use the :func:`molq.submit` decorator to register a cluster and send jobs::
+
+    from molq import submit
+
+    @submit('local_cluster', 'local')
+    def build_job() -> Generator[dict, int, int]:
+        job_id = yield {
+            'cmd': 'echo hello',
+            'job_name': 'test',
+        }
+        return job_id
+
+    build_job()
+
 ## TODO list
 
-- [x] abstract submitor
-- [x] implement local submitor ("submit" with bash for testing)
-- [x] implement slurm submitor
+- [x] abstract submitter
+- [x] implement local submitter ("submit" with bash for testing)
+- [x] implement slurm submitter
 - [x] abstract Yield-like decorator
 - [x] refactor `@cmdline` with abstract decorator
 - [x] refactor `@submit` with abstract decorator
