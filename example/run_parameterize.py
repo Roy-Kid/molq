@@ -6,7 +6,7 @@ from hamilton.ad_hoc_utils import create_temporary_module
 from hamilton.execution import executors
 from hamilton.function_modifiers import parameterize, value
 
-from h_submitor import submit
+from molq import submit
 
 
 @submit("local_thread", "local")

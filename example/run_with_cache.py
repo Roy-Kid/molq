@@ -7,7 +7,7 @@ from hamilton.execution import executors
 from hamilton.htypes import Collect, Parallelizable
 from hamilton.lifecycle.default import CacheAdapter
 
-from h_submitor import submit, cmdline
+from molq import submit, cmdline
 
 
 @cmdline

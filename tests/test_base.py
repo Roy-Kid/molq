@@ -1,4 +1,4 @@
-from h_submitor.base import YieldDecorator
+from molq.base import YieldDecorator
 
 class YieldDecoratorTester(YieldDecorator):
 

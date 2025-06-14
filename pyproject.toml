@@ -1,8 +1,11 @@
 [project]
-name = "h_submitor"
+name = "molq"
 
 version = "0.0.1"
 
 authors = [
     { name = "Roy Kid", email = "lijichen365@gmail.com" }
 ]
+
+[tool.setuptools.packages.find]
+where = ["src"]

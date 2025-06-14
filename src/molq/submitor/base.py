@@ -120,6 +120,10 @@ class BaseSubmitor(ABC):
             if callback:
                 callback()
 
+    # backward compat
+    def monitor(self, interval: int = 60, verbose: bool = True, callback: Callable = None):
+        self.monitor_all(interval=interval, verbose=verbose, callback=callback)
+
     def block_all_until_complete(self, interval: int = 2, verbose: bool = True):
         while self.GLOBAL_JOB_POOL:
             self.refresh_status()

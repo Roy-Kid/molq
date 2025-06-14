@@ -6,7 +6,7 @@ from hamilton.ad_hoc_utils import create_temporary_module
 from hamilton.execution import executors
 from hamilton.htypes import Collect, Parallelizable
 
-from h_submitor import submit
+from molq import submit
 
 
 def mapper(seconds: list[int]) -> Parallelizable[int]:

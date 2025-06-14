@@ -4,7 +4,7 @@ from typing import Callable, Generator, Any
 
 from hamilton.htypes import Collect, Parallelizable
 
-from h_submitor import submit
+from molq import submit
 
 
 def mapper(seconds: list[int]) -> Parallelizable[int]:

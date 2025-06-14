@@ -4,7 +4,7 @@ import cmd_exec as logic
 from hamilton import driver
 from hamilton.execution import executors
 
-from h_submitor import CMDLineExecutionManager
+from molq import CMDLineExecutionManager
 
 if __name__ == "__main__":
 

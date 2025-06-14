@@ -123,3 +123,4 @@ class LocalSubmitor(BaseSubmitor):
         cmd = ["kill", str(job_id)]
         proc = subprocess.run(cmd, capture_output=True)
         return proc.returncode
+

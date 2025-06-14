@@ -1,6 +1,5 @@
 from importlib import import_module
 
-# Backwards compatibility for old package name
 _module = import_module('molq')
 for attr in getattr(_module, '__all__', []):
     globals()[attr] = getattr(_module, attr)

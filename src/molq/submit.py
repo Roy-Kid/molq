@@ -55,3 +55,18 @@ class submit(YieldDecorator):
 
     def after_yield(self, config):
         return self._current_submitor.submit(config)
+
+    # ------------------------------------------------------------------
+    # helper APIs
+    # ------------------------------------------------------------------
+
+    @classmethod
+    def get_n_clusters(cls) -> int:
+        """Return number of registered clusters."""
+        return len([k for k in cls.CLUSTERS.keys() if not k.startswith("_")])
+
+    @classmethod
+    def get_cluster(cls, name: str) -> BaseSubmitor:
+        """Return the submitor instance for ``name``."""
+        return cls.CLUSTERS[name]
+

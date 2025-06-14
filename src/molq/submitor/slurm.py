@@ -62,6 +62,10 @@ class SlurmSubmitor(BaseSubmitor):
     def remote_submit(self):
         pass
 
+    # public helper for tests
+    def gen_script(self, script_path: str | Path, cmd: list[str], **kwargs) -> Path:
+        return self._gen_script(Path(script_path), cmd, **kwargs)
+
     def _gen_script(self, script_path: Path, cmd: list[str], **kwargs) -> Path:
         assert script_path.parent.exists(), f"{script_path.parent} does not exist"
         with open(script_path, "w") as f:
@@ -109,3 +113,4 @@ class SlurmSubmitor(BaseSubmitor):
         cmd = ["scancel", str(job_id)]
         proc = subprocess.run(cmd, capture_output=True)
         return proc.returncode
+

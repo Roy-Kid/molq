@@ -3,7 +3,7 @@ from time import perf_counter
 from typing import Callable
 from hamilton.htypes import Collect, Parallelizable
 
-from h_submitor import cmdline
+from molq import cmdline
 
 
 def mapper(seconds: list[int]) -> Parallelizable[int]:

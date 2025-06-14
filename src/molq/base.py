@@ -3,6 +3,9 @@ from functools import wraps
 from inspect import isgeneratorfunction, signature
 from typing import Any, Callable, Generator
 
+import subprocess
+from pathlib import Path
+
 
 class YieldDecorator(ABC):
 
@@ -16,7 +19,7 @@ class YieldDecorator(ABC):
                 result = func(*args, **kwargs)
                 return self.after_call(result)
 
-            self.before_call(*args, **kwargs)
+            self.before_call(func)
             generator: Generator = func(*args, **kwargs)
             result = None
             try:
@@ -44,3 +47,32 @@ class YieldDecorator(ABC):
 
     def after_call(self, result: Any) -> Any:
         return result
+
+
+class CmdlineDecorator(YieldDecorator):
+    """Execute a shell command inside a generator based task."""
+
+    def validate_yield(self, config: dict) -> dict:
+        if not isinstance(config, dict):
+            raise TypeError("cmdline config must be a dict")
+        if "cmd" not in config:
+            raise ValueError("`cmd` is required for cmdline execution")
+        return config
+
+    def after_yield(self, config: dict) -> subprocess.CompletedProcess:
+        cmd = config["cmd"]
+        cwd = Path(config.get("cwd", Path.cwd()))
+        block = config.get("block", True)
+
+        if isinstance(cmd, str):
+            cmd = [cmd]
+
+        if block:
+            return subprocess.run(cmd, cwd=cwd, capture_output=True)
+        else:
+            proc = subprocess.Popen(cmd, cwd=cwd)
+            return proc
+
+
+cmdline = CmdlineDecorator()
+
