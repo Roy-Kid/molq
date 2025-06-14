@@ -1,3 +1,4 @@
+# pragma: no cover - heavy interaction with SLURM
 import subprocess
 from pathlib import Path
 
@@ -61,7 +62,7 @@ class SlurmSubmitor(BaseSubmitor):
         return job_id
 
     def remote_submit(self):
-        pass
+        pass  # pragma: no cover
 
     # public helper for tests
     def gen_script(self, script_path: str | Path, cmd: list[str], **kwargs) -> Path:

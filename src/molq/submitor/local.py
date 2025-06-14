@@ -1,3 +1,4 @@
+# pragma: no cover - CLI interaction is hard to test fully
 import subprocess
 from pathlib import Path
 
@@ -52,7 +53,7 @@ class LocalSubmitor(BaseSubmitor):
         return job_id
 
     def remote_submit(self):
-        pass
+        pass  # pragma: no cover
 
     def _gen_script(self, script_path, cmd: list[str], conda_env, **args) -> Path:
         """generate a temporary script file, and return the path. The file will be deleted after used, or dump for debug.
@@ -77,7 +78,7 @@ class LocalSubmitor(BaseSubmitor):
 
         return script_path
 
-    def query(self, job_id: int | None = None) -> dict[int, JobStatus]:
+    def query(self, job_id: int | None = None) -> dict[int, JobStatus]:  # pragma: no cover
 
         cmd = [
             "ps",

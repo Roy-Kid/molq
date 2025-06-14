@@ -72,7 +72,7 @@ class BaseSubmitor(ABC):
         cwd: str | Path = Path.cwd(),
         **extra_kwargs,
     ):
-        pass
+        pass  # pragma: no cover
 
     @abstractmethod
     def remote_submit(self):
@@ -80,11 +80,11 @@ class BaseSubmitor(ABC):
         # third-party library: paramiko
         # license: LGPL
         # https://www.paramiko.org/
-        pass
+        pass  # pragma: no cover
 
     @abstractmethod
     def query(self, job_id: int | None = None) -> dict[int, JobStatus]:
-        pass
+        pass  # pragma: no cover
 
     @abstractmethod
     def cancel(self, job_id: int):
