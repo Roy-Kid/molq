@@ -23,6 +23,7 @@ class SlurmSubmitor(BaseSubmitor):
         test_only: bool = False,
         **slurm_kwargs,
     ) -> int:
+        """Create a SLURM script and submit it with ``sbatch``."""
         submit_config = slurm_kwargs.copy()
         submit_config["--job-name"] = job_name
         submit_config["--ntasks"] = n_cores
@@ -62,13 +63,16 @@ class SlurmSubmitor(BaseSubmitor):
         return job_id
 
     def remote_submit(self):
+        """Submit a job to a remote SLURM cluster (unimplemented)."""
         pass  # pragma: no cover
 
     # public helper for tests
     def gen_script(self, script_path: str | Path, cmd: list[str], **kwargs) -> Path:
+        """Public helper used in tests to generate a SLURM script."""
         return self._gen_script(Path(script_path), cmd, **kwargs)
 
     def _gen_script(self, script_path: Path, cmd: list[str], **kwargs) -> Path:
+        """Write a SLURM submission script and return its path."""
         assert script_path.parent.exists(), f"{script_path.parent} does not exist"
         with open(script_path, "w") as f:
             f.write("#!/bin/bash\n")
@@ -79,6 +83,7 @@ class SlurmSubmitor(BaseSubmitor):
         return script_path
 
     def query(self, job_id: int) -> JobStatus:
+        """Query the scheduler for ``job_id`` using ``squeue``."""
         cmd = ["squeue", "-j", str(job_id)]
         proc = subprocess.run(cmd, capture_output=True)
         try:
@@ -109,9 +114,11 @@ class SlurmSubmitor(BaseSubmitor):
         )
 
     def validate_config(self, config: dict) -> dict:
+        """Validate the configuration before submission."""
         return super().validate_config(config)
 
     def cancel(self, job_id: int):
+        """Cancel a submitted SLURM job."""
         cmd = ["scancel", str(job_id)]
         proc = subprocess.run(cmd, capture_output=True)
         return proc.returncode

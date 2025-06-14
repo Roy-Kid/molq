@@ -19,6 +19,7 @@ class YieldDecorator(ABC):
     """Base class for decorators that interact with generator-based tasks."""
 
     def __call__(self, func: Callable):
+        """Wrap ``func`` so that ``yield`` points can be intercepted."""
 
         @wraps(func)
         def wrapper(*args, **kwargs):

@@ -1,35 +1,34 @@
-# Molq: Hamilton Job Orchestrator
+# Molq
 
-Molq is a lightweight library that integrates the
-[Hamilton](https://hamilton.dagworks.io) workflow engine with
-traditional HPC schedulers. It exposes a ``submit`` decorator to
-register clusters and send jobs and a ``cmdline`` decorator for
-running shell commands inside nodes.
+**Molq** is a small helper library that connects [Hamilton](https://hamilton.dagworks.io) with local or cluster based job runners. It provides a couple of decorators so you can launch jobs or run shell commands straight from your dataflow code.
 
-```bash
-pip install -e .
+## Installation
+
+```
+pip install molq
 ```
 
-## Usage
+## Quick Example
 
 ```python
 from molq import submit, cmdline
 
-# register a local cluster
+# Register the local machine as a cluster
 local = submit('local', 'local')
 
 @local
 def run_job() -> int:
-    job = yield {
-        'cmd': ['echo', 'hi'],
+    job_id = yield {
+        'cmd': ['echo', 'hello'],
         'job_name': 'demo',
+        'block': True,
     }
-    return job
+    return job_id
 
 @cmdline
 def echo_node() -> str:
-    cp = yield {'cmd': 'echo hello', 'block': True}
+    cp = yield {'cmd': 'echo world', 'block': True}
     return cp.stdout.decode().strip()
 ```
 
-See ``docs/index.md`` for more details.
+See the [documentation](docs/index.md) for a more complete tour and additional examples.

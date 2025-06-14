@@ -1,15 +1,46 @@
-# Molcrafts Orchestrator
+# Molq Documentation
 
-Molq provides decorators and submitter classes so that
-[Hamilton](https://hamilton.dagworks.io) workflows can easily run
-on local machines or SLURM clusters. Jobs are launched by a
-``submit`` decorator while shell commands inside nodes can be
-executed through ``cmdline``.
+Molq helps you integrate [Hamilton](https://hamilton.dagworks.io) workflows with traditional job schedulers. Jobs can run locally or be dispatched to clusters through a simple decorator based API.
 
-## Features
+## Installation
 
-- Register multiple clusters and dispatch jobs to them.
-- Monitor running jobs from Python.
-- Lightweight local execution for simple workflows.
+```bash
+pip install molq
+```
 
-See the README for a quick start.
+## Quick Start
+
+Register a submitter for the current machine and run a command:
+
+```python
+from molq import submit, cmdline
+
+local = submit('local', 'local')
+
+@local
+def my_job() -> int:
+    job_id = yield {
+        'cmd': ['echo', 'hi'],
+        'job_name': 'demo',
+        'block': True,
+    }
+    return job_id
+```
+
+The `cmdline` decorator executes shell commands inside a node:
+
+```python
+@cmdline
+def echo() -> str:
+    cp = yield {'cmd': 'echo hello', 'block': True}
+    return cp.stdout.decode().strip()
+```
+
+## API Overview
+
+- **submit** – register clusters and submit jobs to them.
+- **cmdline** – run shell commands within generator nodes.
+- **LocalSubmitor** – executes jobs on the local machine.
+- **SlurmSubmitor** – submits jobs to a SLURM cluster.
+
+See the examples directory for more usage patterns.
