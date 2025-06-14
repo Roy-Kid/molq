@@ -1,10 +1,27 @@
+[build-system]
+requires = ["setuptools>=42", "wheel"]
+build-backend = "setuptools.build_meta"
+
 [project]
 name = "molq"
-
 version = "0.0.1"
-
 authors = [
-    { name = "Roy Kid", email = "lijichen365@gmail.com" }
+    {name = "Roy Kid", email = "lijichen365@gmail.com"}
+]
+readme = "README.md"
+requires-python = ">=3.9"
+license = {text = "MIT"}
+dependencies = [
+    "sf-hamilton",
+    "paramiko"
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest",
+    "pytest-mock",
+    "coverage",
+    "build"
 ]
 
 [tool.setuptools.packages.find]
