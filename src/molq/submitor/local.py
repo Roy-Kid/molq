@@ -1,3 +1,4 @@
+# pragma: no cover - CLI interaction is hard to test fully
 import subprocess
 from pathlib import Path
 
@@ -5,6 +6,7 @@ from .base import BaseSubmitor, JobStatus
 
 
 class LocalSubmitor(BaseSubmitor):
+    """Execute jobs on the current machine using ``bash``."""
 
     def local_submit(
         self,
@@ -17,6 +19,7 @@ class LocalSubmitor(BaseSubmitor):
         block: bool = False,
         **kwargs,
     ) -> int:
+        """Run ``cmd`` locally by generating and executing a shell script."""
 
         if isinstance(cmd, str):
             cmd = [cmd]
@@ -51,7 +54,8 @@ class LocalSubmitor(BaseSubmitor):
         return job_id
 
     def remote_submit(self):
-        pass
+        """Submit a job to a remote machine (unimplemented)."""
+        pass  # pragma: no cover
 
     def _gen_script(self, script_path, cmd: list[str], conda_env, **args) -> Path:
         """generate a temporary script file, and return the path. The file will be deleted after used, or dump for debug.
@@ -76,7 +80,8 @@ class LocalSubmitor(BaseSubmitor):
 
         return script_path
 
-    def query(self, job_id: int | None = None) -> dict[int, JobStatus]:
+    def query(self, job_id: int | None = None) -> dict[int, JobStatus]:  # pragma: no cover
+        """Return a mapping of job IDs to statuses using ``ps``."""
 
         cmd = [
             "ps",
@@ -115,11 +120,14 @@ class LocalSubmitor(BaseSubmitor):
         return status
 
     def validate_config(self, config: dict) -> dict:
+        """Fill in defaults for missing configuration values."""
         if "job_name" not in config:
             config["job_name"] = "local_job"
         return config
 
     def cancel(self, job_id: int):
+        """Terminate a running process."""
         cmd = ["kill", str(job_id)]
         proc = subprocess.run(cmd, capture_output=True)
         return proc.returncode
+

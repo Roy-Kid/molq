@@ -1,4 +1,3 @@
-# Backwards compatibility for old package name ``h_submitor``.
 from importlib import import_module
 
 _module = import_module('molq')

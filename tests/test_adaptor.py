@@ -1,4 +1,4 @@
-from h_submitor.submitor import SlurmSubmitor
+from molq.submitor import SlurmSubmitor
 from pytest_mock import MockerFixture
 from unittest.mock import MagicMock
 import subprocess
@@ -24,10 +24,10 @@ class MockedSlurm:
         mock = MagicMock()
         mock.returncode = 0
         if cmd[-1] == "--test-only":
-            mock.stderr = f"sbatch: Job 3676091 to start at 2024-04-26T20:02:12 using 256 processors on nodes nid001000 in partition main"
+            mock.stderr = b"sbatch: Job 3676091 to start at 2024-04-26T20:02:12 using 256 processors on nodes nid001000 in partition main"
 
         else:
-            mock.stdout = "3676091"
+            mock.stdout = b"3676091"
 
         return mock
     
@@ -35,14 +35,14 @@ class MockedSlurm:
     def squeue(cmd):
 
         mock = MagicMock()
-        mock.stdout = "JOBID PARTITION     NAME     USER ST       TIME  NODES NODELIST(REASON)\n3676091      main     test     user  R       0:01      1 nid001000"
+        mock.stdout = b"JOBID PARTITION     NAME     USER ST       TIME  NODES NODELIST(REASON)\n3676091      main     test     user  R       0:01      1 nid001000"
         return mock
     
     @staticmethod
     def scancel(cmd):
 
         mock = MagicMock()
-        mock.stdout = "Job 3676091 has been cancelled."
+        mock.stdout = b"Job 3676091 has been cancelled."
         return mock
 
 
@@ -74,7 +74,7 @@ class TestSlurmAdapter:
         mocker.patch.object(subprocess, "run", MockedSlurm.run)
 
         submitor = SlurmSubmitor("test_submitor")
-        job_id = submitor.submit(cmd=["ls"], job_name="test", n_cores=1)
+        job_id = submitor.submit({"cmd": ["ls"], "job_name": "test", "n_cores": 1})
         assert isinstance(job_id, int)
 
     def test_submit_test_only(self, mocker: MockerFixture):
@@ -82,7 +82,7 @@ class TestSlurmAdapter:
         mocker.patch.object(subprocess, "run", MockedSlurm.run)
 
         submitor = SlurmSubmitor("test_submitor")
-        job_id = submitor.submit(cmd=["ls"], job_name="test", n_cores=1, test_only=True)
+        job_id = submitor.submit({"cmd": ["ls"], "job_name": "test", "n_cores": 1, "test_only": True})
         assert isinstance(job_id, int)
 
     def test_monitoring(self, mocker: MockerFixture):
@@ -90,6 +90,6 @@ class TestSlurmAdapter:
         mocker.patch.object(subprocess, "run", MockedSlurm.run)
 
         submitor = SlurmSubmitor("test_submitor")
-        job_id = submitor.submit(cmd=["sleep 1"], job_name="test1", n_cores=1, is_block=False)  # not block inplace
+        job_id = submitor.submit({"cmd": ["sleep 1"], "job_name": "test1", "n_cores": 1, "is_block": False})  # not block inplace
         submitor.monitor(interval=1)  # block here
         assert isinstance(job_id, int)

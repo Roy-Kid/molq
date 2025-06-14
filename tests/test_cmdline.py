@@ -1,4 +1,4 @@
-from h_submitor.base import cmdline
+from molq.base import cmdline
 
 class TestCMDLine:
 

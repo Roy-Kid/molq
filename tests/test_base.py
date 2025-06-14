@@ -1,4 +1,4 @@
-from h_submitor.base import YieldDecorator
+from molq.base import YieldDecorator
 
 class YieldDecoratorTester(YieldDecorator):
 
@@ -41,5 +41,16 @@ class TestYieldDecorator:
 
         foo()
         assert yield_decorator_tester.after_call_called
+
+    def test_normal_function(self):
+        yd = YieldDecoratorTester()
+
+        @yd
+        def simple(x):
+            return x * 2
+
+        assert simple(3) == 6
+        assert yd.before_call_called
+        assert yd.after_call_called
 
     
