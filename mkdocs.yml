@@ -1,0 +1,144 @@
+site_name: Molq Documentation
+site_description: A small helper library that connects Hamilton with local or cluster based job runners
+site_author: Roy Kid
+site_url: https://molcrafts.github.io/molq/
+
+repo_name: molcrafts/molq
+repo_url: https://github.com/molcrafts/molq
+edit_uri: edit/main/docs/
+
+theme:
+  name: material
+  language: en
+  palette:
+    # Palette toggle for automatic mode
+    - media: "(prefers-color-scheme)"
+      toggle:
+        icon: material/brightness-auto
+        name: Switch to light mode
+
+    # Palette toggle for light mode
+    - media: "(prefers-color-scheme: light)"
+      scheme: default
+      primary: blue
+      accent: blue
+      toggle:
+        icon: material/brightness-7
+        name: Switch to dark mode
+
+    # Palette toggle for dark mode
+    - media: "(prefers-color-scheme: dark)"
+      scheme: slate
+      primary: blue
+      accent: blue
+      toggle:
+        icon: material/brightness-4
+        name: Switch to system preference
+
+  features:
+    - navigation.tabs
+    - navigation.tabs.sticky
+    - navigation.sections
+    - navigation.expand
+    - navigation.path
+    - navigation.top
+    - search.highlight
+    - search.share
+    - search.suggest
+    - content.code.copy
+    - content.code.select
+    - content.code.annotate
+
+  icon:
+    repo: fontawesome/brands/github
+
+markdown_extensions:
+  - abbr
+  - admonition
+  - attr_list
+  - def_list
+  - footnotes
+  - md_in_html
+  - toc:
+      permalink: true
+  - pymdownx.arithmatex:
+      generic: true
+  - pymdownx.betterem:
+      smart_enable: all
+  - pymdownx.caret
+  - pymdownx.details
+  - pymdownx.emoji:
+      emoji_generator: !!python/name:material.extensions.emoji.to_svg
+      emoji_index: !!python/name:material.extensions.emoji.twemoji
+  - pymdownx.highlight:
+      anchor_linenums: true
+      line_spans: __span
+      pygments_lang_class: true
+  - pymdownx.inlinehilite
+  - pymdownx.keys
+  - pymdownx.magiclink:
+      normalize_issue_symbols: true
+      repo_url_shorthand: true
+      user: molcrafts
+      repo: molq
+  - pymdownx.mark
+  - pymdownx.smartsymbols
+  - pymdownx.snippets:
+      auto_append:
+        - includes/mkdocs.md
+  - pymdownx.superfences:
+      custom_fences:
+        - name: mermaid
+          class: mermaid
+          format: !!python/name:pymdownx.superfences.fence_code_format
+  - pymdownx.tabbed:
+      alternate_style: true
+      combine_header_slug: true
+      slugify: !!python/object/apply:pymdownx.slugs.slugify
+        kwds:
+          case: lower
+  - pymdownx.tasklist:
+      custom_checkbox: true
+  - pymdownx.tilde
+
+plugins:
+  - search:
+      separator: '[\s\u200b\-_,:!=\[\]()"`/]+|\.(?!\d)|&[lg]t;|(?!\b)(?=[A-Z][a-z])'
+
+extra:
+  social:
+    - icon: fontawesome/brands/github
+      link: https://github.com/molcrafts
+    - icon: fontawesome/brands/python
+      link: https://pypi.org/project/molq/
+
+extra_css:
+  - stylesheets/extra.css
+
+nav:
+  - Home: index.md
+  - Getting Started:
+    - Installation: getting-started/installation.md
+    - Quick Start: getting-started/quick-start.md
+    - Basic Concepts: getting-started/concepts.md
+  - User Guide:
+    - Decorators: user-guide/decorators.md
+    - Local Execution: user-guide/local-execution.md
+    - SLURM Integration: user-guide/slurm-integration.md
+    - Resource Specification: user-guide/resource-specification.md
+    - Layered Resource Specs: user-guide/layered-resource-specs.md
+    - Configuration: user-guide/configuration.md
+  - Examples:
+    - Command Line: examples/cmdline.md
+    - Local Jobs: examples/local-jobs.md
+    - SLURM Jobs: examples/slurm-jobs.md
+    - Resource Specification: examples/resource-specification.md
+    - Monitoring: examples/monitoring.md
+  - API Reference:
+    - Core Functions: api/core.md
+    - Submitters: api/submitters.md
+    - Decorators: api/decorators.md
+  - Development:
+    - Contributing: development/contributing.md
+    - Testing: development/testing.md
+    - Changelog: development/changelog.md

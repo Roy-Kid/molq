@@ -51,8 +51,8 @@ def test_query_and_cancel(monkeypatch):
     status = submitor.query(123)
     assert 123 in status
     assert status[123].status == JobStatus.Status.RUNNING
-    ret = submitor.cancel(123)
-    assert ret == 0
+    # cancel() now returns None instead of return code
+    submitor.cancel(123)  # Should not raise exception
 
     # call query without job_id
     submitor.query(None)

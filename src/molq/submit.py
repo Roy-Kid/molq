@@ -57,13 +57,13 @@ class submit(YieldDecorator):
         """Store reference to the submitter created in :py:meth:`__new__`."""
         self._current_submitor = submit.CLUSTERS[cluster_name]
 
-    def validate_yield(self, config):
+    def validate_yield(self, yield_result):
         """Defer validation to the underlying submitter."""
-        return config
+        return yield_result
 
-    def after_yield(self, config):
+    def after_yield(self, yield_result):
         """Submit the job using the current submitter."""
-        return self._current_submitor.submit(config)
+        return self._current_submitor.submit(yield_result)
 
     # ------------------------------------------------------------------
     # helper APIs

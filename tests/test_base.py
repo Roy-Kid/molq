@@ -1,4 +1,5 @@
 from molq.base import YieldDecorator
+from typing import Generator
 
 class YieldDecoratorTester(YieldDecorator):
 
@@ -11,13 +12,13 @@ class YieldDecoratorTester(YieldDecorator):
     def before_call(self, func):
         self.before_call_called = True
 
-    def validate_yield(self, config):
+    def validate_yield(self, yield_result):
         self.validate_yield_called = True
-        return config
+        return yield_result
     
-    def after_yield(self, config):
+    def after_yield(self, yield_result):
         self.after_yield_called = True
-        return config
+        return yield_result
     
     def after_call(self, result):
         self.after_call_called = True
@@ -30,7 +31,7 @@ class TestYieldDecorator:
         yield_decorator_tester = YieldDecoratorTester()
 
         @yield_decorator_tester
-        def foo():
+        def foo() -> Generator[dict, dict, dict]:
             assert yield_decorator_tester.before_call_called
             result = yield {"a": 1}
             assert result == {"a": 1}

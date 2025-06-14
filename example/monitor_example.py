@@ -1,11 +1,12 @@
 """Monitor a long running local job."""
 
 from molq import submit
+from typing import Generator
 
 local = submit('local', 'local')
 
 @local
-def long_job() -> int:
+def long_job() -> Generator[dict, int, int]:
     job_id = yield {
         'cmd': ['sleep', '5'],
         'job_name': 'long',

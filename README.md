@@ -12,12 +12,14 @@ pip install molq
 
 ```python
 from molq import submit, cmdline
+from typing import Generator
+import subprocess
 
 # Register the local machine as a cluster
 local = submit('local', 'local')
 
 @local
-def run_job() -> int:
+def run_job() -> Generator[dict, int, int]:
     job_id = yield {
         'cmd': ['echo', 'hello'],
         'job_name': 'demo',
@@ -26,7 +28,7 @@ def run_job() -> int:
     return job_id
 
 @cmdline
-def echo_node() -> str:
+def echo_node() -> Generator[dict, subprocess.CompletedProcess, str]:
     cp = yield {'cmd': 'echo world', 'block': True}
     return cp.stdout.decode().strip()
 ```

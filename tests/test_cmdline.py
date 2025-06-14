@@ -1,11 +1,13 @@
 from molq.base import cmdline
+from typing import Generator
+import subprocess
 
 class TestCMDLine:
 
     def test_cmdline(self):
 
         @cmdline
-        def worker(second: int) -> int:
+        def worker(second: int) -> Generator[dict, subprocess.CompletedProcess, subprocess.CompletedProcess]:
             print(f"start work {second}s")
             result = yield {
                 'cmd': [f"echo", f"{second}"],

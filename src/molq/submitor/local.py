@@ -12,17 +12,33 @@ class LocalSubmitor(BaseSubmitor):
         self,
         job_name: str,
         cmd: str | list[str],
+        cwd: str | Path | None = None,
         script_name: str | Path = "run_local.sh",
         conda_env: str | None = None,
-        cwd: str | Path | None = None,
         quiet: bool = False,
         block: bool = False,
+        # Unified ResourceSpec parameters (mostly ignored for local execution)
+        cpu_count: int | None = None,
+        memory: str | None = None,
+        time_limit: str | None = None,
+        queue: str | None = None,
+        gpu_count: int | None = None,
+        gpu_type: str | None = None,
+        email: str | None = None,
+        email_events: list | None = None,
+        priority: str | None = None,
+        # Aliases for compatibility
+        workdir: str | Path | None = None,
         **kwargs,
     ) -> int:
         """Run ``cmd`` locally by generating and executing a shell script."""
 
         if isinstance(cmd, str):
             cmd = [cmd]
+
+        # Handle workdir alias
+        if workdir is not None:
+            cwd = workdir
 
         if cwd is None:
             script_path = Path(script_name)
@@ -76,7 +92,7 @@ class LocalSubmitor(BaseSubmitor):
                 f.write(f"conda activate {conda_env}\n")
 
             f.write("\n")
-            f.write("\n".join(cmd))
+            f.write(" ".join(cmd))
 
         return script_path
 
@@ -125,9 +141,10 @@ class LocalSubmitor(BaseSubmitor):
             config["job_name"] = "local_job"
         return config
 
-    def cancel(self, job_id: int):
+    def cancel(self, job_id: int) -> None:
         """Terminate a running process."""
         cmd = ["kill", str(job_id)]
         proc = subprocess.run(cmd, capture_output=True)
-        return proc.returncode
+        if proc.returncode != 0:
+            raise RuntimeError(f"Failed to cancel job {job_id}: {proc.stderr.decode()}")
 
