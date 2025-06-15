@@ -69,9 +69,16 @@ class LocalSubmitor(BaseSubmitor):
         job_id = int(proc.pid)
         return job_id
 
-    def remote_submit(self):
-        """Submit a job to a remote machine (unimplemented)."""
-        pass  # pragma: no cover
+    def remote_submit(
+        self,
+        job_name: str,
+        cmd: str | list[str],
+        cwd: str | Path | None = None,
+        block: bool = False,
+        **resource_kwargs,
+    ) -> int:
+        """Local submitter doesn't support remote submission."""
+        raise NotImplementedError("Local submitter doesn't support remote submission")
 
     def _gen_script(self, script_path, cmd: list[str], conda_env, **args) -> Path:
         """generate a temporary script file, and return the path. The file will be deleted after used, or dump for debug.

@@ -91,9 +91,16 @@ class SlurmSubmitor(BaseSubmitor):
 
         return job_id
 
-    def remote_submit(self):
-        """Submit a job to a remote SLURM cluster (unimplemented)."""
-        pass  # pragma: no cover
+    def remote_submit(
+        self,
+        job_name: str,
+        cmd: str | list[str],
+        cwd: str | Path | None = None,
+        block: bool = False,
+        **resource_kwargs,
+    ) -> int:
+        """Submit a job to a remote SLURM cluster (not implemented yet)."""
+        raise NotImplementedError("Remote SLURM submission not implemented yet")
 
     # public helper for tests
     def gen_script(self, script_path: str | Path, cmd: list[str], **kwargs) -> Path:

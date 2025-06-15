@@ -4,7 +4,7 @@ import enum
 import time
 from abc import ABC, abstractmethod
 from pathlib import Path
-from typing import Any, Callable
+from typing import Any, Callable, Dict, Optional, Union, List
 
 
 class JobStatus:
@@ -33,9 +33,9 @@ class JobStatus:
         """
         self.name: str = name
         self.job_id: int = job_id
-        self.status: str = status
+        self.status: JobStatus.Status = status
 
-        self.others: dict[str] = others
+        self.others: dict[str, str] = others
 
     def __repr__(self):
         return f"<Job {self.name}({self.job_id}): {self.status}>"
@@ -98,15 +98,45 @@ class BaseSubmitor(ABC):
         self,
         job_name: str,
         cmd: str | list[str],
-        cwd: str | Path = Path.cwd(),
-        **extra_kwargs,
-    ):
-        """Submit a job to the local machine."""
+        cwd: str | Path | None = None,
+        block: bool = False,
+        **resource_kwargs,
+    ) -> int:
+        """Submit a job to the local execution environment.
+        
+        Args:
+            job_name: Name for the job
+            cmd: Command to execute
+            cwd: Working directory (optional)
+            block: Whether to wait for completion
+            **resource_kwargs: Additional resource specifications
+            
+        Returns:
+            Job identifier
+        """
         pass  # pragma: no cover
 
     @abstractmethod
-    def remote_submit(self):
-        """Submit a job to a remote cluster."""
+    def remote_submit(
+        self,
+        job_name: str,
+        cmd: str | list[str],
+        cwd: str | Path | None = None,
+        block: bool = False,
+        **resource_kwargs,
+    ) -> int:
+        """Submit a job to a remote cluster.
+        
+        Args:
+            job_name: Name for the job
+            cmd: Command to execute
+            cwd: Working directory (optional)
+            block: Whether to wait for completion
+            **resource_kwargs: Additional resource specifications
+            
+        Returns:
+            Job identifier
+        """
         pass  # pragma: no cover
 
     @abstractmethod
@@ -115,14 +145,76 @@ class BaseSubmitor(ABC):
         pass  # pragma: no cover
 
     @abstractmethod
-    def cancel(self, job_id: int):
+    def cancel(self, job_id: int) -> None:
         """Cancel a running job."""
         pass
 
-    @abstractmethod
     def validate_config(self, config: dict) -> dict:
-        """Validate the user provided configuration."""
+        """Validate and normalize the user provided configuration."""
+        # Provide default validation that can be overridden
+        required_fields = ['job_name', 'cmd']
+        for field in required_fields:
+            if field not in config:
+                raise ValueError(f"Required field '{field}' missing from job configuration")
+        
+        # Normalize cmd to list format
+        if isinstance(config['cmd'], str):
+            config['cmd'] = [config['cmd']]
+            
         return config
+
+    def prepare_resource_spec(self, config: dict) -> dict:
+        """Prepare and validate resource specifications.
+        
+        This method can be overridden by subclasses to handle
+        scheduler-specific resource parameter conversion.
+        """
+        # Extract common ResourceSpec parameters
+        resource_params = {}
+        
+        # Resource parameters that might be in config
+        resource_keys = [
+            'cpu_count', 'memory', 'time_limit', 'queue', 'partition',
+            'gpu_count', 'gpu_type', 'email', 'email_events', 'priority',
+            'exclusive_node', 'node_count', 'cpu_per_node', 'memory_per_cpu',
+            'account', 'constraints', 'licenses', 'array_spec', 'workdir'
+        ]
+        
+        for key in resource_keys:
+            if key in config:
+                resource_params[key] = config[key]
+        
+        return resource_params
+
+    def convert_unified_to_scheduler_params(self, config: dict) -> dict:
+        """Convert unified ResourceSpec parameters to scheduler-specific format.
+        
+        This is a default implementation that can be overridden by subclasses
+        to handle scheduler-specific parameter conversion.
+        
+        Args:
+            config: Job configuration with potential unified parameters
+            
+        Returns:
+            Configuration with scheduler-specific parameters
+        """
+        # Default implementation just passes through
+        # Subclasses should override this for specific conversion logic
+        return config
+    
+    def extract_core_params(self, config: dict) -> tuple[str, str | list[str], dict]:
+        """Extract core job parameters from configuration.
+        
+        Returns:
+            Tuple of (job_name, cmd, resource_params)
+        """
+        job_name = config.get('job_name', 'unnamed_job')
+        cmd = config.get('cmd', [])
+        
+        # Extract resource-related parameters
+        resource_params = self.prepare_resource_spec(config)
+        
+        return job_name, cmd, resource_params
 
     def modify_node(self, node: Callable[..., Any]) -> Callable[..., Any]:
         """Allow submitters to adapt Hamilton nodes if needed."""
@@ -138,7 +230,7 @@ class BaseSubmitor(ABC):
         """Snapshot of the job pool."""
         return self.GLOBAL_JOB_POOL.copy()
 
-    def get_status(self, job_id: int) -> JobStatus:
+    def get_status(self, job_id: int) -> JobStatus | None:
         """Return the :class:`JobStatus` associated with ``job_id``."""
         return self.GLOBAL_JOB_POOL.get(job_id, None)
 
