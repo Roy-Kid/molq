@@ -66,10 +66,40 @@ class BaseSubmitor(ABC):
         """
         self.cluster_name = cluster_name
         self.cluster_config = cluster_config
+        # Track temporary files per job for cleanup
+        self._temp_files_by_job: dict[int, list[str]] = {}
 
     def __repr__(self):
         """Return a concise textual representation."""
         return f"<{self.cluster_name} {self.__class__.__name__}>"
+
+    def _track_temp_file(self, job_id: int, filepath: str) -> None:
+        """Track a temporary file for a specific job."""
+        if job_id not in self._temp_files_by_job:
+            self._temp_files_by_job[job_id] = []
+        if filepath not in self._temp_files_by_job[job_id]:
+            self._temp_files_by_job[job_id].append(filepath)
+
+    def _cleanup_temp_files_for_job(self, job_id: int) -> None:
+        """Clean up temporary files for a specific job."""
+        if job_id not in self._temp_files_by_job:
+            return
+            
+        import os
+        for filepath in self._temp_files_by_job[job_id]:
+            try:
+                if os.path.exists(filepath):
+                    os.unlink(filepath)
+                    print(f"Cleaned up temporary file: {filepath}")
+            except Exception as e:
+                print(f"Warning: Could not clean up {filepath}: {e}")
+        
+        # Remove job from tracking
+        del self._temp_files_by_job[job_id]
+
+    def _should_cleanup_temp_files(self, config: dict) -> bool:
+        """Check if temporary files should be cleaned up based on config."""
+        return config.get('cleanup_temp_files', True)
 
     def submit(self, config: dict):
         """Submit a job described by ``config``.
@@ -80,17 +110,22 @@ class BaseSubmitor(ABC):
         config = self.validate_config(config)
         block = config.get("block", False)
         remote = config.get("remote", False)
+        cleanup_enabled = self._should_cleanup_temp_files(config)
+        
         if remote:
             job_id = self.remote_submit(**config)
         else:
             job_id = self.local_submit(**config)
-        return self.after_submit(job_id, block)
+        return self.after_submit(job_id, block, cleanup_enabled)
 
-    def after_submit(self, job_id: int, block: bool):
+    def after_submit(self, job_id: int, block: bool, cleanup_enabled: bool = True):
         """Handle a newly submitted job."""
         self.query(job_id=job_id)
         if block:
             self.block_one_until_complete(job_id)
+            # Clean up temp files after blocking job completes
+            if cleanup_enabled:
+                self._cleanup_temp_files_for_job(job_id)
         return job_id
 
     @abstractmethod

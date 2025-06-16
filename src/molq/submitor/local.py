@@ -17,6 +17,7 @@ class LocalSubmitor(BaseSubmitor):
         conda_env: str | None = None,
         quiet: bool = False,
         block: bool = False,
+        cleanup_temp_files: bool = True,
         # Unified ResourceSpec parameters (mostly ignored for local execution)
         cpu_count: int | None = None,
         memory: str | None = None,
@@ -61,12 +62,20 @@ class LocalSubmitor(BaseSubmitor):
             cwd=cwd,
             **spparams,
         )  # non-blocking
+        
+        job_id = int(proc.pid)
+        
+        # Track temporary script file for cleanup
+        self._track_temp_file(job_id, str(script_path))
+        
         if block:
             proc.wait()
             if proc.returncode != 0:
                 raise RuntimeError(f"Job {job_name} failed with return code {proc.returncode}")
+            
+            # Don't clean up here - let BaseSubmitor.after_submit handle it
+            # This ensures consistent cleanup behavior across all submitters
 
-        job_id = int(proc.pid)
         return job_id
 
     def remote_submit(
@@ -75,6 +84,7 @@ class LocalSubmitor(BaseSubmitor):
         cmd: str | list[str],
         cwd: str | Path | None = None,
         block: bool = False,
+        cleanup_temp_files: bool = True,
         **resource_kwargs,
     ) -> int:
         """Local submitter doesn't support remote submission."""
@@ -154,4 +164,7 @@ class LocalSubmitor(BaseSubmitor):
         proc = subprocess.run(cmd, capture_output=True)
         if proc.returncode != 0:
             raise RuntimeError(f"Failed to cancel job {job_id}: {proc.stderr.decode()}")
+        
+        # Clean up temp files when job is cancelled
+        self._cleanup_temp_files_for_job(job_id)
 

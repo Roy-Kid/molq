@@ -15,6 +15,7 @@ class SlurmSubmitor(BaseSubmitor):
         cmd: str | list[str],
         cwd: str | Path | None = None,
         block: bool = False,
+        cleanup_temp_files: bool = True,
         # Traditional SLURM parameters (for backward compatibility)
         n_cores: int | None = None,  # --ntasks
         memory_max: int | None = None,  # --mem
@@ -78,16 +79,25 @@ class SlurmSubmitor(BaseSubmitor):
 
         try:
             proc = subprocess.run(submit_cmd, capture_output=True)
-            # script_path.unlink()
+            
+            # Get job ID first
+            if test_only:
+                # example output:
+                # sbatch: Job 3676091 to start at 2024-04-26T20:02:12 using 256 processors on nodes nid001000 in partition main
+                job_id = int(proc.stderr.split()[2])
+            else:
+                job_id = int(proc.stdout)
+            
+            # Track script file for cleanup
+            self._track_temp_file(job_id, str(script_path))
+            
         except subprocess.CalledProcessError as e:
+            # If submission fails, clean up script immediately
+            try:
+                script_path.unlink()
+            except:
+                pass
             raise e
-
-        if test_only:
-            # example output:
-            # sbatch: Job 3676091 to start at 2024-04-26T20:02:12 using 256 processors on nodes nid001000 in partition main
-            job_id = int(proc.stderr.split()[2])
-        else:
-            job_id = int(proc.stdout)
 
         return job_id
 
@@ -97,6 +107,7 @@ class SlurmSubmitor(BaseSubmitor):
         cmd: str | list[str],
         cwd: str | Path | None = None,
         block: bool = False,
+        cleanup_temp_files: bool = True,
         **resource_kwargs,
     ) -> int:
         """Submit a job to a remote SLURM cluster (not implemented yet)."""
@@ -192,6 +203,9 @@ class SlurmSubmitor(BaseSubmitor):
         proc = subprocess.run(cmd, capture_output=True)
         if proc.returncode != 0:
             raise RuntimeError(f"Failed to cancel job {job_id}: {proc.stderr.decode()}")
+        
+        # Clean up temp files when job is cancelled
+        self._cleanup_temp_files_for_job(job_id)
 
     def _prepare_slurm_config(
         self,

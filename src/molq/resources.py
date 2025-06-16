@@ -7,17 +7,9 @@ based on Pydantic models that abstracts differences between various job schedule
 
 from typing import Dict, List, Union, Any, Optional, Literal, Type
 import re
-from datetime import timedelta
 from enum import Enum
 from pathlib import Path
-
-try:
-    from pydantic import BaseModel, Field, field_validator, model_validator, ConfigDict
-except ImportError:
-    raise ImportError(
-        "Pydantic is required for resource specifications. "
-        "Install it with: pip install pydantic"
-    )
+from pydantic import BaseModel, Field, field_validator, model_validator, ConfigDict
 
 
 class PriorityLevel(str, Enum):
@@ -246,6 +238,12 @@ class BaseResourceSpec(BaseModel):
     job_name: Optional[str] = Field(
         None,
         description="Human-readable job name"
+    )
+    
+    # Temporary file management
+    cleanup_temp_files: bool = Field(
+        True,
+        description="Whether to clean up temporary script files after job completion"
     )
     
     # Output redirection
