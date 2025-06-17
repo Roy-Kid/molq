@@ -29,18 +29,12 @@ class LocalSubmitor(BaseSubmitor):
         email: str | None = None,
         email_events: list | None = None,
         priority: str | None = None,
-        # Aliases for compatibility
-        workdir: str | Path | None = None,
         **kwargs,
     ) -> int:
         """Run ``cmd`` locally by generating and executing a shell script."""
 
         if isinstance(cmd, str):
             cmd = [cmd]
-
-        # Handle workdir alias
-        if workdir is not None:
-            cwd = workdir
 
         if cwd is None:
             script_path = Path(script_name)

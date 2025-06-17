@@ -95,6 +95,6 @@ class TestSlurmAdapter:
         mocker.patch.object(subprocess, "run", MockedSlurm.run)
 
         submitor = SlurmSubmitor("test_submitor")
-        job_id = submitor.submit({"cmd": ["sleep 1"], "job_name": "test1", "n_cores": 1, "is_block": False})  # not block inplace
-        submitor.monitor(interval=1)  # block here
+        job_id = submitor.submit({"cmd": ["sleep 1"], "job_name": "test1", "cpu_count": 1, "is_block": False})  # not block inplace
+        submitor.monitor_all(interval=1)  # block here
         assert isinstance(job_id, int)

@@ -17,17 +17,12 @@ class SlurmSubmitor(BaseSubmitor):
         cwd: str | Path | None = None,
         block: bool = False,
         cleanup_temp_files: bool = True,
-        # Traditional SLURM parameters (for backward compatibility)
-        n_cores: int | None = None,  # --ntasks
-        memory_max: int | None = None,  # --mem
-        run_time_max: str | int | None = None,  # --time
-        partition: str | None = None,  # --partition
-        account: str | None = None,  # --account
         # Unified resource specification parameters
         cpu_count: int | None = None,
         memory: str | None = None,
         time_limit: str | None = None,
         queue: str | None = None,
+        account: str | None = None,
         gpu_count: int | None = None,
         gpu_type: str | None = None,
         email: str | None = None,
@@ -40,18 +35,14 @@ class SlurmSubmitor(BaseSubmitor):
         **slurm_kwargs,
     ) -> int:
         """Create a SLURM script and submit it with ``sbatch``."""
-        # Convert unified parameters to traditional SLURM parameters
+        # Convert unified parameters to SLURM configuration
         submit_config = self._prepare_slurm_config(
             job_name=job_name,
-            n_cores=n_cores,
-            memory_max=memory_max,
-            run_time_max=run_time_max,
-            partition=partition,
-            account=account,
             cpu_count=cpu_count,
             memory=memory,
             time_limit=time_limit,
             queue=queue,
+            account=account,
             gpu_count=gpu_count,
             gpu_type=gpu_type,
             email=email,
@@ -372,15 +363,11 @@ class SlurmSubmitor(BaseSubmitor):
     def _prepare_slurm_config(
         self,
         job_name: str,
-        n_cores: int | None = None,
-        memory_max: int | None = None,
-        run_time_max: str | int | None = None,
-        partition: str | None = None,
-        account: str | None = None,
         cpu_count: int | None = None,
         memory: str | None = None,
         time_limit: str | None = None,
         queue: str | None = None,
+        account: str | None = None,
         gpu_count: int | None = None,
         gpu_type: str | None = None,
         email: str | None = None,
@@ -393,36 +380,23 @@ class SlurmSubmitor(BaseSubmitor):
         submit_config = slurm_kwargs.copy()
         submit_config["--job-name"] = job_name
         
-        # Use unified parameters if available, otherwise fall back to traditional ones
-        final_cpu_count = cpu_count or n_cores
-        final_memory = memory or memory_max
-        final_time = time_limit or run_time_max
-        final_partition = queue or partition
-        
         # Set CPU count
-        if final_cpu_count:
-            submit_config["--ntasks"] = final_cpu_count
+        if cpu_count:
+            submit_config["--ntasks"] = cpu_count
         
         # Handle memory conversion
-        if final_memory:
-            if isinstance(final_memory, str):
-                # Convert human-readable format to SLURM format
-                submit_config["--mem"] = self._convert_memory_format(final_memory)
-            else:
-                submit_config["--mem"] = final_memory
+        if memory:
+            submit_config["--mem"] = self._convert_memory_format(memory)
         
         # Handle time conversion
-        if final_time:
-            if isinstance(final_time, str):
-                submit_config["--time"] = self._convert_time_format(final_time)
-            else:
-                submit_config["--time"] = final_time
+        if time_limit:
+            submit_config["--time"] = self._convert_time_format(time_limit)
         
         # Set other parameters
-        options = {
-            "--partition": final_partition,
-            "--account": account,
-        }
+        if queue:
+            submit_config["--partition"] = queue
+        if account:
+            submit_config["--account"] = account
         
         # GPU resources
         if gpu_count:
@@ -447,9 +421,6 @@ class SlurmSubmitor(BaseSubmitor):
         # Exclusive node
         if exclusive_node:
             submit_config["--exclusive"] = ""
-        
-        # Add non-None options
-        submit_config.update({k: v for k, v in options.items() if v is not None})
         
         return submit_config
     
