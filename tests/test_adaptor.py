@@ -9,14 +9,19 @@ from pathlib import Path
 class MockedSlurm:
 
     @staticmethod
-    def run(cmd, capture_output) -> subprocess.CompletedProcess:
-
+    def run(cmd, capture_output=None, **kwargs) -> subprocess.CompletedProcess:
         if cmd[0] == "sbatch":
             return MockedSlurm.sbatch(cmd)
         elif cmd[0] == "squeue":
             return MockedSlurm.squeue(cmd)
         elif cmd[0] == "scancel":
             return MockedSlurm.scancel(cmd)
+        # Default mock if command is not recognized
+        mock = MagicMock()
+        mock.returncode = 1
+        mock.stdout = b""
+        mock.stderr = b"Unknown command"
+        return mock
     
     @staticmethod
     def sbatch(cmd):

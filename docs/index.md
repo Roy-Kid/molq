@@ -24,53 +24,70 @@
 
     Clean Python API with comprehensive examples and documentation
 
-    [:octicons-arrow-right-24: Examples](examples/cmdline.md)
+    [:octicons-arrow-right-24: Examples](examples/basic-usage.md)
 
--   :material-cog:{ .lg .middle } **Flexible Configuration**
+-   :material-database:{ .lg .middle } **Job Management**
 
     ---
 
-    Configurable job parameters and execution environments
+    Unified job tracking with SQLite database and rich CLI interface
 
-    [:octicons-arrow-right-24: Configuration](user-guide/configuration.md)
+    [:octicons-arrow-right-24: Job Management](user-guide/job-management.md)
 
 </div>
 
 ## What is Molq?
 
-**Molq** is a small helper library that connects [Hamilton](https://hamilton.dagworks.io) with local or cluster-based job runners. It provides a couple of decorators so you can launch jobs or run shell commands straight from your dataflow code.
+**Molq** is a Python library that bridges [Hamilton](https://hamilton.dagworks.io) dataflows with job schedulers and execution environments. It provides decorators and tools to seamlessly submit, monitor, and manage computational jobs from your data pipelines.
 
 ### Key Features
 
-- **Simple Decorators**: Use `@submit` and `@cmdline` decorators to execute jobs
-- **Multiple Backends**: Support for local execution and SLURM clusters
-- **Generator-Based**: Leverage Python generators for flexible job control
-- **Hamilton Integration**: Designed specifically for Hamilton workflows
-- **Extensible**: Easy to add support for new job schedulers
+- **Decorator-Based API**: Use `@submit` and `@cmdline` decorators to execute jobs seamlessly
+- **Multiple Execution Backends**: Support for local processes and SLURM clusters
+- **Unified Job Management**: SQLite-based job database with automatic status tracking
+- **Rich CLI Interface**: Command-line tools for job submission, monitoring, and management
+- **Hamilton Integration**: Purpose-built for Hamilton dataflow orchestration
+- **Extensible Architecture**: Easy to add support for new schedulers and environments
+- **Resource Management**: Flexible resource specification and configuration
 
 ## Quick Example
 
-```python title="Basic Usage"
-from typing import Generator
-import subprocess
-from molq import submit, cmdline
+```python title="Basic Job Submission"
+from molq import submit
+from molq.resources import BaseResourceSpec
 
-# Register the local machine as a cluster
-local = submit('local', 'local')
+# Create a local submitter
+local = submit('my_project', 'local')
 
 @local
-def run_job() -> Generator[dict, int, int]:
-    job_id = yield {
-        'cmd': ['echo', 'hello'],
-        'job_name': 'demo',
-        'block': True,
-    }
+def run_analysis():
+    """Submit a data analysis job."""
+    spec = BaseResourceSpec(
+        cmd=['python', 'analyze_data.py', '--input', 'data.csv'],
+        job_name='data-analysis',
+        cpu_count=4,
+        memory='8GB'
+    )
+    job_id = yield spec.model_dump()
     return job_id
 
-@cmdline
-def echo_node() -> Generator[dict, subprocess.CompletedProcess, str]:
-    cp = yield {'cmd': 'echo world', 'block': True}
-    return cp.stdout.decode().strip()
+# Submit and get job ID
+job_id = run_analysis()
+print(f"Job submitted with ID: {job_id}")
+```
+
+```bash title="CLI Job Management"
+# List all active jobs
+molq list
+
+# Check specific job status
+molq status 12345
+
+# Cancel a running job
+molq cancel 12345
+
+# Submit job via CLI
+molq submit --scheduler local --cmd "echo hello" --job-name test
 ```
 
 !!! tip "Ready to get started?"

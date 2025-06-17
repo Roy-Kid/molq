@@ -1,42 +1,42 @@
-# Molq 统一资源规范系统 - 实现总结
+# Molq Unified Resource Specification System - Implementation Summary
 
-## 🎯 任务完成情况
+## 🎯 Task Completion Status
 
-根据用户需求，成功设计并实现了一套基于 Pydantic 的分层资源描述规范系统，实现了以下关键目标：
+Successfully designed and implemented a Pydantic-based layered resource specification system that achieves the following key objectives:
 
-### ✅ 核心特性
+### ✅ Core Features
 
-1. **统一、用户友好的接口**
-   - 基于 SLURM 但兼容 PBS/LSF
-   - 参数命名直观（如 `cpu_count`, `memory`, `time_limit`）
-   - 类型安全的 Pydantic 模型
+1. **Unified, User-Friendly Interface**
+   - SLURM-based with PBS/LSF compatibility
+   - Intuitive parameter naming (`cpu_count`, `memory`, `time_limit`)
+   - Type-safe Pydantic models
 
-2. **人类可读格式支持**
-   - 时间：`"2h30m"`, `"1d4h"`, `"02:30:00"`
-   - 内存：`"8GB"`, `"512MB"`, `"2.5TB"`
-   - 自动格式验证和转换
+2. **Human-Readable Format Support**
+   - Time: `"2h30m"`, `"1d4h"`, `"02:30:00"`
+   - Memory: `"8GB"`, `"512MB"`, `"2.5TB"`
+   - Automatic format validation and conversion
 
-3. **分层抽象设计**
-   - `BaseResourceSpec`: 本地执行（`workdir`, `env`, `cmd`）
-   - `ComputeResourceSpec`: 计算资源（CPU、内存、时间）
-   - `ClusterResourceSpec`: 集群功能（队列、GPU、优先级）
+3. **Layered Abstract Design**
+   - `BaseResourceSpec`: Local execution (`workdir`, `env`, `cmd`)
+   - `ComputeResourceSpec`: Compute resources (CPU, memory, time)
+   - `ClusterResourceSpec`: Cluster features (queue, GPU, priority)
 
-4. **易用性和可扩展性**
-   - 便利函数（`create_gpu_job`, `create_array_job`）
-   - 自动参数验证（GPU 一致性、CPU 分布）
-   - 调度器自动映射
+4. **Usability and Extensibility**
+   - Convenience functions (`create_gpu_job`, `create_array_job`)
+   - Automatic parameter validation (GPU consistency, CPU distribution)
+   - Automatic scheduler mapping
 
-## 🏗️ 系统架构
+## 🏗️ System Architecture
 
 ```
-BaseResourceSpec (本地执行)
+BaseResourceSpec (Local Execution)
 ├── cmd, workdir, env, job_name
 ├── output_file, error_file, block
 │
-└── ComputeResourceSpec (计算资源)
+└── ComputeResourceSpec (Compute Resources)
     ├── cpu_count, memory, time_limit
     │
-    └── ClusterResourceSpec (集群功能)
+    └── ClusterResourceSpec (Cluster Features)
         ├── queue, node_count, cpu_per_node
         ├── gpu_count, gpu_type
         ├── priority, exclusive_node
@@ -45,90 +45,90 @@ BaseResourceSpec (本地执行)
         └── array_spec, dependency
 ```
 
-## 📊 调度器支持
+## 📊 Scheduler Support
 
-| 功能 | SLURM | PBS/Torque | LSF |
-|------|-------|------------|-----|
-| 基础参数 | ✅ | ✅ | ✅ |
-| GPU 资源 | ✅ | ⚠️ | ⚠️ |
-| 数组作业 | ✅ | ✅ | ✅ |
-| 邮件通知 | ✅ | ✅ | ✅ |
-| 优先级 | ✅ | ✅ | ✅ |
-| 节点约束 | ✅ | ⚠️ | ⚠️ |
+| Feature | SLURM | PBS/Torque | LSF |
+|---------|-------|------------|-----|
+| Basic Parameters | ✅ | ✅ | ✅ |
+| GPU Resources | ✅ | ⚠️ | ⚠️ |
+| Array Jobs | ✅ | ✅ | ✅ |
+| Email Notifications | ✅ | ✅ | ✅ |
+| Priority | ✅ | ✅ | ✅ |
+| Node Constraints | ✅ | ⚠️ | ⚠️ |
 
-## 💻 代码实现
+## 💻 Code Implementation
 
-### 核心模块结构
+### Core Module Structure
 
 ```
 src/molq/resources.py
-├── TimeParser/MemoryParser     # 格式解析工具
-├── PriorityLevel/EmailEvent     # 枚举类型
-├── BaseResourceSpec            # 基础规范
-├── ComputeResourceSpec         # 计算规范  
-├── ClusterResourceSpec         # 集群规范
-├── SlurmMapper/PbsMapper/LsfMapper  # 调度器映射
-├── ResourceManager             # 管理器
-└── 便利函数 (create_*_job)      # 快速创建
+├── TimeParser/MemoryParser     # Format parsing utilities
+├── PriorityLevel/EmailEvent    # Enumeration types
+├── BaseResourceSpec            # Base specification
+├── ComputeResourceSpec         # Compute specification
+├── ClusterResourceSpec         # Cluster specification
+├── SlurmMapper/PbsMapper/LsfMapper  # Scheduler mappers
+├── ResourceManager             # Resource manager
+└── Convenience functions (create_*_job)  # Quick creation helpers
 ```
 
-### 关键特性
+### Key Features
 
-1. **Pydantic v2 支持**
+1. **Pydantic v2 Support**
    ```python
-   # 使用最新的 Pydantic 语法
+   # Using latest Pydantic syntax
    @field_validator('memory')
    @model_validator(mode='after')
    ```
 
-2. **类型安全**
+2. **Type Safety**
    ```python
    cpu_count: Optional[int] = Field(None, gt=0)
    memory: Optional[str] = Field(None, description="...")
    priority: Union[PriorityLevel, str] = PriorityLevel.NORMAL
    ```
 
-3. **自动验证**
+3. **Automatic Validation**
    ```python
-   # GPU 一致性检查
+   # GPU consistency check
    if self.gpu_type and not self.gpu_count:
        raise ValueError("gpu_type specified but gpu_count is not set")
    
-   # CPU 分布检查  
+   # CPU distribution check
    if self.cpu_count != self.cpu_per_node * self.node_count:
        raise ValueError("CPU count mismatch")
    ```
 
-## 🧪 测试覆盖
+## 🧪 Test Coverage
 
-创建了完整的测试套件（36个测试用例）：
+Created comprehensive test suite (36 test cases):
 
-- ✅ 时间/内存解析器测试
-- ✅ 基础/计算/集群规范测试
-- ✅ SLURM/PBS/LSF 映射器测试  
-- ✅ 资源管理器测试
-- ✅ 便利函数测试
-- ✅ 集成场景测试
+- ✅ Time/Memory parser tests
+- ✅ Base/Compute/Cluster specification tests
+- ✅ SLURM/PBS/LSF mapper tests
+- ✅ Resource manager tests
+- ✅ Convenience function tests
+- ✅ Integration scenario tests
 
-所有测试通过率：**100%** (36/36)
+Test pass rate: **100%** (36/36)
 
-## 📚 文档完善
+## 📚 Documentation
 
-1. **用户指南**
-   - `layered-resource-specs.md` - 分层设计使用指南
-   - `resource-specification.md` - 详细规范说明
+1. **User Guides**
+   - `layered-resource-specs.md` - Layered design usage guide
+   - `resource-specification.md` - Detailed specification documentation
 
-2. **示例文档**
-   - `resource-specification.md` - 实用示例
-   - `resource_spec_demo.py` - 完整演示脚本
+2. **Example Documentation**
+   - `resource-specification.md` - Practical examples
+   - `resource_spec_demo.py` - Complete demonstration script
 
-3. **API 文档**
-   - 完整的类型注解和文档字符串
-   - 参数说明和最佳实践
+3. **API Documentation**
+   - Complete type annotations and docstrings
+   - Parameter descriptions and best practices
 
-## 🚀 使用示例
+## 🚀 Usage Examples
 
-### 简单本地执行
+### Simple Local Execution
 ```python
 BaseResourceSpec(
     cmd="python train.py",
@@ -137,7 +137,7 @@ BaseResourceSpec(
 )
 ```
 
-### 复杂集群作业
+### Complex Cluster Job
 ```python
 ClusterResourceSpec(
     cmd="python distributed_train.py",
@@ -150,23 +150,23 @@ ClusterResourceSpec(
 )
 ```
 
-### 自动调度器适配
+### Automatic Scheduler Adaptation
 ```python
-# 同一规范，多种调度器
+# Same specification, multiple schedulers
 slurm_args = ResourceManager.format_command_args(spec, "slurm")
 pbs_args = ResourceManager.format_command_args(spec, "pbs")
 lsf_args = ResourceManager.format_command_args(spec, "lsf")
 ```
 
-## 🎉 成果亮点
+## 🎉 Achievement Highlights
 
-1. **完全实现用户需求**：基于 Pydantic 的分层设计 ✅
-2. **直观易用**：本地/计算/集群三层抽象，符合使用场景 ✅  
-3. **类型安全**：完整的类型注解和运行时验证 ✅
-4. **人性化格式**：支持 `"2h30m"` 等直观表示 ✅
-5. **调度器兼容**：SLURM/PBS/LSF 统一接口 ✅
-6. **可扩展性**：基于 Pydantic，易于扩展新功能 ✅
-7. **文档完善**：详细的使用指南和示例 ✅
-8. **测试完备**：100% 测试覆盖率 ✅
+1. **Fully Implemented User Requirements**: Pydantic-based layered design ✅
+2. **Intuitive and Easy to Use**: Three-layer abstraction (local/compute/cluster) ✅
+3. **Type Safe**: Complete type annotations and runtime validation ✅
+4. **Human-Friendly Formats**: Support for intuitive formats like `"2h30m"` ✅
+5. **Scheduler Compatibility**: Unified interface for SLURM/PBS/LSF ✅
+6. **Extensibility**: Pydantic-based, easy to extend with new features ✅
+7. **Comprehensive Documentation**: Detailed usage guides and examples ✅
+8. **Complete Testing**: 100% test coverage ✅
 
-这个实现为 Molq 项目提供了一个强大而灵活的资源规范系统，既满足了简单场景的易用性需求，又具备了复杂场景的完整功能支持！
+This implementation provides the Molq project with a powerful and flexible resource specification system that meets both the ease-of-use requirements for simple scenarios and the complete functionality support for complex use cases!

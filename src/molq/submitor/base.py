@@ -328,3 +328,236 @@ class BaseSubmitor(ABC):
         """
         for i, status in enumerate(self.jobs.values(), 1):
             print(f"{status} | {i}/{len(self.GLOBAL_JOB_POOL)} \r", flush=True)
+
+    @staticmethod
+    def print_jobs(jobs, verbose=False):
+        """Pretty print a list of job dicts. If verbose, print all fields. Else, use rich table if available."""
+        if verbose:
+            if not jobs:
+                print("No jobs found.")
+                return
+            for job in jobs:
+                print("-"*40)
+                for k, v in job.items():
+                    print(f"{k}: {v}")
+        else:
+            try:
+                from rich.table import Table
+                from rich.console import Console
+                table = Table(title="Molq Jobs")
+                table.add_column("SECTION", style="cyan", no_wrap=True)
+                table.add_column("JOB_ID", style="magenta")
+                table.add_column("NAME", style="green")
+                table.add_column("STATUS", style="yellow")
+                table.add_column("SUBMIT_TIME", style="white")
+                table.add_column("END_TIME", style="white")
+                for job in jobs:
+                    table.add_row(
+                        str(job['section']),
+                        str(job['job_id']),
+                        str(job['name']),
+                        str(job['status']),
+                        str(job['submit_time']) if job['submit_time'] else "",
+                        str(job['end_time']) if job['end_time'] else ""
+                    )
+                console = Console()
+                if not jobs:
+                    console.print("[bold red]No jobs found.[/bold red]")
+                else:
+                    console.print(table)
+            except ImportError:
+                if not jobs:
+                    print("No jobs found.")
+                    return
+                print(f"{'SECTION':<15} {'JOB_ID':<10} {'NAME':<20} {'STATUS':<10}")
+                print("-"*60)
+                for job in jobs:
+                    print(f"{job['section']:<15} {job['job_id']:<10} {job['name']:<20} {job['status']:<10}")
+
+    @staticmethod
+    def _init_job_db():
+        """Initialize the sqlite job database and create the jobs table if it does not exist."""
+        import sqlite3
+        from pathlib import Path
+        molq_dir = Path.home() / ".molq"
+        molq_dir.mkdir(exist_ok=True)
+        db_path = molq_dir / "jobs.db"
+        conn = sqlite3.connect(db_path)
+        c = conn.cursor()
+        # Add command and work_dir columns
+        c.execute('''CREATE TABLE IF NOT EXISTS jobs (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            section TEXT,
+            job_id INTEGER,
+            name TEXT,
+            status TEXT,
+            command TEXT,
+            work_dir TEXT,
+            submit_time REAL,
+            end_time REAL,
+            extra_info TEXT
+        )''')
+        # Check if columns exist before trying to add them to avoid errors if already present
+        c.execute("PRAGMA table_info(jobs)")
+        columns = [column[1] for column in c.fetchall()]
+        if 'command' not in columns:
+            c.execute("ALTER TABLE jobs ADD COLUMN command TEXT")
+        if 'work_dir' not in columns:
+            c.execute("ALTER TABLE jobs ADD COLUMN work_dir TEXT")
+        conn.commit()
+        conn.close()
+
+    @staticmethod
+    def _get_db_conn():
+        """Get a connection to the sqlite job database."""
+        import sqlite3
+        from pathlib import Path
+        db_path = Path.home() / ".molq" / "jobs.db"
+        return sqlite3.connect(db_path)
+
+    def register_job(self, section: str, job_id: int, name: str, status: JobStatus.Status, command: str, work_dir: str, submit_time: float, extra_info: Optional[dict] = None):
+        """Register a new job in the database."""
+        import time, json
+        BaseSubmitor._init_job_db() # Ensures table is up-to-date
+        conn = BaseSubmitor._get_db_conn()
+        c = conn.cursor()
+        c.execute("INSERT INTO jobs (section, job_id, name, status, command, work_dir, submit_time, end_time, extra_info) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                  (section, job_id, name, status.name, command, work_dir, submit_time, None, json.dumps(extra_info or {})))
+        conn.commit()
+        conn.close()
+
+    def update_job(self, section: str, job_id: int, status: Optional[JobStatus.Status] = None, end_time: Optional[float] = None, extra_info: Optional[dict] = None):
+        """Update the status or information of a job in the database."""
+        import time, json
+        BaseSubmitor._init_job_db() # Ensures table is up-to-date
+        conn = BaseSubmitor._get_db_conn()
+        c = conn.cursor()
+        sql = "UPDATE jobs SET "
+        fields = []
+        values = []
+        if status is not None:
+            fields.append("status = ?")
+            values.append(status.name) # Store status as string (enum member name)
+        if end_time is not None:
+            fields.append("end_time = ?")
+            values.append(end_time)
+        if extra_info is not None:
+            # Ensure existing extra_info is loaded, updated, then dumped
+            # This requires fetching the current extra_info first if we want to merge
+            # For simplicity now, this will overwrite extra_info.
+            # A more robust update would fetch, merge, then save.
+            fields.append("extra_info = ?")
+            values.append(json.dumps(extra_info))
+        
+        if not fields: # Nothing to update
+            conn.close()
+            return
+
+        sql += ", ".join(fields) + " WHERE section = ? AND job_id = ?"
+        values.extend([section, job_id])
+        c.execute(sql, tuple(values))
+        conn.commit()
+        conn.close()
+
+    def remove_job(self, section, job_id):
+        """Remove a job from the database."""
+        BaseSubmitor._init_job_db()
+        conn = BaseSubmitor._get_db_conn()
+        c = conn.cursor()
+        c.execute("DELETE FROM jobs WHERE section = ? AND job_id = ?", (section, job_id))
+        conn.commit()
+        conn.close()
+
+    @staticmethod
+    def list_jobs(section=None, all_history=False):
+        """Query jobs from the DB and return a list of dicts."""
+        import json
+        import sqlite3
+        from pathlib import Path
+        db_path = Path.home() / ".molq" / "jobs.db"
+        if not db_path.exists():
+            BaseSubmitor._init_job_db()
+
+        # Re-check after potential init
+        if not db_path.exists(): # Should not happen if _init_job_db worked
+             return []
+
+        conn = BaseSubmitor._get_db_conn()
+        conn.row_factory = sqlite3.Row # Access columns by name
+        c = conn.cursor()
+        
+        # Ensure table structure is checked/updated by calling _init_job_db
+        # This is slightly inefficient to call _init_job_db on every list_jobs,
+        # but ensures schema migrations are handled gracefully if the table exists but is old.
+        # A better approach would be a dedicated migration path.
+        # For now, creating a dummy instance to call _init_job_db.
+        # Consider moving _init_job_db to be a static method or a module-level function.
+        # However, _init_job_db is an instance method.
+        # Let's assume _init_job_db has been called appropriately elsewhere (e.g. Submitor init or CLI)
+        BaseSubmitor._init_job_db()
+
+        query = "SELECT section, job_id, name, status, command, work_dir, submit_time, end_time, extra_info FROM jobs"
+        where_clauses = []
+        params = []
+        if section:
+            where_clauses.append("section = ?")
+            params.append(section)
+        if not all_history:
+            where_clauses.append("status != ?")
+            params.append(JobStatus.Status.COMPLETED.name) # Exclude completed jobs by default
+
+        if where_clauses:
+            query += " WHERE " + " AND ".join(where_clauses)
+
+        c.execute(query, tuple(params))
+        rows = c.fetchall()
+        conn.close()
+
+        # Convert rows to list of dicts
+        jobs = []
+        for row in rows:
+            job = {key: row[key] for key in row.keys()}
+            job['submit_time'] = time.strftime("%Y-%m-%d %H:%M:%S", time.localtime(job['submit_time']))
+            if job['end_time'] is not None:
+                job['end_time'] = time.strftime("%Y-%m-%d %H:%M:%S", time.localtime(job['end_time']))
+            job['extra_info'] = json.loads(job['extra_info'] or "{}")
+            jobs.append(job)
+
+        return jobs
+
+    def refresh_all_jobs(self, section: str):
+        """Refresh status of all unfinished jobs in DB for this section."""
+        BaseSubmitor._init_job_db()
+        
+        unfinished_jobs_from_db = self.list_jobs(section=section, all_history=False)
+
+        for job_dict in unfinished_jobs_from_db:
+            job_id_to_refresh = job_dict['job_id']
+            current_db_status_str = job_dict['status']
+            updated_job_status_obj = self.refresh_job_status(job_id_to_refresh)
+
+            if updated_job_status_obj:
+                new_status_enum = updated_job_status_obj.status
+                new_status_str = new_status_enum.name
+                
+                if new_status_str != current_db_status_str:
+                    import time
+                    end_time = None
+                    if new_status_enum in [JobStatus.Status.COMPLETED, JobStatus.Status.FAILED, JobStatus.Status.FINISHED]:
+                        # Use end_time from others if present, else use current time
+                        end_time_str = updated_job_status_obj.others.get('end_time')
+                        if end_time_str:
+                            try:
+                                end_time = float(end_time_str)
+                            except ValueError:
+                                end_time = time.time()
+                        else:
+                            end_time = time.time()
+                    extra_info_update = updated_job_status_obj.others
+                    self.update_job(
+                        section=section,
+                        job_id=job_id_to_refresh,
+                        status=new_status_enum,
+                        end_time=end_time,
+                        extra_info=extra_info_update
+                    )

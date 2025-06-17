@@ -1,8 +1,7 @@
 """Test cleanup_temp_files functionality in ResourceSpec."""
 
-import tempfile
-import time
 from pathlib import Path
+import pytest
 
 from molq import submit
 from molq.resources import BaseResourceSpec, ComputeResourceSpec
@@ -11,7 +10,7 @@ from molq.resources import BaseResourceSpec, ComputeResourceSpec
 class TestCleanupTempFiles:
     """Test the cleanup_temp_files parameter in ResourceSpec."""
 
-    def test_default_cleanup_enabled(self):
+    def test_default_cleanup_enabled(self, isolated_temp_dir, cleanup_after_test):
         """Test that cleanup is enabled by default."""
         local_submitter = submit('test_cleanup_default', 'local')
         
@@ -32,10 +31,10 @@ class TestCleanupTempFiles:
         assert job_id is not None
         
         # Script should be cleaned up
-        script_path = Path('test_default_cleanup.sh')
+        script_path = isolated_temp_dir / 'test_default_cleanup.sh'
         assert not script_path.exists(), "Script should be cleaned up by default"
 
-    def test_explicit_cleanup_enabled(self):
+    def test_explicit_cleanup_enabled(self, isolated_temp_dir, cleanup_after_test):
         """Test explicit cleanup enabled."""
         local_submitter = submit('test_cleanup_explicit', 'local')
         

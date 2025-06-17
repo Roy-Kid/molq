@@ -37,7 +37,6 @@ theme:
 
   features:
     - navigation.tabs
-    - navigation.tabs.sticky
     - navigation.sections
     - navigation.expand
     - navigation.path
@@ -104,6 +103,21 @@ markdown_extensions:
 plugins:
   - search:
       separator: '[\s\u200b\-_,:!=\[\]()"`/]+|\.(?!\d)|&[lg]t;|(?!\b)(?=[A-Z][a-z])'
+  - mkdocstrings:
+      handlers:
+        python:
+          options:
+            docstring_style: google
+            docstring_options:
+              ignore_init_summary: true
+            merge_init_into_class: true
+            show_submodules: false
+            show_source: false
+            members_order: source
+            group_by_category: true
+            show_category_heading: true
+            show_signature_annotations: true
+            separate_signature: false
 
 extra:
   social:
@@ -123,22 +137,29 @@ nav:
     - Basic Concepts: getting-started/concepts.md
   - User Guide:
     - Decorators: user-guide/decorators.md
+    - Job Management: user-guide/job-management.md
     - Local Execution: user-guide/local-execution.md
     - SLURM Integration: user-guide/slurm-integration.md
     - Resource Specification: user-guide/resource-specification.md
-    - Layered Resource Specs: user-guide/layered-resource-specs.md
     - Configuration: user-guide/configuration.md
   - Examples:
+    - Basic Usage: examples/basic-usage.md
     - Command Line: examples/cmdline.md
     - Local Jobs: examples/local-jobs.md
     - SLURM Jobs: examples/slurm-jobs.md
     - Resource Specification: examples/resource-specification.md
     - Monitoring: examples/monitoring.md
   - API Reference:
+    - Overview: api/index.md
     - Core Functions: api/core.md
-    - Submitters: api/submitters.md
     - Decorators: api/decorators.md
+    - Submitters: api/submitters.md
+    - Resources: api/resources.md
+    - CLI: api/cli.md
   - Development:
+    - Development Guide: development/development.md
+    - Resource Spec Implementation: development/resource-spec-implementation.md
+    - Testing Infrastructure: development/testing-infrastructure.md
     - Contributing: development/contributing.md
     - Testing: development/testing.md
     - Changelog: development/changelog.md

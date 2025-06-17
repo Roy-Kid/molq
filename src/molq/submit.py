@@ -8,7 +8,7 @@ from .submitor.base import BaseSubmitor
 from .base import YieldDecorator
 
 
-def get_submitor(cluster_name: str, cluster_type: str):
+def get_submitor(cluster_name: str, cluster_type: str) -> BaseSubmitor:
     """
     Get the submitor for the given cluster name and type.
 
@@ -20,7 +20,7 @@ def get_submitor(cluster_name: str, cluster_type: str):
         ValueError: if the cluster type is not supported
 
     Returns:
-        _type_: submitor class
+        BaseSubmitor: submitor class
     """
     if cluster_type == "slurm":
         from .submitor.slurm import SlurmSubmitor
