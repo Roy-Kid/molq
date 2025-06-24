@@ -4,11 +4,11 @@ This module exposes the :class:`submit` decorator used to register and submit
 jobs to different compute backends.
 """
 
-from .submitor.base import BaseSubmitor
 from .base import YieldDecorator
+from .submitor.base import BaseSubmitor
 
 
-def get_submitor(cluster_name: str, cluster_type: str):
+def get_submitor(cluster_name: str, cluster_type: str) -> BaseSubmitor:
     """
     Get the submitor for the given cluster name and type.
 
@@ -20,7 +20,7 @@ def get_submitor(cluster_name: str, cluster_type: str):
         ValueError: if the cluster type is not supported
 
     Returns:
-        _type_: submitor class
+        BaseSubmitor: submitor class
     """
     if cluster_type == "slurm":
         from .submitor.slurm import SlurmSubmitor
@@ -57,13 +57,13 @@ class submit(YieldDecorator):
         """Store reference to the submitter created in :py:meth:`__new__`."""
         self._current_submitor = submit.CLUSTERS[cluster_name]
 
-    def validate_yield(self, config):
+    def validate_yield(self, yield_result):
         """Defer validation to the underlying submitter."""
-        return config
+        return yield_result
 
-    def after_yield(self, config):
+    def after_yield(self, yield_result):
         """Submit the job using the current submitter."""
-        return self._current_submitor.submit(config)
+        return self._current_submitor.submit(yield_result)
 
     # ------------------------------------------------------------------
     # helper APIs
@@ -78,4 +78,3 @@ class submit(YieldDecorator):
     def get_cluster(cls, name: str) -> BaseSubmitor:
         """Return the submitor instance for ``name``."""
         return cls.CLUSTERS[name]
-

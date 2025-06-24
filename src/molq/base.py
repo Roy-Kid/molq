@@ -6,13 +6,12 @@ a concrete :class:`CmdlineDecorator` for running shell commands in the middle
 of a generator.
 """
 
-from abc import abstractmethod, ABC
+import subprocess
+from abc import ABC, abstractmethod
 from functools import wraps
 from inspect import isgeneratorfunction, signature
-from typing import Any, Callable, Generator
-
-import subprocess
 from pathlib import Path
+from typing import Any, Callable, Generator
 
 
 class YieldDecorator(ABC):
@@ -23,7 +22,6 @@ class YieldDecorator(ABC):
 
         @wraps(func)
         def wrapper(*args, **kwargs):
-
             if not isgeneratorfunction(func):
                 self.before_call(func)
                 result = func(*args, **kwargs)
@@ -93,4 +91,3 @@ class CmdlineDecorator(YieldDecorator):
 
 # Convenient instance used as ``@cmdline`` decorator
 cmdline = CmdlineDecorator()
-
