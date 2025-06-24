@@ -4,7 +4,7 @@ import enum
 import time
 from abc import ABC, abstractmethod
 from pathlib import Path
-from typing import Any, Callable, Dict, Optional, Union, List
+from typing import Any, Callable, Dict, List, Optional, Union
 
 
 class JobStatus:
@@ -84,8 +84,9 @@ class BaseSubmitor(ABC):
         """Clean up temporary files for a specific job."""
         if job_id not in self._temp_files_by_job:
             return
-            
+
         import os
+
         for filepath in self._temp_files_by_job[job_id]:
             try:
                 if os.path.exists(filepath):
@@ -93,13 +94,13 @@ class BaseSubmitor(ABC):
                     print(f"Cleaned up temporary file: {filepath}")
             except Exception as e:
                 print(f"Warning: Could not clean up {filepath}: {e}")
-        
+
         # Remove job from tracking
         del self._temp_files_by_job[job_id]
 
     def _should_cleanup_temp_files(self, config: dict) -> bool:
         """Check if temporary files should be cleaned up based on config."""
-        return config.get('cleanup_temp_files', True)
+        return config.get("cleanup_temp_files", True)
 
     def submit(self, config: dict):
         """Submit a job described by ``config``.
@@ -111,7 +112,7 @@ class BaseSubmitor(ABC):
         block = config.get("block", False)
         remote = config.get("remote", False)
         cleanup_enabled = self._should_cleanup_temp_files(config)
-        
+
         if remote:
             job_id = self.remote_submit(**config)
         else:
@@ -138,14 +139,14 @@ class BaseSubmitor(ABC):
         **resource_kwargs,
     ) -> int:
         """Submit a job to the local execution environment.
-        
+
         Args:
             job_name: Name for the job
             cmd: Command to execute
             cwd: Working directory (optional)
             block: Whether to wait for completion
             **resource_kwargs: Additional resource specifications
-            
+
         Returns:
             Job identifier
         """
@@ -161,14 +162,14 @@ class BaseSubmitor(ABC):
         **resource_kwargs,
     ) -> int:
         """Submit a job to a remote cluster.
-        
+
         Args:
             job_name: Name for the job
             cmd: Command to execute
             cwd: Working directory (optional)
             block: Whether to wait for completion
             **resource_kwargs: Additional resource specifications
-            
+
         Returns:
             Job identifier
         """
@@ -187,68 +188,85 @@ class BaseSubmitor(ABC):
     def validate_config(self, config: dict) -> dict:
         """Validate and normalize the user provided configuration."""
         # Provide default validation that can be overridden
-        required_fields = ['job_name', 'cmd']
+        required_fields = ["job_name", "cmd"]
         for field in required_fields:
             if field not in config:
-                raise ValueError(f"Required field '{field}' missing from job configuration")
-        
+                raise ValueError(
+                    f"Required field '{field}' missing from job configuration"
+                )
+
         # Normalize cmd to list format
-        if isinstance(config['cmd'], str):
-            config['cmd'] = [config['cmd']]
-            
+        if isinstance(config["cmd"], str):
+            config["cmd"] = [config["cmd"]]
+
         return config
 
     def prepare_resource_spec(self, config: dict) -> dict:
         """Prepare and validate resource specifications.
-        
+
         This method can be overridden by subclasses to handle
         scheduler-specific resource parameter conversion.
         """
         # Extract common ResourceSpec parameters
         resource_params = {}
-        
+
         # Resource parameters that might be in config
         resource_keys = [
-            'cpu_count', 'memory', 'time_limit', 'queue', 'partition',
-            'gpu_count', 'gpu_type', 'email', 'email_events', 'priority',
-            'exclusive_node', 'node_count', 'cpu_per_node', 'memory_per_cpu',
-            'account', 'constraints', 'licenses', 'array_spec', 'workdir'
+            "cpu_count",
+            "memory",
+            "time_limit",
+            "queue",
+            "partition",
+            "gpu_count",
+            "gpu_type",
+            "email",
+            "email_events",
+            "priority",
+            "exclusive_node",
+            "node_count",
+            "cpu_per_node",
+            "memory_per_cpu",
+            "account",
+            "constraints",
+            "licenses",
+            "array_spec",
+            "workdir",
         ]
-        
+
         for key in resource_keys:
             if key in config:
                 resource_params[key] = config[key]
-        
+
         return resource_params
 
     def convert_unified_to_scheduler_params(self, config: dict) -> dict:
         """Convert unified ResourceSpec parameters to scheduler-specific format.
-        
+
         This is a default implementation that can be overridden by subclasses
         to handle scheduler-specific parameter conversion.
-        
+
         Args:
             config: Job configuration with potential unified parameters
-            
+
         Returns:
             Configuration with scheduler-specific parameters
         """
         # Default implementation just passes through
         # Subclasses should override this for specific conversion logic
         return config
-    
+
     def extract_core_params(self, config: dict) -> tuple[str, str | list[str], dict]:
         """Extract core job parameters from configuration.
-        
+
         Returns:
             Tuple of (job_name, cmd, resource_params)
         """
-        job_name = config.get('job_name', 'unnamed_job')
-        cmd = config.get('cmd', [])
-        
+        job_name = config.get("job_name", "unnamed_job")
+        cmd = config.get("cmd", [])
+
         # Extract resource-related parameters
         resource_params = self.prepare_resource_spec(config)
-        
+
         return job_name, cmd, resource_params
 
     def modify_node(self, node: Callable[..., Any]) -> Callable[..., Any]:
@@ -332,13 +350,14 @@ class BaseSubmitor(ABC):
                 print("No jobs found.")
                 return
             for job in jobs:
-                print("-"*40)
+                print("-" * 40)
                 for k, v in job.items():
                     print(f"{k}: {v}")
         else:
             try:
-                from rich.table import Table
                 from rich.console import Console
+                from rich.table import Table
+
                 table = Table(title="Molq Jobs")
                 table.add_column("SECTION", style="cyan", no_wrap=True)
                 table.add_column("JOB_ID", style="magenta")
@@ -348,12 +367,12 @@ class BaseSubmitor(ABC):
                 table.add_column("END_TIME", style="white")
                 for job in jobs:
                     table.add_row(
-                        str(job['section']),
-                        str(job['job_id']),
-                        str(job['name']),
-                        str(job['status']),
-                        str(job['submit_time']) if job['submit_time'] else "",
-                        str(job['end_time']) if job['end_time'] else ""
+                        str(job["section"]),
+                        str(job["job_id"]),
+                        str(job["name"]),
+                        str(job["status"]),
+                        str(job["submit_time"]) if job["submit_time"] else "",
+                        str(job["end_time"]) if job["end_time"] else "",
                     )
                 console = Console()
                 if not jobs:
@@ -365,22 +384,26 @@ class BaseSubmitor(ABC):
                     print("No jobs found.")
                     return
                 print(f"{'SECTION':<15} {'JOB_ID':<10} {'NAME':<20} {'STATUS':<10}")
-                print("-"*60)
+                print("-" * 60)
                 for job in jobs:
-                    print(f"{job['section']:<15} {job['job_id']:<10} {job['name']:<20} {job['status']:<10}")
+                    print(
+                        f"{job['section']:<15} {job['job_id']:<10} {job['name']:<20} {job['status']:<10}"
+                    )
 
     @staticmethod
     def _init_job_db():
         """Initialize the sqlite job database and create the jobs table if it does not exist."""
         import sqlite3
         from pathlib import Path
+
         molq_dir = Path.home() / ".molq"
         molq_dir.mkdir(exist_ok=True)
         db_path = molq_dir / "jobs.db"
         conn = sqlite3.connect(db_path)
         c = conn.cursor()
         # Add command and work_dir columns
-        c.execute('''CREATE TABLE IF NOT EXISTS jobs (
+        c.execute(
+            """CREATE TABLE IF NOT EXISTS jobs (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
             section TEXT,
             job_id INTEGER,
@@ -391,13 +414,14 @@ class BaseSubmitor(ABC):
             submit_time REAL,
             end_time REAL,
             extra_info TEXT
-        )''')
+        )"""
+        )
         # Check if columns exist before trying to add them to avoid errors if already present
         c.execute("PRAGMA table_info(jobs)")
         columns = [column[1] for column in c.fetchall()]
-        if 'command' not in columns:
+        if "command" not in columns:
             c.execute("ALTER TABLE jobs ADD COLUMN command TEXT")
-        if 'work_dir' not in columns:
+        if "work_dir" not in columns:
             c.execute("ALTER TABLE jobs ADD COLUMN work_dir TEXT")
         conn.commit()
         conn.close()
@@ -407,24 +431,58 @@ class BaseSubmitor(ABC):
         """Get a connection to the sqlite job database."""
         import sqlite3
         from pathlib import Path
+
         db_path = Path.home() / ".molq" / "jobs.db"
         return sqlite3.connect(db_path)
 
-    def register_job(self, section: str, job_id: int, name: str, status: JobStatus.Status, command: str, work_dir: str, submit_time: float, extra_info: Optional[dict] = None):
+    def register_job(
+        self,
+        section: str,
+        job_id: int,
+        name: str,
+        status: JobStatus.Status,
+        command: str,
+        work_dir: str,
+        submit_time: float,
+        extra_info: Optional[dict] = None,
+    ):
         """Register a new job in the database."""
-        import time, json
-        BaseSubmitor._init_job_db() # Ensures table is up-to-date
+        import json
+        import time
+
+        BaseSubmitor._init_job_db()  # Ensures table is up-to-date
         conn = BaseSubmitor._get_db_conn()
         c = conn.cursor()
-        c.execute("INSERT INTO jobs (section, job_id, name, status, command, work_dir, submit_time, end_time, extra_info) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
-                  (section, job_id, name, status.name, command, work_dir, submit_time, None, json.dumps(extra_info or {})))
+        c.execute(
+            "INSERT INTO jobs (section, job_id, name, status, command, work_dir, submit_time, end_time, extra_info) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            (
+                section,
+                job_id,
+                name,
+                status.name,
+                command,
+                work_dir,
+                submit_time,
+                None,
+                json.dumps(extra_info or {}),
+            ),
+        )
         conn.commit()
         conn.close()
 
-    def update_job(self, section: str, job_id: int, status: Optional[JobStatus.Status] = None, end_time: Optional[float] = None, extra_info: Optional[dict] = None):
+    def update_job(
+        self,
+        section: str,
+        job_id: int,
+        status: Optional[JobStatus.Status] = None,
+        end_time: Optional[float] = None,
+        extra_info: Optional[dict] = None,
+    ):
         """Update the status or information of a job in the database."""
-        import time, json
-        BaseSubmitor._init_job_db() # Ensures table is up-to-date
+        import json
+        import time
+
+        BaseSubmitor._init_job_db()  # Ensures table is up-to-date
         conn = BaseSubmitor._get_db_conn()
         c = conn.cursor()
         sql = "UPDATE jobs SET "
@@ -432,7 +490,7 @@ class BaseSubmitor(ABC):
         values = []
         if status is not None:
             fields.append("status = ?")
-            values.append(status.name) # Store status as string (enum member name)
+            values.append(status.name)  # Store status as string (enum member name)
         if end_time is not None:
             fields.append("end_time = ?")
             values.append(end_time)
@@ -443,8 +501,8 @@ class BaseSubmitor(ABC):
             # A more robust update would fetch, merge, then save.
             fields.append("extra_info = ?")
             values.append(json.dumps(extra_info))
-        
-        if not fields: # Nothing to update
+
+        if not fields:  # Nothing to update
             conn.close()
             return
 
@@ -459,7 +517,9 @@ class BaseSubmitor(ABC):
         BaseSubmitor._init_job_db()
         conn = BaseSubmitor._get_db_conn()
         c = conn.cursor()
-        c.execute("DELETE FROM jobs WHERE section = ? AND job_id = ?", (section, job_id))
+        c.execute(
+            "DELETE FROM jobs WHERE section = ? AND job_id = ?", (section, job_id)
+        )
         conn.commit()
         conn.close()
 
@@ -469,18 +529,19 @@ class BaseSubmitor(ABC):
         import json
         import sqlite3
         from pathlib import Path
+
         db_path = Path.home() / ".molq" / "jobs.db"
         if not db_path.exists():
             BaseSubmitor._init_job_db()
 
         # Re-check after potential init
-        if not db_path.exists(): # Should not happen if _init_job_db worked
-             return []
+        if not db_path.exists():  # Should not happen if _init_job_db worked
+            return []
 
         conn = BaseSubmitor._get_db_conn()
-        conn.row_factory = sqlite3.Row # Access columns by name
+        conn.row_factory = sqlite3.Row  # Access columns by name
         c = conn.cursor()
-        
+
         # Ensure table structure is checked/updated by calling _init_job_db
         # This is slightly inefficient to call _init_job_db on every list_jobs,
         # but ensures schema migrations are handled gracefully if the table exists but is old.
@@ -499,7 +560,9 @@ class BaseSubmitor(ABC):
             params.append(section)
         if not all_history:
             where_clauses.append("status != ?")
-            params.append(JobStatus.Status.COMPLETED.name) # Exclude completed jobs by default
+            params.append(
+                JobStatus.Status.COMPLETED.name
+            )  # Exclude completed jobs by default
 
         if where_clauses:
             query += " WHERE " + " AND ".join(where_clauses)
@@ -512,10 +575,14 @@ class BaseSubmitor(ABC):
         jobs = []
         for row in rows:
             job = {key: row[key] for key in row.keys()}
-            job['submit_time'] = time.strftime("%Y-%m-%d %H:%M:%S", time.localtime(job['submit_time']))
-            if job['end_time'] is not None:
-                job['end_time'] = time.strftime("%Y-%m-%d %H:%M:%S", time.localtime(job['end_time']))
-            job['extra_info'] = json.loads(job['extra_info'] or "{}")
+            job["submit_time"] = time.strftime(
+                "%Y-%m-%d %H:%M:%S", time.localtime(job["submit_time"])
+            )
+            if job["end_time"] is not None:
+                job["end_time"] = time.strftime(
+                    "%Y-%m-%d %H:%M:%S", time.localtime(job["end_time"])
+                )
+            job["extra_info"] = json.loads(job["extra_info"] or "{}")
             jobs.append(job)
 
         return jobs
@@ -523,24 +590,29 @@ class BaseSubmitor(ABC):
     def refresh_all_jobs(self, section: str):
         """Refresh status of all unfinished jobs in DB for this section."""
         BaseSubmitor._init_job_db()
-        
+
         unfinished_jobs_from_db = self.list_jobs(section=section, all_history=False)
 
         for job_dict in unfinished_jobs_from_db:
-            job_id_to_refresh = job_dict['job_id']
-            current_db_status_str = job_dict['status']
+            job_id_to_refresh = job_dict["job_id"]
+            current_db_status_str = job_dict["status"]
             updated_job_status_obj = self.refresh_job_status(job_id_to_refresh)
 
             if updated_job_status_obj:
                 new_status_enum = updated_job_status_obj.status
                 new_status_str = new_status_enum.name
-                
+
                 if new_status_str != current_db_status_str:
                     import time
+
                     end_time = None
-                    if new_status_enum in [JobStatus.Status.COMPLETED, JobStatus.Status.FAILED, JobStatus.Status.FINISHED]:
+                    if new_status_enum in [
+                        JobStatus.Status.COMPLETED,
+                        JobStatus.Status.FAILED,
+                        JobStatus.Status.FINISHED,
+                    ]:
                         # Use end_time from others if present, else use current time
-                        end_time_str = updated_job_status_obj.others.get('end_time')
+                        end_time_str = updated_job_status_obj.others.get("end_time")
                         if end_time_str:
                             try:
                                 end_time = float(end_time_str)
@@ -554,5 +626,5 @@ class BaseSubmitor(ABC):
                         job_id=job_id_to_refresh,
                         status=new_status_enum,
                         end_time=end_time,
-                        extra_info=extra_info_update
+                        extra_info=extra_info_update,
                     )

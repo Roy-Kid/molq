@@ -4,8 +4,8 @@ This module exposes the :class:`submit` decorator used to register and submit
 jobs to different compute backends.
 """
 
-from .submitor.base import BaseSubmitor
 from .base import YieldDecorator
+from .submitor.base import BaseSubmitor
 
 
 def get_submitor(cluster_name: str, cluster_type: str) -> BaseSubmitor:
@@ -78,4 +78,3 @@ class submit(YieldDecorator):
     def get_cluster(cls, name: str) -> BaseSubmitor:
         """Return the submitor instance for ``name``."""
         return cls.CLUSTERS[name]
-

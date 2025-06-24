@@ -1,7 +1,7 @@
 # pragma: no cover - CLI interaction is hard to test fully
 import subprocess
-from pathlib import Path
 import time
+from pathlib import Path
 
 from .base import BaseSubmitor, JobStatus
 
@@ -63,17 +63,22 @@ class LocalSubmitor(BaseSubmitor):
         self._record_local_job_id(job_id)
         # Register to sqlite job database with new signature
         self.register_job(
-            "local", job_id, job_name, JobStatus.Status.RUNNING, 
+            "local",
+            job_id,
+            job_name,
+            JobStatus.Status.RUNNING,
             command=" ".join(cmd) if isinstance(cmd, list) else str(cmd),
             work_dir=str(cwd) if cwd is not None else str(Path.cwd()),
             submit_time=time.time(),
-            extra_info={"cmd": cmd}
+            extra_info={"cmd": cmd},
         )
 
         if block:
             proc.wait()
             if proc.returncode != 0:
-                raise RuntimeError(f"Job {job_name} failed with return code {proc.returncode}")
+                raise RuntimeError(
+                    f"Job {job_name} failed with return code {proc.returncode}"
+                )
 
             # Don't clean up here - let BaseSubmitor.after_submit handle it
             # This ensures consistent cleanup behavior across all submitters
@@ -155,7 +160,12 @@ class LocalSubmitor(BaseSubmitor):
 
         return script_path
 
-    def query(self, job_id: int | None = None, job_ids: list[int] | None = None, auto_update: bool = True) -> dict[int, JobStatus]:  # pragma: no cover
+    def query(
+        self,
+        job_id: int | None = None,
+        job_ids: list[int] | None = None,
+        auto_update: bool = True,
+    ) -> dict[int, JobStatus]:  # pragma: no cover
         """Return a mapping of job IDs to statuses using ``ps``. If auto_update, update DB for finished jobs."""
 
         if job_ids is not None:
@@ -197,14 +207,21 @@ class LocalSubmitor(BaseSubmitor):
                 "Z": JobStatus.Status.COMPLETED,
             }
             status = {
-                int(line[0]): JobStatus(int(line[0]), status_map.get(line[2][0], JobStatus.Status.RUNNING))
+                int(line[0]): JobStatus(
+                    int(line[0]), status_map.get(line[2][0], JobStatus.Status.RUNNING)
+                )
                 for line in lines
             }
 
         # If job_id was requested but not found, mark as COMPLETED in DB
         if auto_update and job_id and not status:
             try:
-                self.update_job("local", job_id, status=JobStatus.Status.COMPLETED, end_time=time.time())
+                self.update_job(
+                    "local",
+                    job_id,
+                    status=JobStatus.Status.COMPLETED,
+                    end_time=time.time(),
+                )
             except Exception:
                 pass
 
@@ -230,6 +247,7 @@ class LocalSubmitor(BaseSubmitor):
         """Refresh the status of a local job by checking if the process is still running."""
         import os
         import signal
+
         try:
             # Check if process exists and is running
             # Using os.kill with signal 0 to check if process exists without actually sending a signal
@@ -238,5 +256,9 @@ class LocalSubmitor(BaseSubmitor):
             return JobStatus(job_id, JobStatus.Status.RUNNING, name=f"Job {job_id}")
         except OSError:
             # Process doesn't exist or we don't have permission - mark as COMPLETED
-            return JobStatus(job_id, JobStatus.Status.COMPLETED, name=f"Job {job_id}", end_time=str(time.time()))
-
+            return JobStatus(
+                job_id,
+                JobStatus.Status.COMPLETED,
+                name=f"Job {job_id}",
+                end_time=str(time.time()),
+            )

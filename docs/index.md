@@ -1,101 +1,154 @@
-# Molq
+# Molq: Modern Job Queue System
 
-<div class="grid cards" markdown>
+Molq is a powerful and flexible job queue system designed for both local execution and cluster computing environments. It provides a clean, decorator-based API that makes it easy to submit, monitor, and manage computational tasks across different execution backends.
 
--   :material-rocket-launch:{ .lg .middle } **Easy Integration**
+## Key Features
 
-    ---
+- **Unified Interface**: Single API for local and cluster execution
+- **Decorator-Based**: Simple, Pythonic syntax using decorators
+- **Generator Support**: Advanced control flow with generator-based tasks
+- **Multiple Backends**: Support for local execution, SLURM clusters, and more
+- **Job Monitoring**: Built-in status tracking and error handling
+- **Resource Management**: Flexible resource allocation and cleanup
 
-    Seamlessly connect Hamilton workflows with job schedulers through simple decorators
+## Quick Start
 
-    [:octicons-arrow-right-24: Getting started](getting-started/installation.md)
-
--   :material-server:{ .lg .middle } **Multiple Backends**
-
-    ---
-
-    Support for local execution and SLURM clusters with extensible architecture
-
-    [:octicons-arrow-right-24: User Guide](user-guide/decorators.md)
-
--   :material-code-braces:{ .lg .middle } **Developer Friendly**
-
-    ---
-
-    Clean Python API with comprehensive examples and documentation
-
-    [:octicons-arrow-right-24: Examples](examples/basic-usage.md)
-
--   :material-database:{ .lg .middle } **Job Management**
-
-    ---
-
-    Unified job tracking with SQLite database and rich CLI interface
-
-    [:octicons-arrow-right-24: Job Management](user-guide/job-management.md)
-
-</div>
-
-## What is Molq?
-
-**Molq** is a Python library that bridges [Hamilton](https://hamilton.dagworks.io) dataflows with job schedulers and execution environments. It provides decorators and tools to seamlessly submit, monitor, and manage computational jobs from your data pipelines.
-
-### Key Features
-
-- **Decorator-Based API**: Use `@submit` and `@cmdline` decorators to execute jobs seamlessly
-- **Multiple Execution Backends**: Support for local processes and SLURM clusters
-- **Unified Job Management**: SQLite-based job database with automatic status tracking
-- **Rich CLI Interface**: Command-line tools for job submission, monitoring, and management
-- **Hamilton Integration**: Purpose-built for Hamilton dataflow orchestration
-- **Extensible Architecture**: Easy to add support for new schedulers and environments
-- **Resource Management**: Flexible resource specification and configuration
-
-## Quick Example
-
-```python title="Basic Job Submission"
+```python
 from molq import submit
-from molq.resources import BaseResourceSpec
 
 # Create a local submitter
-local = submit('my_project', 'local')
+local = submit('my_cluster', 'local')
 
 @local
-def run_analysis():
-    """Submit a data analysis job."""
-    spec = BaseResourceSpec(
-        cmd=['python', 'analyze_data.py', '--input', 'data.csv'],
-        job_name='data-analysis',
-        cpu_count=4,
-        memory='8GB'
-    )
-    job_id = yield spec.model_dump()
+def hello_world(name: str):
+    """A simple job that prints a greeting."""
+    job_id = yield {
+        'cmd': ['echo', f'Hello, {name}!'],
+        'job_name': 'greeting',
+        'block': True
+    }
+    return f"Job {job_id} completed"
+
+# Execute the job
+result = hello_world("World")
+print(result)
+```
+
+## Architecture Overview
+
+Molq follows a clean architectural pattern with three main components:
+
+### 1. **Decorators** (`@submit`, `@cmdline`)
+High-level interfaces that wrap your functions to enable job submission and execution.
+
+### 2. **Submitters** (`LocalSubmitor`, `SlurmSubmitor`)
+Backend-specific implementations that handle the actual job submission and monitoring.
+
+### 3. **Base Classes** (`YieldDecorator`, `BaseSubmitor`)
+Abstract foundations that enable extensibility and consistent behavior across implementations.
+
+## Use Cases
+
+### Data Processing
+Process large datasets with parallel execution and resource management:
+
+```python
+@cluster
+def process_dataset(input_file: str, output_file: str):
+    job_id = yield {
+        'cmd': ['python', 'process.py', input_file, output_file],
+        'cpus': 8,
+        'memory': '32GB',
+        'time': '02:00:00'
+    }
     return job_id
-
-# Submit and get job ID
-job_id = run_analysis()
-print(f"Job submitted with ID: {job_id}")
 ```
 
-```bash title="CLI Job Management"
-# List all active jobs
-molq list
+### Machine Learning
+Train models on compute clusters with proper resource allocation:
 
-# Check specific job status
-molq status 12345
-
-# Cancel a running job
-molq cancel 12345
-
-# Submit job via CLI
-molq submit --scheduler local --cmd "echo hello" --job-name test
+```python
+@gpu_cluster
+def train_model(config_file: str):
+    job_id = yield {
+        'cmd': ['python', 'train.py', '--config', config_file],
+        'gpus': 2,
+        'memory': '64GB',
+        'time': '24:00:00'
+    }
+    return job_id
 ```
 
-!!! tip "Ready to get started?"
-    
-    Check out the [installation guide](getting-started/installation.md) to begin using Molq in your projects.
+### Scientific Computing
+Execute complex simulations with dependency management:
 
-## Community & Support
+```python
+@hpc_cluster
+def run_simulation(parameters: dict):
+    job_id = yield {
+        'cmd': ['mpirun', '-n', '64', './simulation', '--params', str(parameters)],
+        'nodes': 4,
+        'ntasks_per_node': 16,
+        'time': '12:00:00'
+    }
+    return job_id
+```
 
-- **GitHub**: [roykid/molq](https://github.com/roykid/molq) - Source code and issue tracking
-- **PyPI**: [molq](https://pypi.org/project/molq/) - Package distribution
-- **Documentation**: Comprehensive guides and API reference
+## Why Choose Molq?
+
+### Simple and Intuitive
+```python
+# Before: Complex job submission scripts
+subprocess.run(['sbatch', 'job_script.sh'])
+# Manual monitoring and error handling required
+
+# After: Clean, declarative syntax
+@cluster
+def my_job():
+    yield {'cmd': ['python', 'script.py'], 'cpus': 4}
+```
+
+### Flexible Resource Management
+```python
+# Automatically handles resource allocation
+@cluster
+def resource_intensive_job():
+    yield {
+        'cmd': ['python', 'heavy_computation.py'],
+        'cpus': 16,
+        'memory': '128GB',
+        'time': '04:00:00',
+        'partition': 'high-mem'
+    }
+```
+
+### Built-in Error Handling
+```python
+# Automatic retry and error reporting
+@cluster
+def robust_job():
+    try:
+        yield {'cmd': ['python', 'might_fail.py']}
+    except JobFailedException as e:
+        # Handle errors gracefully
+        yield {'cmd': ['python', 'cleanup.py']}
+```
+
+## Getting Started
+
+Ready to dive in? Here's how to get started:
+
+1. **[Installation & Setup](tutorial/getting-started.md)** - Get Molq installed and configured
+2. **[Core Concepts](tutorial/core-concepts.md)** - Understand the key concepts and patterns
+3. **[API Reference](api/index.md)** - Detailed documentation of all classes and methods
+4. **[Recipes](recipes/machine-learning.md)** - Real-world examples and best practices
+
+## Community and Support
+
+- **GitHub Repository**: [molcrafts/molq](https://github.com/molcrafts/molq)
+- **Issue Tracker**: Report bugs and request features
+- **Discussions**: Ask questions and share use cases
+
+---
+
+*Molq makes job submission simple, reliable, and scalable. Start building better computational workflows today.*

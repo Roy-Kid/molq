@@ -1,8 +1,9 @@
-from molq.base import YieldDecorator
 from typing import Generator
 
-class YieldDecoratorTester(YieldDecorator):
+from molq.base import YieldDecorator
 
+
+class YieldDecoratorTester(YieldDecorator):
     def __init__(self):
         self.before_call_called = False
         self.validate_yield_called = False
@@ -15,19 +16,18 @@ class YieldDecoratorTester(YieldDecorator):
     def validate_yield(self, yield_result):
         self.validate_yield_called = True
         return yield_result
-    
+
     def after_yield(self, yield_result):
         self.after_yield_called = True
         return yield_result
-    
+
     def after_call(self, result):
         self.after_call_called = True
         return result
 
-class TestYieldDecorator:
 
+class TestYieldDecorator:
     def test_generator(self):
-        
         yield_decorator_tester = YieldDecoratorTester()
 
         @yield_decorator_tester
@@ -53,5 +53,3 @@ class TestYieldDecorator:
         assert simple(3) == 6
         assert yd.before_call_called
         assert yd.after_call_called
-
-    

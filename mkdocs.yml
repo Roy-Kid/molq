@@ -1,165 +1,75 @@
-site_name: Molq Documentation
-site_description: A small helper library that connects Hamilton with local or cluster based job runners
+site_name: Molq
+site_description: Modern job queue for local and cluster runners
 site_author: Roy Kid
-site_url: https://molcrafts.github.io/molq/
-
-repo_name: molcrafts/molq
 repo_url: https://github.com/molcrafts/molq
-edit_uri: edit/main/docs/
 
+# Use Material theme
 theme:
   name: material
-  language: en
+  features:
+    - navigation.tabs
+    - navigation.tabs.sticky
+    - navigation.sections
+    - navigation.expand
+    - navigation.top
+    - navigation.instant
+    - navigation.tracking
+    - search.highlight
+    - search.share
+    - search.suggest
+    - content.code.copy
+    - content.tabs.link
   palette:
-    # Palette toggle for automatic mode
-    - media: "(prefers-color-scheme)"
-      toggle:
-        icon: material/brightness-auto
-        name: Switch to light mode
-
-    # Palette toggle for light mode
-    - media: "(prefers-color-scheme: light)"
-      scheme: default
+    - scheme: default
       primary: blue
       accent: blue
       toggle:
         icon: material/brightness-7
         name: Switch to dark mode
-
-    # Palette toggle for dark mode
-    - media: "(prefers-color-scheme: dark)"
-      scheme: slate
+    - scheme: slate
       primary: blue
       accent: blue
       toggle:
         icon: material/brightness-4
-        name: Switch to system preference
-
-  features:
-    - navigation.tabs
-    - navigation.sections
-    - navigation.expand
-    - navigation.path
-    - navigation.top
-    - search.highlight
-    - search.share
-    - search.suggest
-    - content.code.copy
-    - content.code.select
-    - content.code.annotate
-
-  icon:
-    repo: fontawesome/brands/github
+        name: Switch to light mode
 
 markdown_extensions:
-  - abbr
   - admonition
-  - attr_list
-  - def_list
-  - footnotes
-  - md_in_html
   - toc:
       permalink: true
-  - pymdownx.arithmatex:
-      generic: true
-  - pymdownx.betterem:
-      smart_enable: all
-  - pymdownx.caret
-  - pymdownx.details
-  - pymdownx.emoji:
-      emoji_generator: !!python/name:material.extensions.emoji.to_svg
-      emoji_index: !!python/name:material.extensions.emoji.twemoji
   - pymdownx.highlight:
       anchor_linenums: true
-      line_spans: __span
-      pygments_lang_class: true
-  - pymdownx.inlinehilite
-  - pymdownx.keys
-  - pymdownx.magiclink:
-      normalize_issue_symbols: true
-      repo_url_shorthand: true
-      user: molcrafts
-      repo: molq
-  - pymdownx.mark
-  - pymdownx.smartsymbols
-  - pymdownx.snippets:
-      auto_append:
-        - includes/mkdocs.md
-  - pymdownx.superfences:
-      custom_fences:
-        - name: mermaid
-          class: mermaid
-          format: !!python/name:pymdownx.superfences.fence_code_format
+  - pymdownx.superfences
   - pymdownx.tabbed:
       alternate_style: true
-      combine_header_slug: true
-      slugify: !!python/object/apply:pymdownx.slugs.slugify
-        kwds:
-          case: lower
-  - pymdownx.tasklist:
-      custom_checkbox: true
-  - pymdownx.tilde
+  - pymdownx.emoji:
+      emoji_index: !!python/name:material.extensions.emoji.twemoji
+      emoji_generator: !!python/name:material.extensions.emoji.to_svg
+  - attr_list
+  - md_in_html
 
 plugins:
-  - search:
-      separator: '[\s\u200b\-_,:!=\[\]()"`/]+|\.(?!\d)|&[lg]t;|(?!\b)(?=[A-Z][a-z])'
+  - search
   - mkdocstrings:
       handlers:
         python:
           options:
             docstring_style: google
-            docstring_options:
-              ignore_init_summary: true
-            merge_init_into_class: true
-            show_submodules: false
             show_source: false
             members_order: source
             group_by_category: true
-            show_category_heading: true
-            show_signature_annotations: true
-            separate_signature: false
-
-extra:
-  social:
-    - icon: fontawesome/brands/github
-      link: https://github.com/molcrafts
-    - icon: fontawesome/brands/python
-      link: https://pypi.org/project/molq/
-
-extra_css:
-  - stylesheets/extra.css
 
 nav:
   - Home: index.md
-  - Getting Started:
-    - Installation: getting-started/installation.md
-    - Quick Start: getting-started/quick-start.md
-    - Basic Concepts: getting-started/concepts.md
-  - User Guide:
-    - Decorators: user-guide/decorators.md
-    - Job Management: user-guide/job-management.md
-    - Local Execution: user-guide/local-execution.md
-    - SLURM Integration: user-guide/slurm-integration.md
-    - Resource Specification: user-guide/resource-specification.md
-    - Configuration: user-guide/configuration.md
-  - Examples:
-    - Basic Usage: examples/basic-usage.md
-    - Command Line: examples/cmdline.md
-    - Local Jobs: examples/local-jobs.md
-    - SLURM Jobs: examples/slurm-jobs.md
-    - Resource Specification: examples/resource-specification.md
-    - Monitoring: examples/monitoring.md
+  - Tutorial:
+    - Getting Started: tutorial/getting-started.md
+    - Core Concepts: tutorial/core-concepts.md
+    - Advanced Usage: tutorial/advanced-usage.md
+  - Recipes:
+    - Machine Learning: recipes/machine-learning.md
+    - Scientific Computing: recipes/scientific-computing.md
   - API Reference:
     - Overview: api/index.md
-    - Core Functions: api/core.md
-    - Decorators: api/decorators.md
-    - Submitters: api/submitters.md
-    - Resources: api/resources.md
-    - CLI: api/cli.md
-  - Development:
-    - Development Guide: development/development.md
-    - Resource Spec Implementation: development/resource-spec-implementation.md
-    - Testing Infrastructure: development/testing-infrastructure.md
-    - Contributing: development/contributing.md
-    - Testing: development/testing.md
-    - Changelog: development/changelog.md
+    - Submit Decorators: api/submit.md
+  - Specification:
+    - Job Configuration: spec/job-config.md
