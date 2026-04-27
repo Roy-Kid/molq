@@ -47,7 +47,10 @@ class JobRow:
 
     Attributes:
         state: Status string, e.g. ``"running"``, ``"pending"``, ``"succeeded"``.
-        run_id: Job or run identifier shown in the list and detail title.
+        run_id: Job or run identifier.  The list view shows only the first
+            6 characters; the detail view shows it in full.
+        name: Human-readable label shown next to the state (e.g. experiment
+            name, profile name).  ``None`` renders as ``—``.
         cluster: Cluster name; ``None`` for local runs.
         scheduler_id: Scheduler-assigned job ID; ``None`` if unknown.
         elapsed: Human-readable elapsed time, e.g. ``"1m 23s"``.
@@ -58,6 +61,7 @@ class JobRow:
 
     state: str
     run_id: str
+    name: str | None = None
     cluster: str | None = None
     scheduler_id: str | None = None
     elapsed: str | None = None
@@ -370,12 +374,16 @@ class RunDashboard:
             expand=True,
             padding=(0, 2),
         )
-        table.add_column("STATE", width=13, no_wrap=True, justify="left")
-        table.add_column("JOB ID", ratio=3, no_wrap=True, justify="left")
-        table.add_column("CLUSTER", ratio=2, no_wrap=True, justify="left")
-        table.add_column("SCHED ID", ratio=2, no_wrap=True, justify="left")
+        # Column order optimized for at-a-glance scanning:
+        # state + name come first (what the job is), then its short id and
+        # runtime, then scheduler details, finally long-tail fields.
+        table.add_column("STATE", width=11, no_wrap=True, justify="left")
+        table.add_column("NAME", ratio=4, no_wrap=True, justify="left")
+        table.add_column("ID", width=8, no_wrap=True, justify="left")
         table.add_column("ELAPSED", width=10, no_wrap=True, justify="left")
-        table.add_column("DEPS", width=10, no_wrap=True, justify="left")
+        table.add_column("CLUSTER", width=12, no_wrap=True, justify="left")
+        table.add_column("SCHED ID", ratio=2, no_wrap=True, justify="left")
+        table.add_column("DEPS", width=8, no_wrap=True, justify="left")
         table.add_column("NOTE", ratio=3, justify="left")
 
         for i, job in enumerate(state.jobs):
@@ -386,10 +394,11 @@ class RunDashboard:
 
             table.add_row(
                 Text(marker + job.state.upper(), style=style),
-                Text(job.run_id, style="white"),
+                Text(job.name or "—", style="white" if job.name else "dim"),
+                Text(job.run_id[:6], style="dim"),
+                Text(job.elapsed or "—", style="dim"),
                 Text(job.cluster or "—", style="dim"),
                 Text(job.scheduler_id or "—", style="dim"),
-                Text(job.elapsed or "—", style="dim"),
                 Text(job.dependency_summary or "—", style="dim"),
                 Text(job.message or "", style="dim"),
                 style=row_style,
@@ -399,7 +408,7 @@ class RunDashboard:
             table.add_row(
                 Text("—", style="dim"),
                 Text("no jobs", style="dim"),
-                *[Text("", style="dim")] * 5,
+                *[Text("", style="dim")] * 6,
             )
 
         return Panel(table, title="[bold]Jobs[/bold]", padding=(0, 1))
@@ -415,6 +424,8 @@ class RunDashboard:
             grid.add_row(key, Text(val, style=val_style))
 
         _kv("state", job.state.upper(), state_style)
+        if job.name:
+            _kv("name", job.name)
         _kv("job id", job.run_id)
         if job.cluster:
             _kv("cluster", job.cluster)
@@ -614,7 +625,8 @@ class MolqMonitor:
                 rows.append(
                     JobRow(
                         state=rec.state.value,
-                        run_id=rec.job_id[:16],
+                        run_id=rec.job_id,
+                        name=rec.profile_name,
                         cluster=rec.cluster_name,
                         scheduler_id=rec.scheduler_job_id,
                         elapsed=elapsed,
