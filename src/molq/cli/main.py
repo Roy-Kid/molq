@@ -618,6 +618,54 @@ def history(
 
 
 # ---------------------------------------------------------------------------
+# allocations
+# ---------------------------------------------------------------------------
+
+
+@app.command()
+def allocations(
+    scheduler: Annotated[
+        SchedulerType, typer.Argument(help="Scheduler")
+    ] = SchedulerType.local,
+    cluster: Annotated[str | None, typer.Option(help="Cluster name")] = None,
+    profile: Annotated[str | None, typer.Option(help="Profile name")] = None,
+    config: Annotated[str | None, typer.Option(help="Path to config.toml")] = None,
+    limit: Annotated[
+        int | None, typer.Option(help="Max rows (most recent first)")
+    ] = None,
+) -> None:
+    """Show scheduling configs previously used on this cluster (local recall)."""
+    with _open_submitor(scheduler, cluster, profile, config) as submitor:
+        records = submitor.remembered_allocations(limit=limit)
+
+    if not records:
+        rprint("[dim]No remembered allocations. Submit a job to record one.[/]")
+        return
+
+    table = Table(title="Remembered Allocations")
+    table.add_column("Partition", style="cyan")
+    table.add_column("Account")
+    table.add_column("QOS")
+    table.add_column("Reservation")
+    table.add_column("Label")
+    table.add_column("Last Used")
+    table.add_column("Count", justify="right")
+
+    for record in records:
+        table.add_row(
+            record.partition or "-",
+            record.account or "-",
+            record.qos or "-",
+            record.reservation or "-",
+            record.label or "-",
+            _format_timestamp(record.last_used),
+            str(record.use_count),
+        )
+
+    rprint(table)
+
+
+# ---------------------------------------------------------------------------
 # inspect
 # ---------------------------------------------------------------------------
 

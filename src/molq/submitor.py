@@ -29,6 +29,7 @@ from molq.models import (
     JobDependency,
     JobRecord,
     JobSpec,
+    RememberedAllocation,
     RetentionPolicy,
     RetryPolicy,
     StatusTransition,
@@ -288,6 +289,15 @@ class Submitor:
         return self._store.list_records(
             self._target.name, include_terminal=include_terminal
         )
+
+    def remembered_allocations(
+        self, *, limit: int | None = None
+    ) -> list[RememberedAllocation]:
+        """Return scheduling configs previously used to submit to this cluster.
+
+        Ordered most-recently-used first. Pure local recall — no cluster query.
+        """
+        return self._store.list_allocations(self._target.name, limit=limit)
 
     def get_transitions(self, job_id: str) -> list[StatusTransition]:
         """Return the persisted transition timeline for a job."""
@@ -787,6 +797,7 @@ class Submitor:
             scheduler_job_id=scheduler_job_id,
             submitted_at=now,
         )
+        self._store.record_allocation(self._target.name, merged_scheduling, now=now)
         self._store.record_transition(
             job_id,
             JobState.CREATED,

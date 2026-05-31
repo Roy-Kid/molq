@@ -23,11 +23,19 @@ from molq.models import (
     JobDependency,
     JobRecord,
     JobSpec,
+    RememberedAllocation,
     StatusTransition,
 )
 from molq.status import JobState
+from molq.types import JobScheduling
 
-_SCHEMA_VERSION = "7"
+_SCHEMA_VERSION = "8"
+
+# Separator for the normalized allocation identity key.  Using the ASCII unit
+# separator (never present in partition/account names) lets NULL-vs-empty be
+# encoded unambiguously, sidestepping SQLite's "NULLs are distinct" behaviour
+# in unique constraints.
+_ALLOC_KEY_SEP = "\x1f"
 
 _CREATE_META = """
 CREATE TABLE IF NOT EXISTS molq_meta (
@@ -112,6 +120,27 @@ CREATE INDEX IF NOT EXISTS idx_job_dependencies_job
 ON job_dependencies(job_id)
 """
 
+_CREATE_ALLOCATIONS = """
+CREATE TABLE IF NOT EXISTS allocations (
+    cluster_name TEXT NOT NULL,
+    alloc_key    TEXT NOT NULL,
+    partition    TEXT,
+    account      TEXT,
+    qos          TEXT,
+    reservation  TEXT,
+    label        TEXT,
+    first_used   REAL NOT NULL,
+    last_used    REAL NOT NULL,
+    use_count    INTEGER NOT NULL DEFAULT 1,
+    PRIMARY KEY (cluster_name, alloc_key)
+)
+"""
+
+_CREATE_IDX_ALLOCATIONS = """
+CREATE INDEX IF NOT EXISTS idx_allocations_cluster_recency
+ON allocations(cluster_name, last_used DESC)
+"""
+
 
 def default_jobs_db_path() -> Path:
     """Return the canonical molq jobs.db path, bootstrapping the dir.
@@ -129,6 +158,24 @@ def default_jobs_db_path() -> Path:
     ``JobStore(default_jobs_db_path())`` explicitly.
     """
     return project_config_dir("molq") / "jobs.db"
+
+
+def _alloc_key(scheduling: JobScheduling) -> str:
+    """Normalized identity for an allocation: partition/account/qos/reservation.
+
+    ``None`` is encoded as an empty segment so a missing field and an empty
+    string collapse to the same key, and so SQLite's "every NULL is distinct"
+    rule cannot create duplicate rows for the same logical config.
+    """
+    return _ALLOC_KEY_SEP.join(
+        value or ""
+        for value in (
+            scheduling.partition,
+            scheduling.account,
+            scheduling.qos,
+            scheduling.reservation,
+        )
+    )
 
 
 class JobStore:
@@ -184,7 +231,7 @@ class JobStore:
                         f"supported version {_SCHEMA_VERSION}. "
                         f"Please upgrade molq."
                     )
-                if version in {"2", "3", "4", "5", "6"}:
+                if version in {"2", "3", "4", "5", "6", "7"}:
                     self._migrate_from_known_version(version)
                     return
                 raise StoreError(f"Unknown schema version {version!r}; cannot migrate.")
@@ -225,14 +272,14 @@ class JobStore:
 
     def _migrate_from_known_version(self, version: str) -> None:
         if version == "2":
-            self._migrate_v2_to_v7()
+            self._migrate_v2_to_current()
             return
-        if version in {"3", "4", "5", "6"}:
-            self._migrate_v3_to_v7()
+        if version in {"3", "4", "5", "6", "7"}:
+            self._migrate_v3plus_to_current()
             return
         raise StoreError(f"Unknown schema version {version!r}; cannot migrate.")
 
-    def _migrate_v2_to_v7(self) -> None:
+    def _migrate_v2_to_current(self) -> None:
         """Migrate the v2 jobs table directly to the current schema.
 
         SQLite cannot drop table constraints in place, so we recreate the
@@ -263,11 +310,13 @@ class JobStore:
                     "FROM _jobs_v2_old"
                 )
                 self._conn.execute("DROP TABLE _jobs_v2_old")
+                self._conn.execute(_CREATE_ALLOCATIONS)
                 self._conn.execute(_CREATE_IDX_CLUSTER_STATE)
                 self._conn.execute(_CREATE_IDX_TRANSITIONS)
                 self._conn.execute(_CREATE_IDX_ROOT_ATTEMPT)
                 self._conn.execute(_CREATE_IDX_RETRY_GROUP)
                 self._conn.execute(_CREATE_IDX_DEPENDENCIES)
+                self._conn.execute(_CREATE_IDX_ALLOCATIONS)
                 self._conn.execute(
                     "INSERT OR REPLACE INTO molq_meta (key, value) VALUES (?, ?)",
                     ("schema_version", _SCHEMA_VERSION),
@@ -277,7 +326,7 @@ class JobStore:
                 self._conn.rollback()
                 raise
 
-    def _migrate_v3_to_v7(self) -> None:
+    def _migrate_v3plus_to_current(self) -> None:
         with self._write_lock:
             self._conn.execute("BEGIN IMMEDIATE")
             try:
@@ -317,11 +366,13 @@ class JobStore:
                     "UPDATE jobs SET retry_group_id = root_job_id WHERE retry_group_id IS NULL"
                 )
                 self._conn.execute(_CREATE_DEPENDENCIES)
+                self._conn.execute(_CREATE_ALLOCATIONS)
                 self._conn.execute(_CREATE_IDX_CLUSTER_STATE)
                 self._conn.execute(_CREATE_IDX_TRANSITIONS)
                 self._conn.execute(_CREATE_IDX_ROOT_ATTEMPT)
                 self._conn.execute(_CREATE_IDX_RETRY_GROUP)
                 self._conn.execute(_CREATE_IDX_DEPENDENCIES)
+                self._conn.execute(_CREATE_IDX_ALLOCATIONS)
                 self._conn.execute(
                     "INSERT OR REPLACE INTO molq_meta (key, value) VALUES (?, ?)",
                     ("schema_version", _SCHEMA_VERSION),
@@ -342,11 +393,13 @@ class JobStore:
             self._conn.execute(_CREATE_JOBS)
             self._conn.execute(_CREATE_TRANSITIONS)
             self._conn.execute(_CREATE_DEPENDENCIES)
+            self._conn.execute(_CREATE_ALLOCATIONS)
             self._conn.execute(_CREATE_IDX_CLUSTER_STATE)
             self._conn.execute(_CREATE_IDX_TRANSITIONS)
             self._conn.execute(_CREATE_IDX_ROOT_ATTEMPT)
             self._conn.execute(_CREATE_IDX_RETRY_GROUP)
             self._conn.execute(_CREATE_IDX_DEPENDENCIES)
+            self._conn.execute(_CREATE_IDX_ALLOCATIONS)
             self._conn.commit()
 
     def compare_and_update_state(
@@ -475,6 +528,84 @@ class JobStore:
         with self._write_lock:
             self._conn.execute(sql, tuple(values))
             self._conn.commit()
+
+    def record_allocation(
+        self,
+        cluster_name: str,
+        scheduling: JobScheduling,
+        *,
+        now: float | None = None,
+    ) -> None:
+        """Remember a scheduling config used to submit to *cluster_name*.
+
+        Upserts on the normalized (partition, account, qos, reservation)
+        identity: a first use inserts with ``use_count=1``; a repeat bumps
+        ``use_count`` and refreshes ``last_used``.  Configs with none of the
+        four identity fields set are ignored (nothing worth remembering).
+        This memory is independent of the ``jobs`` table, so retention cleanup
+        of old jobs never erases it.
+        """
+        if not any(
+            (
+                scheduling.partition,
+                scheduling.account,
+                scheduling.qos,
+                scheduling.reservation,
+            )
+        ):
+            return
+        ts = time.time() if now is None else now
+        with self._write_lock:
+            self._conn.execute(
+                """INSERT INTO allocations
+                (cluster_name, alloc_key, partition, account, qos, reservation,
+                 label, first_used, last_used, use_count)
+                VALUES (?, ?, ?, ?, ?, ?, NULL, ?, ?, 1)
+                ON CONFLICT(cluster_name, alloc_key) DO UPDATE SET
+                    last_used = excluded.last_used,
+                    use_count = use_count + 1""",
+                (
+                    cluster_name,
+                    _alloc_key(scheduling),
+                    scheduling.partition,
+                    scheduling.account,
+                    scheduling.qos,
+                    scheduling.reservation,
+                    ts,
+                    ts,
+                ),
+            )
+            self._conn.commit()
+
+    def list_allocations(
+        self,
+        cluster_name: str,
+        *,
+        limit: int | None = None,
+    ) -> list[RememberedAllocation]:
+        """Return remembered allocations for *cluster_name*, most-recent first."""
+        sql = (
+            "SELECT partition, account, qos, reservation, label, "
+            "last_used, use_count FROM allocations "
+            "WHERE cluster_name = ? ORDER BY last_used DESC"
+        )
+        params: list[object] = [cluster_name]
+        if limit is not None:
+            sql += " LIMIT ?"
+            params.append(limit)
+        rows = self._conn.execute(sql, tuple(params)).fetchall()
+        return [
+            RememberedAllocation(
+                partition=row["partition"],
+                account=row["account"],
+                qos=row["qos"],
+                reservation=row["reservation"],
+                label=row["label"],
+                last_used=row["last_used"],
+                use_count=row["use_count"],
+            )
+            for row in rows
+        ]
 
     def add_dependencies(
         self,

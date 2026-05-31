@@ -406,6 +406,64 @@ class TestJobHandle:
 
 
 # ---------------------------------------------------------------------------
+# Allocation memory (scheduling-config recall)
+# ---------------------------------------------------------------------------
+
+
+class TestAllocationMemory:
+    def test_successful_submit_records_allocation(self, submitor):
+        submitor.submit_job(
+            argv=["echo", "hi"],
+            scheduling=JobScheduling(partition="gpu", account="proj1", qos="high"),
+        )
+        remembered = submitor.remembered_allocations()
+        assert len(remembered) == 1
+        alloc = remembered[0]
+        assert alloc.partition == "gpu"
+        assert alloc.account == "proj1"
+        assert alloc.qos == "high"
+        assert alloc.reservation is None
+        assert alloc.use_count == 1
+
+    def test_submit_without_scheduling_records_nothing(self, submitor):
+        submitor.submit_job(argv=["echo", "hi"])
+        assert submitor.remembered_allocations() == []
+
+    def test_submit_all_none_scheduling_records_nothing(self, submitor):
+        submitor.submit_job(argv=["echo", "hi"], scheduling=JobScheduling())
+        assert submitor.remembered_allocations() == []
+
+    def test_failed_submit_records_nothing(self, submitor, mock_scheduler):
+        mock_scheduler.submit.side_effect = RuntimeError("boom")
+        with pytest.raises(RuntimeError, match="boom"):
+            submitor.submit_job(
+                argv=["echo", "hi"],
+                scheduling=JobScheduling(partition="gpu", account="proj1"),
+            )
+        assert submitor.remembered_allocations() == []
+
+    def test_repeated_identity_bumps_use_count(self, submitor):
+        for _ in range(3):
+            submitor.submit_job(
+                argv=["echo", "hi"],
+                scheduling=JobScheduling(partition="gpu", account="proj1"),
+            )
+        remembered = submitor.remembered_allocations()
+        assert len(remembered) == 1
+        assert remembered[0].use_count == 3
+
+    def test_remembered_allocations_limit(self, submitor):
+        submitor.submit_job(
+            argv=["echo", "a"], scheduling=JobScheduling(partition="gpu")
+        )
+        submitor.submit_job(
+            argv=["echo", "b"], scheduling=JobScheduling(partition="cpu")
+        )
+        assert len(submitor.remembered_allocations()) == 2
+        assert len(submitor.remembered_allocations(limit=1)) == 1
+
+
+# ---------------------------------------------------------------------------
 # Zero side effects
 # ---------------------------------------------------------------------------
 
