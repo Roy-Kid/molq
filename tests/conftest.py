@@ -5,9 +5,18 @@ from pathlib import Path
 
 import pytest
 
-from molq.scheduler import SchedulerCapabilities
-from molq.store import JobStore
-from molq.testing import FakeScheduler, make_submitor
+# Neutralize terminal-color env before molq is imported. The CLI builds a
+# module-level Rich Console at import time; a developer terminal that exports
+# FORCE_COLOR (or COLORTERM) makes Rich emit ANSI escapes even into captured,
+# non-TTY test output, which breaks plain-text `in result.output` assertions.
+# CI has none of these set, so this keeps the suite deterministic everywhere.
+for _color_var in ("FORCE_COLOR", "CLICOLOR_FORCE", "COLORTERM"):
+    os.environ.pop(_color_var, None)
+os.environ["NO_COLOR"] = "1"
+
+from molq.scheduler import SchedulerCapabilities  # noqa: E402
+from molq.store import JobStore  # noqa: E402
+from molq.testing import FakeScheduler, make_submitor  # noqa: E402
 
 
 @pytest.fixture(scope="session", autouse=True)
