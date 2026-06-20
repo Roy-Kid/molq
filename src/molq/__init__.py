@@ -42,6 +42,7 @@ from molq.models import (
     DependencyPreviewItem,
     JobDependency,
     JobRecord,
+    RememberedAllocation,
     RetentionPolicy,
     RetryBackoff,
     RetryPolicy,
@@ -101,6 +102,7 @@ __all__ = [
     # Models
     "SubmitorDefaults",
     "JobRecord",
+    "RememberedAllocation",
     "JobDependency",
     "DependencyPreview",
     "DependencyPreviewItem",

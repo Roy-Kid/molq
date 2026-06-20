@@ -15,7 +15,7 @@ from pathlib import Path
 from typing import TYPE_CHECKING, Annotated
 
 if TYPE_CHECKING:
-    from molq import JobRecord, Submitor
+    from molq import Cluster, JobRecord, Submitor
 
 import typer
 from rich import print as rprint
@@ -73,7 +73,11 @@ def _open_submitor(
         )
     else:
         cluster_name = cluster or f"cli_{scheduler.value}"
-        submitor = Submitor(target=Cluster(cluster_name, scheduler.value))
+        try:
+            target = Cluster.from_ssh_alias(cluster_name, scheduler=scheduler.value)
+        except Exception:
+            target = Cluster(cluster_name, scheduler.value)
+        submitor = Submitor(target=target)
     try:
         yield submitor
     finally:
@@ -618,6 +622,54 @@ def history(
 
 
 # ---------------------------------------------------------------------------
+# allocations
+# ---------------------------------------------------------------------------
+
+
+@app.command()
+def allocations(
+    scheduler: Annotated[
+        SchedulerType, typer.Argument(help="Scheduler")
+    ] = SchedulerType.local,
+    cluster: Annotated[str | None, typer.Option(help="Cluster name")] = None,
+    profile: Annotated[str | None, typer.Option(help="Profile name")] = None,
+    config: Annotated[str | None, typer.Option(help="Path to config.toml")] = None,
+    limit: Annotated[
+        int | None, typer.Option(help="Max rows (most recent first)")
+    ] = None,
+) -> None:
+    """Show scheduling configs previously used on this cluster (local recall)."""
+    with _open_submitor(scheduler, cluster, profile, config) as submitor:
+        records = submitor.remembered_allocations(limit=limit)
+
+    if not records:
+        rprint("[dim]No remembered allocations. Submit a job to record one.[/]")
+        return
+
+    table = Table(title="Remembered Allocations")
+    table.add_column("Partition", style="cyan")
+    table.add_column("Account")
+    table.add_column("QOS")
+    table.add_column("Reservation")
+    table.add_column("Label")
+    table.add_column("Last Used")
+    table.add_column("Count", justify="right")
+
+    for record in records:
+        table.add_row(
+            record.partition or "-",
+            record.account or "-",
+            record.qos or "-",
+            record.reservation or "-",
+            record.label or "-",
+            _format_timestamp(record.last_used),
+            str(record.use_count),
+        )
+
+    rprint(table)
+
+
+# ---------------------------------------------------------------------------
 # inspect
 # ---------------------------------------------------------------------------
 
@@ -959,6 +1011,113 @@ def clusters_show(
         rprint(f"  ProxyJump:     {host.proxy_jump}")
     if host.forward_agent:
         rprint("  ForwardAgent:  yes")
+
+
+# ---------------------------------------------------------------------------
+# workspace — remote file sync via rsync
+# ---------------------------------------------------------------------------
+
+workspace_app = typer.Typer(
+    name="workspace",
+    help="Remote file sync on cluster workspaces (rsync-backed).",
+    no_args_is_help=True,
+)
+app.add_typer(workspace_app, name="workspace")
+
+
+def _resolve_cluster(
+    cluster: str | None,
+    profile: str | None,
+    config_path: str | None,
+) -> "Cluster":
+    """Resolve a Cluster from --cluster (SSH alias) or --profile."""
+    from molq import Cluster, load_profile
+
+    if profile:
+        loaded = load_profile(profile, config_path)
+        return Cluster(
+            loaded.cluster_name,
+            loaded.scheduler,
+            scheduler_options=loaded.scheduler_options,
+        )
+    if cluster:
+        return Cluster.from_ssh_alias(cluster)
+    return Cluster("local", "local")
+
+
+@workspace_app.command("sync")
+def workspace_sync(
+    local: Annotated[str, typer.Argument(help="Local path")],
+    cluster: Annotated[
+        str | None, typer.Option(help="Cluster alias or SSH host")
+    ] = None,
+    profile: Annotated[str | None, typer.Option(help="Profile name")] = None,
+    config: Annotated[str | None, typer.Option(help="Path to config.toml")] = None,
+    path: Annotated[str, typer.Option("--path", "-p", help="Remote path")] = ".",
+    pull: Annotated[
+        bool,
+        typer.Option(
+            "--pull", help="Pull remote → local (default: push local → remote)"
+        ),
+    ] = False,
+    delete: Annotated[
+        bool, typer.Option("--delete", help="Delete dest files not in source")
+    ] = False,
+    dry_run: Annotated[
+        bool, typer.Option("--dry-run", "-n", help="Show what would be transferred")
+    ] = False,
+) -> None:
+    """Sync files between local and remote via rsync.
+
+    Default direction is push (local → remote), like ``rsync local dest:path``.
+    Use ``--pull`` to reverse direction (remote → local).
+
+    Examples:
+        molq workspace sync ./lammps --cluster dardel -p /cfs/.../runs
+        molq workspace sync --pull ./results --cluster dardel -p /cfs/.../runs
+    """
+    from molq.workspace import Workspace
+
+    target = _resolve_cluster(cluster, profile, config)
+    remote = Workspace(cluster=target, name="sync", path=path)
+    remote.ensure()
+
+    if pull:
+        if dry_run:
+            rprint(f"[dim]Would pull {remote.path} → {local}[/]")
+        else:
+            remote.download("", local, recursive=True)
+            rprint(f"[green]Pulled[/] {remote.path} → {local}")
+    else:
+        if dry_run:
+            rprint(f"[dim]Would push {local} → {remote.path}[/]")
+        else:
+            remote.upload(local, recursive=True)
+            rprint(f"[green]Pushed[/] {local} → {remote.path}")
+
+    # TODO: wire --delete through transport when rsync --delete support is added
+
+
+@workspace_app.command("list")
+def workspace_list(
+    cluster: Annotated[
+        str | None, typer.Option(help="Cluster alias or SSH host")
+    ] = None,
+    profile: Annotated[str | None, typer.Option(help="Profile name")] = None,
+    config: Annotated[str | None, typer.Option(help="Path to config.toml")] = None,
+    path: Annotated[str, typer.Option("--path", "-p", help="Remote path")] = ".",
+) -> None:
+    """List files in a workspace directory."""
+    from molq.workspace import Workspace
+
+    target = _resolve_cluster(cluster, profile, config)
+    remote = Workspace(cluster=target, name="list", path=path)
+    files = remote.list_files()
+    if not files:
+        rprint("[dim](empty)[/]")
+        return
+    for f in files:
+        rprint(f"  {f}")
 
 
 if __name__ == "__main__":

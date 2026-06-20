@@ -6,7 +6,12 @@ import pytest
 from typer.testing import CliRunner
 
 from molq.cli.main import app
-from molq.models import JobDependency, JobRecord, StatusTransition
+from molq.models import (
+    JobDependency,
+    JobRecord,
+    RememberedAllocation,
+    StatusTransition,
+)
 from molq.status import JobState
 
 runner = CliRunner()
@@ -297,3 +302,37 @@ class TestMaintenanceCommands:
         result = runner.invoke(app, ["daemon", "local", "--once"])
         assert result.exit_code == 0
         mock_submitor.run_daemon.assert_called_once()
+
+
+class TestAllocationsCommand:
+    @patch("molq.cli.main._open_submitor")
+    def test_allocations_empty(self, mock_create):
+        mock_submitor = MagicMock()
+        mock_submitor.remembered_allocations.return_value = []
+        mock_create.return_value.__enter__.return_value = mock_submitor
+
+        result = runner.invoke(app, ["allocations", "slurm"])
+        assert result.exit_code == 0
+        assert "No remembered allocations" in result.output
+
+    @patch("molq.cli.main._open_submitor")
+    def test_allocations_with_rows(self, mock_create):
+        alloc = RememberedAllocation(
+            partition="gpu",
+            account="proj1",
+            qos="high",
+            reservation=None,
+            label=None,
+            last_used=1_700_000_000.0,
+            use_count=4,
+        )
+        mock_submitor = MagicMock()
+        mock_submitor.remembered_allocations.return_value = [alloc]
+        mock_create.return_value.__enter__.return_value = mock_submitor
+
+        result = runner.invoke(app, ["allocations", "slurm"])
+        assert result.exit_code == 0
+        assert "gpu" in result.output
+        assert "proj1" in result.output
+        assert "high" in result.output
+        assert "4" in result.output

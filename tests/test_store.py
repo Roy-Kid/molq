@@ -8,9 +8,10 @@ from pathlib import Path
 import pytest
 
 from molq.errors import StoreError
-from molq.models import Command, JobDependency, JobSpec
+from molq.models import Command, JobDependency, JobSpec, RememberedAllocation
 from molq.status import JobState
 from molq.store import JobStore
+from molq.types import JobScheduling
 
 
 @pytest.fixture
@@ -44,7 +45,7 @@ class TestSchemaCreation:
         row = memory_store._conn.execute(
             "SELECT value FROM molq_meta WHERE key = 'schema_version'"
         ).fetchone()
-        assert row["value"] == "7"
+        assert row["value"] == "8"
 
     def test_file_backed(self, file_store: JobStore):
         assert isinstance(file_store.db_path, Path)
@@ -307,4 +308,116 @@ class TestConcurrency:
 
         records = store.list_records("dev", include_terminal=True)
         assert len(records) == 20
+        store.close()
+
+
+class TestAllocationMemory:
+    """Persisted, retention-independent memory of used scheduling configs."""
+
+    def test_allocations_table_created(self, memory_store: JobStore):
+        rows = memory_store._conn.execute(
+            "SELECT name FROM sqlite_master WHERE type='table' AND name='allocations'"
+        ).fetchall()
+        assert len(rows) == 1
+
+    def test_record_first_use(self, memory_store: JobStore):
+        memory_store.record_allocation(
+            "hpc",
+            JobScheduling(partition="main", account="proj1", qos="normal"),
+            now=100.0,
+        )
+        got = memory_store.list_allocations("hpc")
+        assert len(got) == 1
+        alloc = got[0]
+        assert isinstance(alloc, RememberedAllocation)
+        assert (alloc.partition, alloc.account, alloc.qos) == (
+            "main",
+            "proj1",
+            "normal",
+        )
+        assert alloc.use_count == 1
+        assert alloc.last_used == 100.0
+
+    def test_record_same_identity_bumps_count(self, memory_store: JobStore):
+        sched = JobScheduling(partition="main", account="proj1")
+        memory_store.record_allocation("hpc", sched, now=100.0)
+        memory_store.record_allocation("hpc", sched, now=200.0)
+        got = memory_store.list_allocations("hpc")
+        assert len(got) == 1
+        assert got[0].use_count == 2
+        assert got[0].last_used == 200.0
+
+    def test_nullable_fields_distinct_identities(self, memory_store: JobStore):
+        # None in different positions must not collide via NULL ambiguity.
+        memory_store.record_allocation("hpc", JobScheduling(partition="main"), now=1.0)
+        memory_store.record_allocation("hpc", JobScheduling(account="main"), now=2.0)
+        memory_store.record_allocation(
+            "hpc", JobScheduling(partition="main", account="main"), now=3.0
+        )
+        got = memory_store.list_allocations("hpc")
+        assert len(got) == 3
+        assert all(a.use_count == 1 for a in got)
+
+    def test_list_ordered_by_recency_with_limit(self, memory_store: JobStore):
+        memory_store.record_allocation("hpc", JobScheduling(partition="a"), now=10.0)
+        memory_store.record_allocation("hpc", JobScheduling(partition="b"), now=30.0)
+        memory_store.record_allocation("hpc", JobScheduling(partition="c"), now=20.0)
+        got = memory_store.list_allocations("hpc", limit=2)
+        assert [a.partition for a in got] == ["b", "c"]
+
+    def test_scoped_by_cluster(self, memory_store: JobStore):
+        memory_store.record_allocation("hpc", JobScheduling(partition="a"), now=1.0)
+        memory_store.record_allocation("other", JobScheduling(partition="b"), now=2.0)
+        assert [a.partition for a in memory_store.list_allocations("hpc")] == ["a"]
+
+    def test_all_none_scheduling_not_recorded(self, memory_store: JobStore):
+        memory_store.record_allocation("hpc", JobScheduling(), now=1.0)
+        assert memory_store.list_allocations("hpc") == []
+
+    def test_migration_v7_to_v8_preserves_jobs(self, tmp_path: Path):
+        # Build a current-schema DB, then simulate a v7 DB (no allocations
+        # table, version pinned to "7") and reopen to exercise the migration.
+        db = tmp_path / "mig.db"
+        store = JobStore(db)
+        store.insert_job(_make_spec("keep-me", "hpc"))
+        store._conn.execute("DROP TABLE allocations")
+        store._conn.execute(
+            "UPDATE molq_meta SET value = '7' WHERE key = 'schema_version'"
+        )
+        store._conn.commit()
+        store.close()
+
+        reopened = JobStore(db)
+        version = reopened._conn.execute(
+            "SELECT value FROM molq_meta WHERE key = 'schema_version'"
+        ).fetchone()["value"]
+        assert version == "8"
+        tables = {
+            r["name"]
+            for r in reopened._conn.execute(
+                "SELECT name FROM sqlite_master WHERE type='table'"
+            ).fetchall()
+        }
+        assert "allocations" in tables
+        assert reopened.get_record("keep-me") is not None
+        reopened.close()
+
+    def test_remembered_allocation_is_public_export(self):
+        # AC-1: importable from the molq top-level package, not just molq.models.
+        import molq
+
+        assert molq.RememberedAllocation is RememberedAllocation
+
+    def test_retention_deletes_jobs_keeps_allocations(self, tmp_path: Path):
+        # AC-9: pruning terminal job rows must not touch remembered allocations.
+        store = JobStore(tmp_path / "ret.db")
+        store.insert_job(_make_spec("doomed", "hpc"))
+        store.record_allocation("hpc", JobScheduling(partition="main"), now=1.0)
+
+        store.delete_terminal_records(["doomed"])
+
+        assert store.get_record("doomed") is None
+        survived = store.list_allocations("hpc")
+        assert len(survived) == 1
+        assert survived[0].partition == "main"
         store.close()

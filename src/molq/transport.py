@@ -18,6 +18,8 @@ methods should be added as concrete schedulers need them, not speculatively.
 
 from __future__ import annotations
 
+import base64
+import json
 import os
 import shlex
 import shutil
@@ -98,12 +100,7 @@ class Transport(Protocol):
         input: str | None = None,
         timeout: float | None = None,
     ) -> CommandResult:
-        """Execute *argv* and return its result.
-
-        Never raises on non-zero exit — callers check ``result.returncode``.
-        Raises :class:`TransportError` only on transport-layer failure
-        (ssh connection refused, command not found, timeout).
-        """
+        """Execute *argv* and return its result."""
         ...
 
     def read_text(self, path: str) -> str: ...
@@ -111,11 +108,21 @@ class Transport(Protocol):
     def write_text(self, path: str, data: str, *, mode: int = 0o600) -> None: ...
     def write_bytes(self, path: str, data: bytes, *, mode: int = 0o600) -> None: ...
     def exists(self, path: str) -> bool: ...
+    def is_dir(self, path: str) -> bool: ...
+    def is_file(self, path: str) -> bool: ...
     def mkdir(
         self, path: str, *, parents: bool = True, exist_ok: bool = True
     ) -> None: ...
     def chmod(self, path: str, mode: int) -> None: ...
     def remove(self, path: str, *, recursive: bool = False) -> None: ...
+    def rename(self, src: str, dst: str) -> None: ...
+    def copy(self, src: str, dst: str) -> None: ...
+    def copytree(self, src: str, dst: str) -> None: ...
+    def touch(self, path: str) -> None: ...
+    def symlink(self, src: str, dst: str) -> None: ...
+    def listdir(self, path: str) -> list[str]: ...
+    def stat(self, path: str) -> dict[str, object]: ...
+    def getsize(self, path: str) -> int: ...
     def upload(
         self,
         local: str,
@@ -123,10 +130,7 @@ class Transport(Protocol):
         *,
         recursive: bool = False,
         exclude: Sequence[str] = (),
-    ) -> None:
-        """Copy *local* → *remote*.  *remote* is on the transport's filesystem."""
-        ...
-
+    ) -> None: ...
     def download(
         self,
         remote: str,
@@ -134,9 +138,7 @@ class Transport(Protocol):
         *,
         recursive: bool = False,
         exclude: Sequence[str] = (),
-    ) -> None:
-        """Copy *remote* → *local*.  *remote* is on the transport's filesystem."""
-        ...
+    ) -> None: ...
 
 
 # ---------------------------------------------------------------------------
@@ -261,6 +263,43 @@ class LocalTransport:
     ) -> None:
         _local_copy(remote, local, recursive=recursive, exclude=exclude)
 
+    def is_dir(self, path: str) -> bool:
+        return Path(path).is_dir()
+
+    def is_file(self, path: str) -> bool:
+        return Path(path).is_file()
+
+    def rename(self, src: str, dst: str) -> None:
+        os.rename(src, dst)
+
+    def copy(self, src: str, dst: str) -> None:
+        Path(dst).parent.mkdir(parents=True, exist_ok=True)
+        shutil.copy2(src, dst)
+
+    def copytree(self, src: str, dst: str) -> None:
+        shutil.copytree(src, dst)
+
+    def touch(self, path: str) -> None:
+        Path(path).touch()
+
+    def symlink(self, src: str, dst: str) -> None:
+        Path(dst).symlink_to(src)
+
+    def listdir(self, path: str) -> list[str]:
+        return [p.name for p in Path(path).iterdir()]
+
+    def stat(self, path: str) -> dict[str, object]:
+        st = os.stat(path)
+        return {
+            "size": st.st_size,
+            "mtime": st.st_mtime,
+            "is_dir": Path(path).is_dir(),
+            "is_file": Path(path).is_file(),
+        }
+
+    def getsize(self, path: str) -> int:
+        return os.path.getsize(path)
+
 
 def _local_copy(src: str, dst: str, *, recursive: bool, exclude: Sequence[str]) -> None:
     src_path = Path(src)
@@ -323,6 +362,20 @@ class SshTransport:
 
     # ── helpers ─────────────────────────────────────────────────────────────
 
+    @staticmethod
+    def _quote_remote_path(path: str) -> str:
+        """Shell-quote *path* while preserving ``~`` tilde expansion for the remote shell.
+
+        ``shlex.quote`` wraps everything in single quotes, which prevents the
+        remote shell from expanding ``~``.  This helper keeps the tilde prefix
+        outside the quoted portion so ``~/work`` expands to the remote home.
+        """
+        if path.startswith("~/"):
+            return "~/" + shlex.quote(path[2:])
+        if path == "~":
+            return "~"
+        return shlex.quote(path)
+
     def _ssh_argv(self) -> list[str]:
         argv: list[str] = [
             self._ssh_bin,
@@ -330,6 +383,10 @@ class SshTransport:
             "BatchMode=yes",
             "-o",
             "StrictHostKeyChecking=accept-new",
+            "-o",
+            "RemoteCommand=none",
+            "-o",
+            "RequestTTY=no",
         ]
         if self.options.port is not None:
             argv += ["-p", str(self.options.port)]
@@ -341,7 +398,15 @@ class SshTransport:
 
     def _ssh_e_arg(self) -> str:
         """Build the ``-e`` argument for rsync that injects our ssh options."""
-        parts: list[str] = [self._ssh_bin, "-o", "BatchMode=yes"]
+        parts: list[str] = [
+            self._ssh_bin,
+            "-o",
+            "BatchMode=yes",
+            "-o",
+            "RemoteCommand=none",
+            "-o",
+            "RequestTTY=no",
+        ]
         if self.options.port is not None:
             parts += ["-p", str(self.options.port)]
         if self.options.identity_file:
@@ -402,8 +467,8 @@ class SshTransport:
             for k, v in env.items():
                 parts.append(f"{shlex.quote(k)}={shlex.quote(v)}")
         if cwd:
-            parts += ["cd", shlex.quote(cwd), "&&"]
-        parts += [shlex.quote(a) for a in argv]
+            parts += ["cd", self._quote_remote_path(cwd), "&&"]
+        parts += [self._quote_remote_path(a) for a in argv]
         remote_cmd = " ".join(parts)
         return self._shell(remote_cmd, input=input, timeout=timeout)
 
@@ -412,7 +477,7 @@ class SshTransport:
 
     def read_bytes(self, path: str) -> bytes:
         # Use base64 so we don't have to worry about embedded NULs / non-UTF8.
-        result = self._shell(f"base64 -- {shlex.quote(path)}")
+        result = self._shell(f"base64 -- {self._quote_remote_path(path)}")
         if result.returncode != 0:
             if (
                 "No such file" in result.stderr
@@ -424,8 +489,6 @@ class SshTransport:
                 returncode=result.returncode,
                 stderr=result.stderr,
             )
-        import base64
-
         return base64.b64decode(result.stdout)
 
     def write_text(self, path: str, data: str, *, mode: int = 0o600) -> None:
@@ -434,11 +497,9 @@ class SshTransport:
     def write_bytes(self, path: str, data: bytes, *, mode: int = 0o600) -> None:
         # Atomic-ish: write to .tmp and rename.  Use base64 over stdin to
         # carry arbitrary bytes through ssh cleanly.
-        import base64
-
         encoded = base64.b64encode(data).decode("ascii")
-        q_path = shlex.quote(path)
-        q_tmp = shlex.quote(f"{path}.tmp")
+        q_path = self._quote_remote_path(path)
+        q_tmp = self._quote_remote_path(f"{path}.tmp")
         remote_cmd = (
             f"base64 -d > {q_tmp} && chmod {mode:o} {q_tmp} && mv {q_tmp} {q_path}"
         )
@@ -451,7 +512,7 @@ class SshTransport:
             )
 
     def exists(self, path: str) -> bool:
-        result = self._shell(f"test -e {shlex.quote(path)}")
+        result = self._shell(f"test -e {self._quote_remote_path(path)}")
         if result.returncode == 0:
             return True
         if result.returncode == 1:
@@ -464,7 +525,7 @@ class SshTransport:
 
     def mkdir(self, path: str, *, parents: bool = True, exist_ok: bool = True) -> None:
         flag = "-p" if parents or exist_ok else ""
-        cmd = f"mkdir {flag} {shlex.quote(path)}".strip()
+        cmd = f"mkdir {flag} {self._quote_remote_path(path)}".strip()
         result = self._shell(cmd)
         if result.returncode != 0:
             raise TransportError(
@@ -474,7 +535,7 @@ class SshTransport:
             )
 
     def chmod(self, path: str, mode: int) -> None:
-        result = self._shell(f"chmod {mode:o} {shlex.quote(path)}")
+        result = self._shell(f"chmod {mode:o} {self._quote_remote_path(path)}")
         if result.returncode != 0:
             raise TransportError(
                 f"remote chmod failed: {path}",
@@ -484,7 +545,7 @@ class SshTransport:
 
     def remove(self, path: str, *, recursive: bool = False) -> None:
         flag = "-rf" if recursive else "-f"
-        result = self._shell(f"rm {flag} -- {shlex.quote(path)}")
+        result = self._shell(f"rm {flag} -- {self._quote_remote_path(path)}")
         if result.returncode != 0:
             raise TransportError(
                 f"remote remove failed: {path}",
@@ -517,6 +578,76 @@ class SshTransport:
         self._rsync(
             self._remote_target(remote), local, recursive=recursive, exclude=exclude
         )
+
+    def is_dir(self, path: str) -> bool:
+        result = self._shell(f"test -d {self._quote_remote_path(path)}")
+        return result.returncode == 0
+
+    def is_file(self, path: str) -> bool:
+        result = self._shell(f"test -f {self._quote_remote_path(path)}")
+        return result.returncode == 0
+
+    def rename(self, src: str, dst: str) -> None:
+        result = self._shell(
+            f"mv -- {self._quote_remote_path(src)} {self._quote_remote_path(dst)}"
+        )
+        if result.returncode != 0:
+            raise TransportError(f"remote rename failed: {src} -> {dst}")
+
+    def copy(self, src: str, dst: str) -> None:
+        result = self._shell(
+            f"cp -- {self._quote_remote_path(src)} {self._quote_remote_path(dst)}"
+        )
+        if result.returncode != 0:
+            raise TransportError(f"remote copy failed: {src} -> {dst}")
+
+    def copytree(self, src: str, dst: str) -> None:
+        result = self._shell(
+            f"cp -r -- {self._quote_remote_path(src)} {self._quote_remote_path(dst)}"
+        )
+        if result.returncode != 0:
+            raise TransportError(f"remote copytree failed: {src} -> {dst}")
+
+    def touch(self, path: str) -> None:
+        result = self._shell(f"touch -- {self._quote_remote_path(path)}")
+        if result.returncode != 0:
+            raise TransportError(f"remote touch failed: {path}")
+
+    def symlink(self, src: str, dst: str) -> None:
+        result = self._shell(
+            f"ln -s -- {self._quote_remote_path(src)} {self._quote_remote_path(dst)}"
+        )
+        if result.returncode != 0:
+            raise TransportError(f"remote symlink failed: {src} -> {dst}")
+
+    def listdir(self, path: str) -> list[str]:
+        result = self._shell(f"ls -1A -- {self._quote_remote_path(path)}")
+        if result.returncode != 0:
+            return []
+        return [line for line in result.stdout.strip().split("\n") if line]
+
+    def stat(self, path: str) -> dict[str, object]:
+        code = (
+            "import os,json; s=os.stat(%r); "
+            "print(json.dumps([s.st_size,s.st_mtime,os.path.isdir(%r),os.path.isfile(%r)]))"
+        )
+        result = self._shell(f"python3 -c {shlex.quote(code % (path, path, path))}")
+        if result.returncode != 0:
+            raise TransportError(f"remote stat failed: {path}")
+        size, mtime, is_dir, is_file = json.loads(result.stdout.strip())
+        return {
+            "size": int(size),
+            "mtime": float(mtime),
+            "is_dir": bool(is_dir),
+            "is_file": bool(is_file),
+        }
+
+    def getsize(self, path: str) -> int:
+        code = "import os; print(os.path.getsize(%r))"
+        result = self._shell(f"python3 -c {shlex.quote(code % path)}")
+        if result.returncode != 0:
+            raise TransportError(f"remote getsize failed: {path}")
+        return int(result.stdout.strip())
 
     def _rsync(
         self, src: str, dst: str, *, recursive: bool, exclude: Sequence[str]
