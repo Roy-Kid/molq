@@ -50,8 +50,10 @@ dev = [
   "pytest-cov",
   "coverage[toml]",
   "build",
-  "ruff",
-  "ty",
+  # Pin tools so CI `pip install -e ".[dev]"` and local pre-commit
+  # (language: system) resolve the same binaries. Bump deliberately.
+  "ruff==0.15.22",
+  "ty==0.0.62",
 ]
 docs = [
   "zensical>=0.0.45",

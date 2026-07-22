@@ -1,19 +1,16 @@
-# Mirrors every check in .github/workflows/ci.yml. Any divergence is a bug —
-# when you add/modify a CI step, update this file in the same commit.
-#
-# CI source of truth: .github/workflows/ci.yml
-#   Lint job:
-#     - ruff format --check src tests   → ruff-format (pre-commit stage)
-#     - ruff check src tests            → ruff (pre-commit stage; --fix locally)
-#     - pre-commit run --all-files      → this file (hygiene + ty)
-#   Test job:
-#     - pytest -q --cov=molq …          → pytest (pre-push stage)
+# Single source of truth with .github/workflows/ci.yml Lint job.
+# CI runs ONLY: pip install -e ".[dev]" + pre-commit + pre-commit run --all-files
+# Local hooks use language: system so they invoke the same ruff/ty/pytest from
+# the project env (pinned in pyproject.toml [project.optional-dependencies] dev).
+# Never pin a second ruff via ruff-pre-commit — that was the drift source.
 #
 # Stages:
-#   - pre-commit: fast static checks (must stay green for `pre-commit run --all-files`)
-#   - pre-push:   full test suite (slow; matches the CI test job)
+#   pre-commit — hygiene + ruff + ty  (what CI Lint runs)
+#   pre-push   — full pytest (what CI Test runs; cov optional locally)
 
 default_install_hook_types: [pre-commit, pre-push]
+default_language_version:
+  python: python3.12
 
 repos:
   - repo: https://github.com/pre-commit/pre-commit-hooks
@@ -26,29 +23,36 @@ repos:
       - id: check-toml
       - id: check-added-large-files
 
-  - repo: https://github.com/astral-sh/ruff-pre-commit
-    rev: v0.11.4
-    hooks:
-      # Matches CI "ruff check src tests"; --fix keeps the working tree clean
-      # so commit-time fails match CI without a second manual pass.
-      - id: ruff
-        args: [--fix]
-      # Matches CI "ruff format --check src tests"
-      - id: ruff-format
-
   - repo: local
     hooks:
+      # Same binary as CI: `ruff`/`ty` from pip install -e ".[dev]" (pinned).
+      # always_run: match CI `pre-commit run --all-files` even when the
+      # commit only touches yaml/toml/docs.
+      - id: ruff-check
+        name: ruff check src tests (CI Lint)
+        entry: ruff check src tests
+        language: system
+        pass_filenames: false
+        always_run: true
+
+      - id: ruff-format
+        name: ruff format --check src tests (CI Lint)
+        entry: ruff format --check src tests
+        language: system
+        pass_filenames: false
+        always_run: true
+
       - id: ty
-        name: ty check src/ (CI via pre-commit)
+        name: ty check src/ (CI Lint)
         entry: ty check src/
         language: system
-        types: [python]
         pass_filenames: false
+        always_run: true
 
       - id: pytest
-        name: pytest -q (CI Test job)
-        entry: pytest -q
+        name: pytest -q --cov=molq (CI Test)
+        entry: pytest -q --cov=molq --cov-report=term-missing
         language: system
-        types: [python]
         pass_filenames: false
+        always_run: true
         stages: [pre-push]
