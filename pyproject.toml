@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "molcrafts-molq"
-version = "0.5.0"
+version = "0.6.0"
 description = "Unified job queue for local execution and HPC schedulers"
 readme = "README.md"
 requires-python = ">=3.12"
@@ -54,7 +54,8 @@ dev = [
   "ty",
 ]
 docs = [
-  "zensical>=0.0.27",
+  "zensical>=0.0.45",
+  "molcrafts-zensical-theme>=0.2.3",
 ]
 
 [tool.setuptools]

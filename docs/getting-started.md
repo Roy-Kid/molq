@@ -12,7 +12,13 @@ For local development:
 
 ```bash
 pip install -e ".[dev]"
-pip install -e ".[docs]"
+pip install -e ".[docs]"   # zensical + molcrafts-zensical-theme
+```
+
+Preview docs:
+
+```bash
+zensical serve
 ```
 
 ## The two-axis model in 30 seconds

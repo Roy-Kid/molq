@@ -1,38 +1,65 @@
 [project]
-site_name = "molcrafts-molq"
-site_url = "https://github.com/MolCrafts/molq/tree/master/docs"
+site_name = "molq"
 site_description = "Unified job queue for local execution and HPC schedulers."
+site_url = "https://molcrafts.github.io/molq/"
 site_author = "Roy Kid"
-copyright = "&copy; 2026 Roy Kid"
+copyright = "Copyright &copy; 2026 MolCrafts"
 docs_dir = "docs"
 site_dir = "site"
 repo_url = "https://github.com/MolCrafts/molq"
 repo_name = "MolCrafts/molq"
 edit_uri = "edit/master/docs/"
+
 nav = [
-  {"Overview" = "index.md"},
-  {"Guide" = [
-    "concepts.md",
-    "getting-started.md",
-    "schedulers.md",
-    "monitoring.md",
-    "cli.md"
-  ]},
-  {"Reference" = [
-    "api.md",
-    "release-notes.md"
-  ]}
+  { "Home" = "index.md" },
+  { "Tutorials" = [
+    { "Getting Started" = "getting-started.md" },
+    { "Concepts" = "concepts.md" },
+    { "Schedulers" = "schedulers.md" },
+    { "Monitoring" = "monitoring.md" },
+    { "CLI" = "cli.md" },
+  ] },
+  { "API Reference" = "api.md" },
+  { "Changelog" = "release-notes.md" },
 ]
 
+# Shared MolCrafts theme (github.com/MolCrafts/molcrafts-zensical-theme): brand
+# palette, light/dark schemes, navigation features, and the home-page
+# hero/manual-home layout that docs/index.md uses. The theme already supplies
+# the features/palette/fonts — do not re-list them here. Install the theme to
+# build (see the `docs` optional-dependency group in pyproject.toml).
 [project.theme]
-features = [
-  "navigation.instant",
-  "navigation.instant.progress",
-  "content.action.edit",
-  "content.action.view",
-]
+name = "molcrafts"
+language = "en"
 
-[project.theme.icon]
-repo = "fontawesome/brands/github"
-edit = "material/pencil"
-view = "material/eye"
+# molq accent (rose) for links, hovers, and hero eyebrows.
+[project.extra.molcrafts]
+product = "molq"
+accent = "#db2777"                        # primary (主) — molq signature colour
+accent_soft = "rgba(219, 39, 119, 0.14)"  # secondary (副) — soft fill behind it
+
+[[project.extra.social]]
+icon = "fontawesome/brands/github"
+link = "https://github.com/MolCrafts/molq"
+
+[[project.extra.social]]
+icon = "fontawesome/brands/python"
+link = "https://pypi.org/project/molcrafts-molq/"
+
+[project.plugins.search]
+
+[project.plugins.mkdocstrings]
+default_handler = "python"
+
+[project.plugins.mkdocstrings.handlers.python]
+paths = ["src"]
+
+[project.plugins.mkdocstrings.handlers.python.options]
+docstring_style = "google"
+show_source = false
+show_root_heading = true
+show_root_full_path = false
+separate_signature = true
+heading_level = 3
+merge_init_into_class = true
+filters = ["!^_"]

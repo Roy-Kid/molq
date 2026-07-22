@@ -21,7 +21,7 @@ scheduler-specific behavior to scheduler implementations behind the
 > has no queue manager. The batch schedulers shell `sbatch` / `qsub` /
 > `bsub` (and friends) through whatever Transport you give them — same
 > code path for local SLURM and remote SLURM. See
-> [Concepts](concepts.md#transport--physical-where-commands-run).
+> [Concepts — Transport](concepts.md#transport-physical-where-commands-run).
 
 ## Constructing a Cluster
 

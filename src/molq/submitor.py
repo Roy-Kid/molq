@@ -35,6 +35,7 @@ from molq.models import (
     SubmitorDefaults,
 )
 from molq.monitor import JobMonitor
+from molq.plugin import PluginManager
 from molq.reconciler import JobReconciler
 from molq.scheduler import SchedulerCapabilities
 from molq.serde import (
@@ -109,6 +110,9 @@ class Submitor:
         jobs_dir: Optional override for per-job artifacts.  When omitted,
             materialized scripts and default logs are written under the
             submission working directory at ``.molq/jobs/<job-id>/``.
+        plugins: Official or third-party plugin names to attach (e.g.
+            ``["nerve"]``).  Empty/omitted means no plugins.
+        plugin_configs: Per-plugin config dicts (from ``[plugins.<name>]``).
     """
 
     # Always set after __init__; close() flips to None as an escape hatch
@@ -127,6 +131,8 @@ class Submitor:
         retention_policy: RetentionPolicy | None = None,
         profile_name: str | None = None,
         event_bus: EventBus | None = None,
+        plugins: list[str] | None = None,
+        plugin_configs: dict[str, dict[str, Any]] | None = None,
     ) -> None:
         from molq.cluster import Cluster
 
@@ -148,6 +154,7 @@ class Submitor:
         self._retention_policy = retention_policy or RetentionPolicy()
         self._profile_name = profile_name
         self._event_bus = event_bus or EventBus()
+        self._plugin_manager = PluginManager()
 
         self._reconciler = JobReconciler(
             target.scheduler_impl,
@@ -158,6 +165,9 @@ class Submitor:
             on_terminal=self._handle_terminal_record,
         )
         self._monitor: JobMonitor | None = None
+
+        if plugins:
+            self._attach_plugins(plugins, plugin_configs or {})
 
     @classmethod
     def from_profile(
@@ -325,6 +335,29 @@ class Submitor:
 
     def off_event(self, event: EventType, handler: Any) -> None:
         self._event_bus.off(event, handler)
+
+    def _attach_plugins(
+        self,
+        names: list[str],
+        configs: dict[str, dict[str, Any]],
+    ) -> None:
+        from molq.plugin import PluginContext
+
+        def ctx_factory(name: str, pcfg: Any) -> PluginContext:
+            return PluginContext(
+                event_bus=self._event_bus,
+                cluster_name=self._target.name,
+                config=pcfg,
+                get_record=self._store.get_record,
+                list_active_records=lambda: self._store.get_active_records(
+                    self._target.name
+                ),
+                list_records=lambda: self._store.list_records(
+                    self._target.name, include_terminal=True
+                ),
+            )
+
+        self._plugin_manager.load(names, ctx_factory=ctx_factory, configs=configs)
 
     def watch_jobs(
         self,
@@ -505,11 +538,14 @@ class Submitor:
             time.sleep(interval)
 
     def close(self) -> None:
-        """Release the underlying :class:`JobStore` connection.
+        """Release plugins and the underlying :class:`JobStore` connection.
 
         Safe to call multiple times.  After ``close()`` no further methods
         should be invoked on this Submitor.
         """
+        mgr = getattr(self, "_plugin_manager", None)
+        if mgr is not None:
+            mgr.detach_all()
         store = getattr(self, "_store", None)
         if store is not None:
             store.close()

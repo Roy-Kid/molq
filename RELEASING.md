@@ -19,13 +19,20 @@ The GitHub repository must also have an environment named `pypi`.
 
 ## Release Checklist
 
-1. Ensure `pyproject.toml` has the intended version.
-2. Update `CHANGELOG.md` with the release date and notable changes.
-3. Run the test suite:
+1. Ensure `pyproject.toml` has the intended version (e.g. `0.6.0`).
+2. Update `CHANGELOG.md` and `docs/release-notes.md` with the release date
+   and notable changes. Keep README / CLAUDE.md / docs paths current.
+3. Local CI parity (must match `.github/workflows/ci.yml`):
 
    ```bash
-   pytest -q
+   ruff format --check src tests
+   ruff check src tests
+   pre-commit run --all-files
+   pytest -q --cov=molq --cov-report=xml
    ```
+
+   Install hooks once with `pre-commit install` so commit/push gate the same
+   checks (static on commit; full pytest on push).
 
 4. Build distributions:
 
@@ -40,11 +47,11 @@ The GitHub repository must also have an environment named `pypi`.
    python -m twine check dist/*
    ```
 
-6. Tag the release:
+6. Tag the release (tag must match the version, with a `v` prefix):
 
    ```bash
-   git tag v0.1.0
-   git push origin v0.1.0
+   git tag v0.6.0
+   git push origin v0.6.0
    ```
 
 7. Wait for the `Release` workflow to publish the artifacts to PyPI.
