@@ -63,6 +63,8 @@ Submitor(
     retention_policy: RetentionPolicy | None = None,
     profile_name: str | None = None,
     event_bus: EventBus | None = None,
+    plugins: list[str] | None = None,
+    plugin_configs: dict[str, dict] | None = None,
 )
 ```
 
@@ -71,9 +73,11 @@ are scoped implicitly to `target.name`, so multiple Submitors can share a
 JobStore without seeing each other's records.
 
 - `target` — the destination Cluster (required)
-- `store` — defaults to `JobStore()` (`~/.molq/jobs.db`)
+- `store` — defaults to auto-bootstrap via molcfg (`jobs.db` under the molq project config dir)
 - `jobs_dir` — when omitted, per-job artifacts are written under the
   submission working directory at `.molq/jobs/<job-id>/`
+- `plugins` — official or third-party plugin names to attach (e.g. `["nerve"]`)
+- `plugin_configs` — per-plugin config dicts from `plugins.<name>` in config.toml
 
 #### Public properties
 
@@ -97,6 +101,8 @@ JobStore without seeing each other's records.
 | `cleanup_jobs(dry_run=False, retention_policy=None) -> dict[str, list[str]]` | Prune old artifacts and records |
 | `run_daemon(once=False, interval=5.0, run_cleanup=True) -> None` | Background reconciliation loop |
 | `on_event(event, handler) -> None` | Subscribe to lifecycle events |
+| `off_event(event, handler) -> None` | Unsubscribe a handler |
+| `close() -> None` | Detach plugins and close the store |
 | `off_event(event, handler) -> None` | Unsubscribe |
 | `close() -> None` | Close the underlying store connection |
 
@@ -357,7 +363,8 @@ Methods: `on(event, handler)`, `off(event, handler)`, `emit(event, data=None)`.
 
 ### `MolqProfile`
 
-Named profile loaded from `~/.molq/config.toml`.
+Named profile loaded from the molq config file (default
+`~/.molcrafts/molq/config/config.toml` via molcfg).
 
 Key fields: `name`, `scheduler`, `cluster_name`, `defaults`,
 `scheduler_options`, `retry`, `retention`, `jobs_dir`.
@@ -529,3 +536,29 @@ Fields:
 Immutable persisted lifecycle transition.
 
 Fields: `job_id`, `old_state`, `new_state`, `timestamp`, `reason`.
+
+## Plugins
+
+```python
+from molq import (
+    MolqPlugin,
+    PluginContext,
+    PluginManager,
+    available_plugins,
+    create_plugin,
+    enabled_plugin_names,
+)
+```
+
+| Symbol | Role |
+|---|---|
+| `MolqPlugin` | Protocol: `name`, `attach(ctx)`, `detach()` |
+| `PluginContext` | `event_bus`, `cluster_name`, `config`, `get_record`, `list_active_records`, `list_records` |
+| `PluginManager` | Attach/detach a set of plugins for one Submitor |
+| `available_plugins()` | Builtin + entry-point names |
+| `create_plugin(name)` | Instantiate by name |
+| `enabled_plugin_names(plugins, default_official=…)` | Resolve config table to load list |
+
+Official plugin **nerve** lives at `molq.plugins.nerve` (ships with molq). It
+rollups job status to `http://127.0.0.1:17890` for the Nerve menu-bar app
+(display-only; fail-open).

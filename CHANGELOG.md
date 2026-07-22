@@ -5,6 +5,33 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.6.0] - 2026-07-22
+
+### Added
+- **Plugin host** (`molq.plugin`): `MolqPlugin` protocol, `PluginContext`,
+  `PluginManager`, `available_plugins()`, `create_plugin()`, and
+  `enabled_plugin_names()`. Official plugins ship in-tree; third-party
+  plugins load from the `molq.plugins` setuptools entry-point group
+  (official names win on conflict).
+- **Official `nerve` plugin** (`molq.plugins.nerve`): rollup job status
+  to a local Nerve ingest (`http://127.0.0.1:17890`). Display-only /
+  fail-open; no scheduler or store writes.
+- `Submitor(..., plugins=..., plugin_configs=...)` attaches observers
+  for the session lifetime; `close()` detaches plugins.
+- CLI: `molq plugins list`; `molq daemon` enables **nerve** when no
+  `[plugins]` table is present in config.
+- Config: `[plugins.<name>]` tables on the molq config file (canonical
+  path via molcfg: `~/.molcrafts/molq/config/config.toml`).
+
+### Changed
+- CLI help reorganized into Jobs / History / Live / Setup groups.
+- Docs site styling via **molcrafts-zensical-theme** (hero home, accent,
+  light/dark). Concepts, CLI, and API docs cover plugins and nerve.
+
+### Docs
+- `docs/release-notes.md`, concepts, CLI, and API updated for the plugin
+  host. README capability table includes `plugin` / `plugins`.
+
 ## [0.5.0] - 2026-05-11
 
 ### Breaking
