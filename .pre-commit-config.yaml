@@ -25,32 +25,34 @@ repos:
 
   - repo: local
     hooks:
-      # Same binary as CI: `ruff` from pip install -e ".[dev]" (pinned).
+      # Same binary as CI: `ruff`/`ty` from pip install -e ".[dev]" (pinned).
+      # always_run: match CI `pre-commit run --all-files` even when the
+      # commit only touches yaml/toml/docs.
       - id: ruff-check
         name: ruff check src tests (CI Lint)
         entry: ruff check src tests
         language: system
         pass_filenames: false
-        types: [python]
+        always_run: true
 
       - id: ruff-format
         name: ruff format --check src tests (CI Lint)
         entry: ruff format --check src tests
         language: system
         pass_filenames: false
-        types: [python]
+        always_run: true
 
       - id: ty
         name: ty check src/ (CI Lint)
         entry: ty check src/
         language: system
         pass_filenames: false
-        types: [python]
+        always_run: true
 
       - id: pytest
         name: pytest -q --cov=molq (CI Test)
         entry: pytest -q --cov=molq --cov-report=term-missing
         language: system
         pass_filenames: false
-        types: [python]
+        always_run: true
         stages: [pre-push]
