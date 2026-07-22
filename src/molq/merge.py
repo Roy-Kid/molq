@@ -6,6 +6,7 @@ Pure function that merges per-submit parameters with Submitor defaults.
 from __future__ import annotations
 
 import dataclasses
+from typing import Any, cast
 
 from molq.models import SubmitorDefaults
 from molq.types import JobExecution, JobResources, JobScheduling
@@ -26,7 +27,8 @@ def _merge_one[T](default: T | None, override: T | None, cls: type[T]) -> T:
         return default
 
     merged_fields: dict[str, object] = {}
-    for f in dataclasses.fields(cls):  # type: ignore[arg-type]
+    # ``cls`` is always a frozen dataclass at call sites; cast for ty/dataclasses.
+    for f in dataclasses.fields(cast(Any, cls)):
         override_val = getattr(override, f.name)
         default_val = getattr(default, f.name)
         # Use override value if it's not the field's default
