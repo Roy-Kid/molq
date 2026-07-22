@@ -27,17 +27,9 @@ jobs:
           pip install -e ".[dev]"
           pip install pre-commit
 
-      - name: Run ruff format
-        run: ruff format --check src tests
-
-      - name: Run ruff lint
-        run: ruff check src tests
-
-      - name: Run pre-commit hooks
-        # Catches anything bypassed via --no-verify locally and keeps the
-        # pre-commit config honest.  Runs ruff lint + format and `ty check
-        # src/`; the test suite is enforced separately in the `test` job
-        # since pytest is configured as a pre-push (not pre-commit) hook.
+      - name: Run pre-commit (single Lint source of truth)
+        # Must stay identical to local: pre-commit run --all-files
+        # Tools (ruff, ty) come from .[dev] pins — not a second pre-commit mirror.
         run: pre-commit run --all-files
 
   test:
