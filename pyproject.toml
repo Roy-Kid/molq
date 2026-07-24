@@ -36,7 +36,7 @@ dependencies = [
 
 [project.urls]
 Homepage = "https://github.com/MolCrafts/molq"
-Documentation = "https://github.com/MolCrafts/molq/tree/master/docs"
+Documentation = "https://molcrafts.github.io/molq/"
 Repository = "https://github.com/MolCrafts/molq"
 Issues = "https://github.com/MolCrafts/molq/issues"
 Changelog = "https://github.com/MolCrafts/molq/blob/master/CHANGELOG.md"
@@ -59,7 +59,8 @@ dev = [
 ]
 docs = [
   "zensical>=0.0.45",
-  "molcrafts-zensical-theme>=0.2.3",
+  "molcrafts-zensical-theme==0.2.3",
+  "mkdocstrings[python]>=1.0.0",
 ]
 
 [tool.setuptools]
