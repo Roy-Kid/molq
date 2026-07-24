@@ -40,7 +40,8 @@ All terminal states report `True` from `is_terminal`.
 ## Persistence
 
 `JobStore` persists all job records in SQLite with WAL mode enabled. By
-default the database is stored at `~/.molq/jobs.db`. Multiple Submitors
+default the database is stored at `~/.molcrafts/molq/config/jobs.db`
+(via molcfg; honour `MOLCRAFTS_HOME` to redirect). Multiple Submitors
 (across multiple Clusters) share this store and filter by their target's
 name.
 

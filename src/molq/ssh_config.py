@@ -4,7 +4,7 @@ molq's :class:`~molq.transport.SshTransport` already inherits ``~/.ssh/config``
 implicitly (it shells out to OpenSSH).  This module makes that config
 *visible* — listing the named hosts the user has already configured so the
 CLI and API can show them as cluster candidates without forcing a
-``~/.molq/config.toml`` entry.
+molq config-file entry (molcfg path).
 
 Two operations:
 

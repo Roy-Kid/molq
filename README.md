@@ -43,7 +43,9 @@ molq is a unified job queue for Python workloads that need the same submission A
 | `models` | Job data models — `JobRecord`, `RetryPolicy`, `RetentionPolicy`, `JobDependency`, `SubmitorDefaults` |
 | `types` | Frozen value types — `Memory`, `Duration`, `Script`, `JobResources`, `JobScheduling`, `JobExecution` |
 | `options` | Per-scheduler frozen option dataclasses (`Local`, `Slurm`, `PBS`, `LSF`) — no untyped dicts |
-| `config` | Profile and config loading from `~/.molq/config.toml` with reusable defaults |
+| `config` | Profile and config loading from molcfg (`~/.molcrafts/molq/config/config.toml`, or `MOLCRAFTS_HOME`) |
+| `plugin` | `MolqPlugin` host — official builtins + third-party entry points (`molq.plugins`) |
+| `plugins` | Official plugins (e.g. `nerve` → local Nerve menu-bar status; fail-open) |
 | `workspace` | `Workspace` / `Project` — directory handles over a cluster's filesystem (local or remote) |
 | `ssh_config` | Surfaces `~/.ssh/config` hosts as cluster candidates |
 | `serde` | Serialization helpers for stored requests and config-driven values |
@@ -52,7 +54,7 @@ molq is a unified job queue for Python workloads that need the same submission A
 | `merge` | Pure function that merges per-submit parameters with `Submitor` defaults |
 | `dashboard` | Full-screen terminal dashboard for monitoring runs and jobs |
 | `testing` | `FakeScheduler` and `make_submitor` for tests and runnable examples without a real cluster |
-| `cli` | Typer + Rich CLI: `submit`, `list`, `status`, `watch`, `logs`, `history`, `inspect`, `cleanup`, `daemon`, `monitor`, `cancel` |
+| `cli` | Typer + Rich CLI: jobs (`submit`/`list`/`status`/`logs`/`cancel`/…), live (`watch`/`monitor`/`daemon`), setup (`clusters`/`workspace`/`plugins`) |
 
 ## Install
 

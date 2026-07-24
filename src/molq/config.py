@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from collections.abc import Sequence
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
@@ -31,7 +32,7 @@ from molq.serde import (
 
 @dataclass(frozen=True)
 class MolqProfile:
-    """Named profile loaded from ``~/.molq/config.toml``."""
+    """Named profile loaded from the molq config file (molcfg path)."""
 
     name: str
     scheduler: str
@@ -48,6 +49,8 @@ class MolqConfig:
     """Loaded molq configuration."""
 
     profiles: dict[str, MolqProfile]
+    #: Plugin name → free-form config mapping (``[plugins.<name>]``).
+    plugins: dict[str, dict[str, Any]] = field(default_factory=dict)
 
 
 # Validation schema for a single profile section
@@ -73,20 +76,60 @@ def default_config_path() -> Path:
 def load_config(path: str | Path | None = None) -> MolqConfig:
     config_path = Path(path).expanduser() if path is not None else default_config_path()
     if not config_path.exists():
-        return MolqConfig(profiles={})
+        return MolqConfig(profiles={}, plugins={})
 
     cfg = ConfigLoader([TomlFileSource(config_path)]).load()
     raw_profiles = cfg.get("profiles")
-    if not raw_profiles:
-        return MolqConfig(profiles={})
-
     profiles: dict[str, MolqProfile] = {}
-    for name, section in raw_profiles.items():
-        data: dict[str, Any] = (
-            section.to_dict() if hasattr(section, "to_dict") else section
-        )
-        profiles[name] = _parse_profile(name, data)
-    return MolqConfig(profiles=profiles)
+    if raw_profiles:
+        for name, section in raw_profiles.items():
+            data: dict[str, Any] = (
+                section.to_dict() if hasattr(section, "to_dict") else section
+            )
+            profiles[name] = _parse_profile(name, data)
+
+    plugins = _parse_plugins_section(cfg.get("plugins"))
+    return MolqConfig(profiles=profiles, plugins=plugins)
+
+
+def _parse_plugins_section(raw: Any) -> dict[str, dict[str, Any]]:
+    """Parse ``[plugins.<name>]`` tables into plain dicts."""
+    if raw is None:
+        return {}
+    if hasattr(raw, "to_dict"):
+        raw = raw.to_dict()
+    if not isinstance(raw, dict):
+        return {}
+    out: dict[str, dict[str, Any]] = {}
+    for name, section in raw.items():
+        if hasattr(section, "to_dict"):
+            section = section.to_dict()
+        if isinstance(section, dict):
+            out[str(name)] = dict(section)
+        else:
+            out[str(name)] = {"enabled": bool(section)}
+    return out
+
+
+def enabled_plugin_names(
+    plugins: dict[str, dict[str, Any]],
+    *,
+    default_official: Sequence[str] | None = None,
+) -> list[str]:
+    """Names to load: explicit enabled plugins, or *default_official* when empty.
+
+    A plugin with ``enabled = false`` is never loaded. When the config has no
+    ``[plugins]`` entries at all, *default_official* (e.g. ``["nerve"]`` for
+    daemon) is used.
+    """
+    if not plugins:
+        return list(default_official or [])
+    names: list[str] = []
+    for name, pcfg in plugins.items():
+        if pcfg.get("enabled", True) is False:
+            continue
+        names.append(name)
+    return names
 
 
 def load_profile(name: str, path: str | Path | None = None) -> MolqProfile:

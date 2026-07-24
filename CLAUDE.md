@@ -66,7 +66,8 @@ Three-layer architecture:
    - `JobMonitor`: blocking wait with pluggable `PollingStrategy`
    - `EventBus` (`callbacks.py`): pub/sub for job lifecycle events
 
-5. **CLI** (`cli/main.py`): Typer + Rich — commands: submit, list, status, logs, watch, history, inspect, monitor, cancel, cleanup, daemon
+5. **CLI** (`cli/main.py`): Typer + Rich — Jobs / History / Live / Setup
+   (`clusters`, `workspace`, `plugins`); daemon loads plugins (default nerve)
 
 ### Module Dependency Graph
 
@@ -80,12 +81,23 @@ Layer 5: store.py                        (SQLite persistence)
 Layer 6: scheduler.py                    (Scheduler protocol + implementations)
 Layer 7: reconciler.py                   (scheduler ⇄ DB sync)
 Layer 8: strategies.py, callbacks.py     (polling strategies, event bus)
+Layer 8.5: plugin.py                     (MolqPlugin host; builtin + entry points)
 Layer 9: monitor.py                      (polling engine)
 Layer 10: cluster.py                     (Cluster destination spec)
-Layer 11: submitor.py                    (Submitor + JobHandle)
+Layer 11: submitor.py                    (Submitor + JobHandle + plugin attach)
 Layer 12: __init__.py                    (public re-exports)
 Layer 13: cli/main.py                    (Typer CLI)
 ```
+
+### Plugins
+
+- **Host** (`plugin.py`): `MolqPlugin` protocol, `PluginContext`, `PluginManager`, entry-point group `molq.plugins`.
+- **Official** (ship with molq, no extra pip): `molq.plugins.*` — currently `nerve` (rollup job status → Nerve ingest `127.0.0.1:17890`).
+- **Third-party**: setuptools entry points `molq.plugins`; official names win on conflict.
+- Config: `[plugins.<name>]` in the molq config file (default
+  `~/.molcrafts/molq/config/config.toml` via molcfg). Daemon defaults to
+  `nerve` when no `[plugins]` section.
+- Plugins observe `EventBus` only (fail-open); they must not write scheduler/store.
 
 ### Key Patterns
 

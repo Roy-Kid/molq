@@ -1,39 +1,41 @@
-# Hooks split by stage:
-#   - commit:   fast static checks (ruff lint + format, ty type check, basic
-#               file hygiene)
-#   - pre-push: tests (slow; matches what CI's test job runs)
+# Managed by prek: `prek install`
+# Gates via tox from pyproject optional-dependencies `dev`
+#   commit/pre-push: uv run --extra dev tox -e lint
+#   pre-push:        uv run --extra dev tox -e py
+#
+# Install: prek install
+
 default_install_hook_types: [pre-commit, pre-push]
 
 repos:
   - repo: https://github.com/pre-commit/pre-commit-hooks
-    rev: v5.0.0
+    rev: v6.0.0
     hooks:
       - id: trailing-whitespace
       - id: end-of-file-fixer
       - id: check-yaml
-        exclude: ^(mkdocs\.yml|docs/)
+        args: ['--unsafe']
       - id: check-added-large-files
-
-  - repo: https://github.com/astral-sh/ruff-pre-commit
-    rev: v0.11.4
-    hooks:
-      - id: ruff
-        args: [--fix]
-      - id: ruff-format
+        args: ['--maxkb=1024']
+      - id: check-merge-conflict
+      - id: mixed-line-ending
+      - id: check-toml
+      - id: check-json
 
   - repo: local
     hooks:
-      - id: ty
-        name: ty (type check)
-        entry: ty check src/
+      - id: tox-lint
+        name: "CI lint (uv run --extra dev tox -e lint)"
+        entry: uv run --extra dev tox -e lint
         language: system
-        types: [python]
         pass_filenames: false
+        always_run: true
+        stages: [pre-commit, pre-push]
 
-      - id: pytest
-        name: pytest
-        entry: pytest -q
+      - id: tox-py
+        name: "CI test (uv run --extra dev tox -e py)"
+        entry: uv run --extra dev tox -e py
         language: system
-        types: [python]
         pass_filenames: false
+        always_run: true
         stages: [pre-push]

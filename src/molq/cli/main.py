@@ -1,9 +1,5 @@
 #!/usr/bin/env python3
-"""Molq CLI - Modern Job Queue.
-
-Typer + Rich CLI for submitting, monitoring, and managing jobs
-across local and cluster schedulers.
-"""
+"""Molq CLI — submit, track, and manage jobs on local and HPC schedulers."""
 
 import sys
 import time
@@ -22,11 +18,35 @@ from rich import print as rprint
 from rich.console import Console
 from rich.table import Table
 
+# ---------------------------------------------------------------------------
+# Shared option / argument help (keep wording consistent across commands)
+# ---------------------------------------------------------------------------
+
+_H_SCHEDULER = "Scheduler backend: local | slurm | pbs | lsf"
+_H_JOB_ID = "Molq job ID (UUID)"
+_H_CLUSTER = "Cluster namespace (default: profile cluster_name or cli_<scheduler>)"
+_H_PROFILE = "Named profile from config.toml"
+_H_CONFIG = "Path to config.toml (default via molcfg / ~/.molcrafts/molq/…)"
+_H_ALL_TERMINAL = "Include finished jobs (succeeded / failed / cancelled / …)"
+
+_APP_HELP = """\
+Unified job queue for [bold]local[/] execution and HPC ([bold]SLURM[/], [bold]PBS[/], [bold]LSF[/]).
+
+[bold]Jobs[/]       submit · list · status · logs · watch · cancel · inspect
+[bold]History[/]    history · cleanup
+[bold]Live[/]       monitor · daemon
+[bold]Setup[/]      clusters · workspace · plugins
+
+Most job commands take a [cyan]SCHEDULER[/] argument and optional \
+[cyan]--cluster[/] / [cyan]--profile[/] / [cyan]--config[/].
+"""
+
 app = typer.Typer(
     name="molq",
-    help="Modern Job Queue for local and cluster runners.",
+    help=_APP_HELP,
     no_args_is_help=True,
     rich_markup_mode="rich",
+    context_settings={"help_option_names": ["-h", "--help"]},
 )
 
 console = Console(stderr=True)
@@ -45,10 +65,21 @@ def _open_submitor(
     cluster: str | None = None,
     profile: str | None = None,
     config_path: str | None = None,
+    *,
+    default_plugins: list[str] | None = None,
 ) -> Iterator["Submitor"]:
-    """Open a Submitor for the CLI and guarantee its connection is closed."""
+    """Open a Submitor for the CLI and guarantee its connection is closed.
+
+    Args:
+        default_plugins: Official plugins to enable when config has no
+            ``[plugins]`` section (e.g. daemon defaults to ``["nerve"]``).
+    """
     from molq import Cluster, Submitor
-    from molq.config import load_profile
+    from molq.config import enabled_plugin_names, load_config, load_profile
+
+    cfg = load_config(config_path)
+    plugin_names = enabled_plugin_names(cfg.plugins, default_official=default_plugins)
+    plugin_configs = cfg.plugins
 
     if profile:
         loaded = load_profile(profile, config_path)
@@ -70,6 +101,8 @@ def _open_submitor(
             default_retry_policy=loaded.retry,
             retention_policy=loaded.retention,
             profile_name=loaded.name,
+            plugins=plugin_names or None,
+            plugin_configs=plugin_configs or None,
         )
     else:
         cluster_name = cluster or f"cli_{scheduler.value}"
@@ -77,7 +110,11 @@ def _open_submitor(
             target = Cluster.from_ssh_alias(cluster_name, scheduler=scheduler.value)
         except Exception:
             target = Cluster(cluster_name, scheduler.value)
-        submitor = Submitor(target=target)
+        submitor = Submitor(
+            target=target,
+            plugins=plugin_names or None,
+            plugin_configs=plugin_configs or None,
+        )
     try:
         yield submitor
     finally:
@@ -193,73 +230,105 @@ def _dependency_marker(relation_state: str) -> str:
 
 @app.command()
 def submit(
-    scheduler: Annotated[SchedulerType, typer.Argument(help="Scheduler backend")],
+    scheduler: Annotated[SchedulerType, typer.Argument(help=_H_SCHEDULER)],
     command: Annotated[
         list[str] | None,
-        typer.Argument(help="Command to execute"),
+        typer.Argument(help="Command and arguments to run (argv form)"),
     ] = None,
-    cpu_count: Annotated[int | None, typer.Option("--cpus", help="CPU cores")] = None,
+    cpu_count: Annotated[
+        int | None, typer.Option("--cpus", help="CPU cores to request")
+    ] = None,
     memory: Annotated[
-        str | None, typer.Option("--mem", help="Memory (e.g. 8G)")
+        str | None,
+        typer.Option("--mem", help="Memory request, e.g. 8G or 512M"),
     ] = None,
-    time_limit: Annotated[str | None, typer.Option("--time", help="Time limit")] = None,
+    time_limit: Annotated[
+        str | None,
+        typer.Option("--time", help="Wall-time limit, e.g. 4h, 2h30m, 04:00:00"),
+    ] = None,
     partition: Annotated[
         str | None,
         typer.Option(
             "--partition",
-            help="Scheduler partition (SLURM partition / PBS / LSF queue)",
+            help="Partition / queue (SLURM partition, PBS/LSF queue)",
         ),
     ] = None,
     queue: Annotated[
         str | None,
         typer.Option("--queue", help="Deprecated alias for --partition", hidden=True),
     ] = None,
-    gpu_count: Annotated[int | None, typer.Option("--gpus", help="GPUs")] = None,
-    gpu_type: Annotated[str | None, typer.Option(help="GPU type")] = None,
-    job_name: Annotated[str | None, typer.Option("--name", help="Job name")] = None,
-    workdir: Annotated[str | None, typer.Option(help="Working directory")] = None,
-    account: Annotated[str | None, typer.Option(help="Billing account")] = None,
-    cluster: Annotated[str | None, typer.Option(help="Cluster name")] = None,
-    profile: Annotated[str | None, typer.Option(help="Profile name")] = None,
-    config: Annotated[str | None, typer.Option(help="Path to config.toml")] = None,
+    gpu_count: Annotated[
+        int | None, typer.Option("--gpus", help="GPU count to request")
+    ] = None,
+    gpu_type: Annotated[
+        str | None, typer.Option(help="GPU type string for the scheduler")
+    ] = None,
+    job_name: Annotated[
+        str | None, typer.Option("--name", help="Job name shown in the scheduler")
+    ] = None,
+    workdir: Annotated[
+        str | None, typer.Option(help="Working directory for the job")
+    ] = None,
+    account: Annotated[
+        str | None, typer.Option(help="Billing / accounting account")
+    ] = None,
+    cluster: Annotated[str | None, typer.Option(help=_H_CLUSTER)] = None,
+    profile: Annotated[str | None, typer.Option(help=_H_PROFILE)] = None,
+    config: Annotated[str | None, typer.Option(help=_H_CONFIG)] = None,
     retries: Annotated[
-        int | None, typer.Option("--retries", help="Maximum attempts")
+        int | None,
+        typer.Option("--retries", help="Max total attempts (1 = no retry)"),
     ] = None,
     retry_on_exit_code: Annotated[
         list[int] | None,
         typer.Option(
             "--retry-on-exit-code",
-            help="Retry only for the specified exit code(s)",
+            help="Only retry when exit code matches (repeatable)",
         ),
     ] = None,
     after: Annotated[
         list[str] | None,
-        typer.Option("--after", help="Wait until the given molq job(s) finish"),
+        typer.Option(
+            "--after",
+            help="Run after molq job(s) reach any terminal state (repeatable)",
+        ),
     ] = None,
     after_started: Annotated[
         list[str] | None,
         typer.Option(
             "--after-started",
-            help="Wait until the given molq job(s) start running",
+            help="Run after molq job(s) start running (repeatable)",
         ),
     ] = None,
     after_failure: Annotated[
         list[str] | None,
         typer.Option(
             "--after-failure",
-            help="Wait until the given molq job(s) fail",
+            help="Run after molq job(s) fail / cancel / time out (repeatable)",
         ),
     ] = None,
     after_success: Annotated[
         list[str] | None,
         typer.Option(
             "--after-success",
-            help="Wait until the given molq job(s) succeed",
+            help="Run after molq job(s) succeed (repeatable)",
         ),
     ] = None,
-    block: Annotated[bool, typer.Option(help="Wait for completion")] = False,
+    block: Annotated[
+        bool,
+        typer.Option(help="Block until the job reaches a terminal state"),
+    ] = False,
 ) -> None:
-    """Submit a job to the specified scheduler."""
+    """Submit a job.
+
+    Examples:
+
+      molq submit local echo hello
+
+      molq submit slurm --cpus 8 --mem 32G --time 4h python train.py
+
+      molq submit slurm --after-success $JOB1 python eval.py
+    """
     from molq import (
         Duration,
         JobExecution,
@@ -339,14 +408,14 @@ def submit(
 @app.command(name="list")
 def list_jobs(
     scheduler: Annotated[
-        SchedulerType, typer.Argument(help="Scheduler")
+        SchedulerType, typer.Argument(help=_H_SCHEDULER)
     ] = SchedulerType.local,
-    cluster: Annotated[str | None, typer.Option(help="Cluster name")] = None,
-    profile: Annotated[str | None, typer.Option(help="Profile name")] = None,
-    config: Annotated[str | None, typer.Option(help="Path to config.toml")] = None,
-    all: Annotated[bool, typer.Option("--all", help="Include terminal jobs")] = False,
+    cluster: Annotated[str | None, typer.Option(help=_H_CLUSTER)] = None,
+    profile: Annotated[str | None, typer.Option(help=_H_PROFILE)] = None,
+    config: Annotated[str | None, typer.Option(help=_H_CONFIG)] = None,
+    all: Annotated[bool, typer.Option("--all", help=_H_ALL_TERMINAL)] = False,
 ) -> None:
-    """List submitted jobs."""
+    """List jobs in this cluster namespace (active only unless --all)."""
     with _open_submitor(scheduler, cluster, profile, config) as submitor:
         submitor.refresh_jobs()
         records = submitor.list_jobs(include_terminal=all)
@@ -381,15 +450,15 @@ def list_jobs(
 
 @app.command()
 def status(
-    job_id: Annotated[str, typer.Argument(help="Job ID")],
+    job_id: Annotated[str, typer.Argument(help=_H_JOB_ID)],
     scheduler: Annotated[
-        SchedulerType, typer.Argument(help="Scheduler")
+        SchedulerType, typer.Argument(help=_H_SCHEDULER)
     ] = SchedulerType.local,
-    cluster: Annotated[str | None, typer.Option(help="Cluster name")] = None,
-    profile: Annotated[str | None, typer.Option(help="Profile name")] = None,
-    config: Annotated[str | None, typer.Option(help="Path to config.toml")] = None,
+    cluster: Annotated[str | None, typer.Option(help=_H_CLUSTER)] = None,
+    profile: Annotated[str | None, typer.Option(help=_H_PROFILE)] = None,
+    config: Annotated[str | None, typer.Option(help=_H_CONFIG)] = None,
 ) -> None:
-    """Get job status."""
+    """Show current state of one job (refreshes from the scheduler first)."""
     from molq import JobNotFoundError
 
     with _open_submitor(scheduler, cluster, profile, config) as submitor:
@@ -417,16 +486,19 @@ def status(
 
 @app.command()
 def logs(
-    job_id: Annotated[str, typer.Argument(help="Job ID")],
+    job_id: Annotated[str, typer.Argument(help=_H_JOB_ID)],
     scheduler: Annotated[
-        SchedulerType, typer.Argument(help="Scheduler")
+        SchedulerType, typer.Argument(help=_H_SCHEDULER)
     ] = SchedulerType.local,
-    cluster: Annotated[str | None, typer.Option(help="Cluster name")] = None,
-    profile: Annotated[str | None, typer.Option(help="Profile name")] = None,
-    config: Annotated[str | None, typer.Option(help="Path to config.toml")] = None,
+    cluster: Annotated[str | None, typer.Option(help=_H_CLUSTER)] = None,
+    profile: Annotated[str | None, typer.Option(help=_H_PROFILE)] = None,
+    config: Annotated[str | None, typer.Option(help=_H_CONFIG)] = None,
     stream: Annotated[
         str,
-        typer.Option("--stream", help="Which stream to read: stdout, stderr, or both"),
+        typer.Option(
+            "--stream",
+            help="Log stream: stdout | stderr | both",
+        ),
     ] = "stdout",
     tail: Annotated[
         int | None,
@@ -434,10 +506,14 @@ def logs(
     ] = None,
     follow: Annotated[
         bool,
-        typer.Option("--follow", help="Tail the log until the job reaches EOF"),
+        typer.Option(
+            "--follow",
+            "-f",
+            help="Follow the log until the job finishes (like tail -f)",
+        ),
     ] = False,
 ) -> None:
-    """Print captured job logs."""
+    """Print job stdout/stderr logs."""
     from molq import JobNotFoundError
 
     stream_name = stream.lower()
@@ -480,20 +556,27 @@ def logs(
 
 @app.command()
 def watch(
-    job_id: Annotated[str | None, typer.Argument(help="Job ID to watch")] = None,
+    job_id: Annotated[str | None, typer.Argument(help=_H_JOB_ID)] = None,
     scheduler: Annotated[
-        SchedulerType, typer.Argument(help="Scheduler")
+        SchedulerType, typer.Argument(help=_H_SCHEDULER)
     ] = SchedulerType.local,
-    cluster: Annotated[str | None, typer.Option(help="Cluster name")] = None,
-    profile: Annotated[str | None, typer.Option(help="Profile name")] = None,
-    config: Annotated[str | None, typer.Option(help="Path to config.toml")] = None,
-    timeout: Annotated[float | None, typer.Option(help="Max seconds")] = None,
+    cluster: Annotated[str | None, typer.Option(help=_H_CLUSTER)] = None,
+    profile: Annotated[str | None, typer.Option(help=_H_PROFILE)] = None,
+    config: Annotated[str | None, typer.Option(help=_H_CONFIG)] = None,
+    timeout: Annotated[
+        float | None,
+        typer.Option(help="Give up after this many seconds"),
+    ] = None,
     all_jobs: Annotated[
         bool,
-        typer.Option("--all", "-a", help="Watch all active jobs in this namespace"),
+        typer.Option(
+            "--all",
+            "-a",
+            help="Watch every active job in this namespace",
+        ),
     ] = False,
 ) -> None:
-    """Watch a job (or all active jobs with --all) until completion."""
+    """Block until a job finishes (or all active jobs with --all)."""
     from molq import JobNotFoundError
     from molq.errors import MolqTimeoutError
 
@@ -576,14 +659,14 @@ def watch(
 @app.command()
 def history(
     scheduler: Annotated[
-        SchedulerType, typer.Argument(help="Scheduler")
+        SchedulerType, typer.Argument(help=_H_SCHEDULER)
     ] = SchedulerType.local,
-    cluster: Annotated[str | None, typer.Option(help="Cluster name")] = None,
-    profile: Annotated[str | None, typer.Option(help="Profile name")] = None,
-    config: Annotated[str | None, typer.Option(help="Path to config.toml")] = None,
-    all: Annotated[bool, typer.Option("--all", help="Include terminal jobs")] = False,
+    cluster: Annotated[str | None, typer.Option(help=_H_CLUSTER)] = None,
+    profile: Annotated[str | None, typer.Option(help=_H_PROFILE)] = None,
+    config: Annotated[str | None, typer.Option(help=_H_CONFIG)] = None,
+    all: Annotated[bool, typer.Option("--all", help=_H_ALL_TERMINAL)] = False,
 ) -> None:
-    """Show job history for a scheduler/cluster namespace."""
+    """Job history table (attempt, times, exit code) for this namespace."""
     with _open_submitor(scheduler, cluster, profile, config) as submitor:
         submitor.refresh_jobs()
         records = submitor.list_jobs(include_terminal=all)
@@ -622,69 +705,21 @@ def history(
 
 
 # ---------------------------------------------------------------------------
-# allocations
-# ---------------------------------------------------------------------------
-
-
-@app.command()
-def allocations(
-    scheduler: Annotated[
-        SchedulerType, typer.Argument(help="Scheduler")
-    ] = SchedulerType.local,
-    cluster: Annotated[str | None, typer.Option(help="Cluster name")] = None,
-    profile: Annotated[str | None, typer.Option(help="Profile name")] = None,
-    config: Annotated[str | None, typer.Option(help="Path to config.toml")] = None,
-    limit: Annotated[
-        int | None, typer.Option(help="Max rows (most recent first)")
-    ] = None,
-) -> None:
-    """Show scheduling configs previously used on this cluster (local recall)."""
-    with _open_submitor(scheduler, cluster, profile, config) as submitor:
-        records = submitor.remembered_allocations(limit=limit)
-
-    if not records:
-        rprint("[dim]No remembered allocations. Submit a job to record one.[/]")
-        return
-
-    table = Table(title="Remembered Allocations")
-    table.add_column("Partition", style="cyan")
-    table.add_column("Account")
-    table.add_column("QOS")
-    table.add_column("Reservation")
-    table.add_column("Label")
-    table.add_column("Last Used")
-    table.add_column("Count", justify="right")
-
-    for record in records:
-        table.add_row(
-            record.partition or "-",
-            record.account or "-",
-            record.qos or "-",
-            record.reservation or "-",
-            record.label or "-",
-            _format_timestamp(record.last_used),
-            str(record.use_count),
-        )
-
-    rprint(table)
-
-
-# ---------------------------------------------------------------------------
 # inspect
 # ---------------------------------------------------------------------------
 
 
 @app.command()
 def inspect(
-    job_id: Annotated[str, typer.Argument(help="Job ID")],
+    job_id: Annotated[str, typer.Argument(help=_H_JOB_ID)],
     scheduler: Annotated[
-        SchedulerType, typer.Argument(help="Scheduler")
+        SchedulerType, typer.Argument(help=_H_SCHEDULER)
     ] = SchedulerType.local,
-    cluster: Annotated[str | None, typer.Option(help="Cluster name")] = None,
-    profile: Annotated[str | None, typer.Option(help="Profile name")] = None,
-    config: Annotated[str | None, typer.Option(help="Path to config.toml")] = None,
+    cluster: Annotated[str | None, typer.Option(help=_H_CLUSTER)] = None,
+    profile: Annotated[str | None, typer.Option(help=_H_PROFILE)] = None,
+    config: Annotated[str | None, typer.Option(help=_H_CONFIG)] = None,
 ) -> None:
-    """Show canonical job metadata and transition timeline."""
+    """Full job record: metadata, dependencies, and state transition timeline."""
     from molq import JobNotFoundError
 
     with _open_submitor(scheduler, cluster, profile, config) as submitor:
@@ -786,28 +821,28 @@ def monitor(
     all_jobs: Annotated[
         bool,
         typer.Option(
-            "--all", "-a", help="Include terminal jobs (done/failed/cancelled)."
+            "--all",
+            "-a",
+            help="Include finished jobs in the dashboard",
         ),
     ] = False,
     limit: Annotated[
         int,
-        typer.Option("--limit", "-n", help="Max number of job rows to display."),
+        typer.Option("--limit", "-n", help="Max job rows to show"),
     ] = 200,
     refresh: Annotated[
         float,
-        typer.Option("--refresh", "-r", help="Refresh interval in seconds."),
+        typer.Option("--refresh", "-r", help="Refresh interval in seconds"),
     ] = 2.0,
     db: Annotated[
         str | None,
         typer.Option(
             "--db",
-            help="Path to molq SQLite database. Defaults to the molcrafts-standard "
-            "location resolved via molcfg (~/.molcrafts/molq/config/jobs.db, or "
-            "$MOLCRAFTS_HOME/molq/config/jobs.db if set).",
+            help="Path to jobs.db (default: molcfg project path under ~/.molcrafts)",
         ),
     ] = None,
 ) -> None:
-    """Open full-screen dashboard for all molq jobs across all clusters."""
+    """Full-screen live dashboard for jobs across all clusters (press q to quit)."""
     from molq.dashboard import MolqMonitor
 
     rprint("[dim]Opening monitor… (press q to close)[/dim]")
@@ -827,15 +862,15 @@ def monitor(
 
 @app.command()
 def cancel(
-    job_id: Annotated[str, typer.Argument(help="Job ID to cancel")],
+    job_id: Annotated[str, typer.Argument(help=_H_JOB_ID)],
     scheduler: Annotated[
-        SchedulerType, typer.Argument(help="Scheduler")
+        SchedulerType, typer.Argument(help=_H_SCHEDULER)
     ] = SchedulerType.local,
-    cluster: Annotated[str | None, typer.Option(help="Cluster name")] = None,
-    profile: Annotated[str | None, typer.Option(help="Profile name")] = None,
-    config: Annotated[str | None, typer.Option(help="Path to config.toml")] = None,
+    cluster: Annotated[str | None, typer.Option(help=_H_CLUSTER)] = None,
+    profile: Annotated[str | None, typer.Option(help=_H_PROFILE)] = None,
+    config: Annotated[str | None, typer.Option(help=_H_CONFIG)] = None,
 ) -> None:
-    """Cancel a running job."""
+    """Cancel a job on the scheduler and mark it cancelled in the store."""
     from molq import JobNotFoundError
 
     with _open_submitor(scheduler, cluster, profile, config) as submitor:
@@ -853,14 +888,21 @@ def cancel(
 @app.command()
 def cleanup(
     scheduler: Annotated[
-        SchedulerType, typer.Argument(help="Scheduler")
+        SchedulerType, typer.Argument(help=_H_SCHEDULER)
     ] = SchedulerType.local,
-    cluster: Annotated[str | None, typer.Option(help="Cluster name")] = None,
-    profile: Annotated[str | None, typer.Option(help="Profile name")] = None,
-    config: Annotated[str | None, typer.Option(help="Path to config.toml")] = None,
-    dry_run: Annotated[bool, typer.Option("--dry-run", help="Preview only")] = False,
+    cluster: Annotated[str | None, typer.Option(help=_H_CLUSTER)] = None,
+    profile: Annotated[str | None, typer.Option(help=_H_PROFILE)] = None,
+    config: Annotated[str | None, typer.Option(help=_H_CONFIG)] = None,
+    dry_run: Annotated[
+        bool,
+        typer.Option(
+            "--dry-run",
+            "-n",
+            help="Show what would be removed without deleting",
+        ),
+    ] = False,
 ) -> None:
-    """Clean up old job artifacts and records."""
+    """Delete old job directories and records per retention policy."""
     with _open_submitor(scheduler, cluster, profile, config) as submitor:
         result = submitor.cleanup_jobs(dry_run=dry_run)
     rprint(f"Job dirs: {len(result['job_dirs'])}")
@@ -874,23 +916,44 @@ def cleanup(
 @app.command()
 def daemon(
     scheduler: Annotated[
-        SchedulerType, typer.Argument(help="Scheduler")
+        SchedulerType, typer.Argument(help=_H_SCHEDULER)
     ] = SchedulerType.local,
-    cluster: Annotated[str | None, typer.Option(help="Cluster name")] = None,
-    profile: Annotated[str | None, typer.Option(help="Profile name")] = None,
-    config: Annotated[str | None, typer.Option(help="Path to config.toml")] = None,
+    cluster: Annotated[str | None, typer.Option(help=_H_CLUSTER)] = None,
+    profile: Annotated[str | None, typer.Option(help=_H_PROFILE)] = None,
+    config: Annotated[str | None, typer.Option(help=_H_CONFIG)] = None,
     once: Annotated[
-        bool, typer.Option("--once", help="Run one cycle and exit")
+        bool,
+        typer.Option("--once", help="Run a single reconcile cycle and exit"),
     ] = False,
     interval: Annotated[
-        float, typer.Option("--interval", help="Polling interval in seconds")
+        float,
+        typer.Option("--interval", help="Seconds between reconcile cycles"),
     ] = 5.0,
     skip_cleanup: Annotated[
-        bool, typer.Option("--skip-cleanup", help="Skip retention cleanup")
+        bool,
+        typer.Option(
+            "--skip-cleanup",
+            help="Do not run retention cleanup each cycle",
+        ),
     ] = False,
 ) -> None:
-    """Run the background reconciliation loop."""
-    with _open_submitor(scheduler, cluster, profile, config) as submitor:
+    """Background reconcile loop: poll scheduler, update store, optional cleanup.
+
+    Loads plugins from config table plugins.<name>. When that table is absent,
+    enables the official nerve plugin so job status is pushed to the local
+    Nerve menu-bar hub (fail-open if Nerve is not running).
+
+    Disable with config:
+
+      plugins.nerve.enabled = false
+    """
+    with _open_submitor(
+        scheduler,
+        cluster,
+        profile,
+        config,
+        default_plugins=["nerve"],
+    ) as submitor:
         try:
             submitor.run_daemon(
                 once=once, interval=interval, run_cleanup=not skip_cleanup
@@ -900,14 +963,15 @@ def daemon(
 
 
 # ---------------------------------------------------------------------------
-# clusters — discovery from ~/.ssh/config + ~/.molq/config.toml profiles
+# clusters — discovery from ~/.ssh/config + molq config profiles
 # ---------------------------------------------------------------------------
 
 
 clusters_app = typer.Typer(
     name="clusters",
-    help="Inspect cluster destinations: SSH config aliases + molq profiles.",
+    help="Discover destinations from profiles and ~/.ssh/config.",
     no_args_is_help=True,
+    rich_markup_mode="rich",
 )
 app.add_typer(clusters_app, name="clusters")
 
@@ -947,12 +1011,15 @@ def _ssh_destinations(ssh_config: str | None) -> list[dict[str, str]]:
 
 @clusters_app.command("list")
 def clusters_list(
-    config: Annotated[str | None, typer.Option(help="Path to molq config.toml")] = None,
+    config: Annotated[str | None, typer.Option(help=_H_CONFIG)] = None,
     ssh_config: Annotated[
-        str | None, typer.Option(help="Path to ssh_config (default: ~/.ssh/config)")
+        str | None,
+        typer.Option(
+            help="Path to OpenSSH config (default: ~/.ssh/config)",
+        ),
     ] = None,
 ) -> None:
-    """List cluster destinations from molq profiles and ~/.ssh/config."""
+    """List known clusters (molq profiles + SSH Host aliases)."""
     profile_rows = _profile_destinations(config)
     ssh_rows = _ssh_destinations(ssh_config)
 
@@ -972,13 +1039,19 @@ def clusters_list(
 
 @clusters_app.command("show")
 def clusters_show(
-    name: Annotated[str, typer.Argument(help="Cluster alias or profile name")],
-    config: Annotated[str | None, typer.Option(help="Path to molq config.toml")] = None,
+    name: Annotated[
+        str,
+        typer.Argument(help="Profile name, cluster_name, or SSH Host alias"),
+    ],
+    config: Annotated[str | None, typer.Option(help=_H_CONFIG)] = None,
     ssh_config: Annotated[
-        str | None, typer.Option(help="Path to ssh_config (default: ~/.ssh/config)")
+        str | None,
+        typer.Option(
+            help="Path to OpenSSH config (default: ~/.ssh/config)",
+        ),
     ] = None,
 ) -> None:
-    """Show effective settings for a cluster — profile or SSH alias."""
+    """Show profile or SSH settings for one cluster name."""
     from molq import load_config, resolve_ssh_host
 
     cfg = load_config(config)
@@ -1019,8 +1092,9 @@ def clusters_show(
 
 workspace_app = typer.Typer(
     name="workspace",
-    help="Remote file sync on cluster workspaces (rsync-backed).",
+    help="Sync files to/from a cluster workspace (rsync-backed).",
     no_args_is_help=True,
+    rich_markup_mode="rich",
 )
 app.add_typer(workspace_app, name="workspace")
 
@@ -1047,34 +1121,45 @@ def _resolve_cluster(
 
 @workspace_app.command("sync")
 def workspace_sync(
-    local: Annotated[str, typer.Argument(help="Local path")],
+    local: Annotated[str, typer.Argument(help="Local file or directory")],
     cluster: Annotated[
-        str | None, typer.Option(help="Cluster alias or SSH host")
+        str | None, typer.Option(help="SSH Host alias or cluster name")
     ] = None,
-    profile: Annotated[str | None, typer.Option(help="Profile name")] = None,
-    config: Annotated[str | None, typer.Option(help="Path to config.toml")] = None,
-    path: Annotated[str, typer.Option("--path", "-p", help="Remote path")] = ".",
+    profile: Annotated[str | None, typer.Option(help=_H_PROFILE)] = None,
+    config: Annotated[str | None, typer.Option(help=_H_CONFIG)] = None,
+    path: Annotated[
+        str,
+        typer.Option("--path", "-p", help="Remote workspace path (default: .)"),
+    ] = ".",
     pull: Annotated[
         bool,
         typer.Option(
-            "--pull", help="Pull remote → local (default: push local → remote)"
+            "--pull",
+            help="Pull remote → local (default is push local → remote)",
         ),
     ] = False,
     delete: Annotated[
-        bool, typer.Option("--delete", help="Delete dest files not in source")
+        bool,
+        typer.Option("--delete", help="Delete dest files not present in source"),
     ] = False,
     dry_run: Annotated[
-        bool, typer.Option("--dry-run", "-n", help="Show what would be transferred")
+        bool,
+        typer.Option(
+            "--dry-run",
+            "-n",
+            help="Show transfer plan without copying",
+        ),
     ] = False,
 ) -> None:
     """Sync files between local and remote via rsync.
 
-    Default direction is push (local → remote), like ``rsync local dest:path``.
-    Use ``--pull`` to reverse direction (remote → local).
+    Default is push (local → remote). Use --pull for remote → local.
 
     Examples:
-        molq workspace sync ./lammps --cluster dardel -p /cfs/.../runs
-        molq workspace sync --pull ./results --cluster dardel -p /cfs/.../runs
+
+      molq workspace sync ./src --cluster dardel -p /cfs/.../runs
+
+      molq workspace sync --pull ./results --cluster dardel -p /cfs/.../runs
     """
     from molq.workspace import Workspace
 
@@ -1101,13 +1186,16 @@ def workspace_sync(
 @workspace_app.command("list")
 def workspace_list(
     cluster: Annotated[
-        str | None, typer.Option(help="Cluster alias or SSH host")
+        str | None, typer.Option(help="SSH Host alias or cluster name")
     ] = None,
-    profile: Annotated[str | None, typer.Option(help="Profile name")] = None,
-    config: Annotated[str | None, typer.Option(help="Path to config.toml")] = None,
-    path: Annotated[str, typer.Option("--path", "-p", help="Remote path")] = ".",
+    profile: Annotated[str | None, typer.Option(help=_H_PROFILE)] = None,
+    config: Annotated[str | None, typer.Option(help=_H_CONFIG)] = None,
+    path: Annotated[
+        str,
+        typer.Option("--path", "-p", help="Remote workspace path (default: .)"),
+    ] = ".",
 ) -> None:
-    """List files in a workspace directory."""
+    """List files under a remote workspace path."""
     from molq.workspace import Workspace
 
     target = _resolve_cluster(cluster, profile, config)
@@ -1118,6 +1206,72 @@ def workspace_list(
         return
     for f in files:
         rprint(f"  {f}")
+
+
+# ---------------------------------------------------------------------------
+# plugins — official + third-party
+# ---------------------------------------------------------------------------
+
+
+plugins_app = typer.Typer(
+    name="plugins",
+    help="List molq plugins (official builtins and third-party entry points).",
+    no_args_is_help=True,
+    rich_markup_mode="rich",
+)
+app.add_typer(plugins_app, name="plugins")
+
+
+@plugins_app.command("list")
+def plugins_list(
+    config: Annotated[str | None, typer.Option(help=_H_CONFIG)] = None,
+) -> None:
+    """Show available plugins and whether they are enabled in config."""
+    from molq.config import enabled_plugin_names, load_config
+    from molq.plugin import available_plugins
+
+    cfg = load_config(config)
+    available = available_plugins()
+    enabled = set(enabled_plugin_names(cfg.plugins, default_official=None))
+    # When config has no [plugins] at all, daemon still defaults nerve — note that.
+    daemon_default = not cfg.plugins
+
+    if not available:
+        rprint("[dim]No plugins discovered.[/]")
+        return
+
+    table = Table(title="Plugins")
+    table.add_column("Name", style="cyan")
+    table.add_column("Source")
+    table.add_column("Config")
+    table.add_column("Notes")
+
+    for name in sorted(available):
+        source = available[name]
+        pcfg = cfg.plugins.get(name, {})
+        if name in enabled:
+            state = "enabled"
+        elif pcfg.get("enabled") is False:
+            state = "disabled"
+        elif daemon_default and name == "nerve":
+            state = "default*"
+        else:
+            state = "off"
+        note = ""
+        if daemon_default and name == "nerve":
+            note = "daemon enables when plugins table missing"
+        elif source.startswith("builtin:"):
+            note = "official (ships with molq)"
+        elif source.startswith("entry_point:"):
+            note = "third-party (pip entry point)"
+        table.add_row(name, source.split(":", 1)[0], state, note)
+
+    rprint(table)
+    if daemon_default:
+        rprint(
+            "\n[dim]* default: molq daemon loads nerve when config has no "
+            "plugins table. Set plugins.nerve.enabled = false to turn off.[/]"
+        )
 
 
 if __name__ == "__main__":

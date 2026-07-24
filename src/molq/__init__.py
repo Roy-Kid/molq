@@ -24,7 +24,13 @@ Usage::
 
 from molq.callbacks import EventBus, EventPayload, EventType
 from molq.cluster import Cluster
-from molq.config import MolqConfig, MolqProfile, load_config, load_profile
+from molq.config import (
+    MolqConfig,
+    MolqProfile,
+    enabled_plugin_names,
+    load_config,
+    load_profile,
+)
 from molq.dashboard import DashboardState, JobRow, MolqMonitor, RunDashboard
 from molq.errors import (
     CommandError,
@@ -55,6 +61,14 @@ from molq.options import (
     PBSSchedulerOptions,
     SlurmSchedulerOptions,
 )
+from molq.plugin import (
+    BUILTIN_PLUGIN_FACTORIES,
+    MolqPlugin,
+    PluginContext,
+    PluginManager,
+    available_plugins,
+    create_plugin,
+)
 from molq.scheduler import QueueEntry, SchedulerCapabilities
 from molq.ssh_config import SshHost, list_ssh_hosts, resolve_ssh_host
 from molq.status import JobState
@@ -81,6 +95,14 @@ __all__ = [
     "EventBus",
     "EventPayload",
     "EventType",
+    # Plugins
+    "MolqPlugin",
+    "PluginContext",
+    "PluginManager",
+    "available_plugins",
+    "create_plugin",
+    "enabled_plugin_names",
+    "BUILTIN_PLUGIN_FACTORIES",
     # Core
     "Cluster",
     "Submitor",

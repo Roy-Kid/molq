@@ -74,7 +74,8 @@ See `Cluster` in the [API reference](api.md#cluster).
 
 A `Submitor` is the lifecycle engine. It owns:
 
-- the **`JobStore`** (SQLite at `~/.molq/jobs.db` by default)
+- the **`JobStore`** (SQLite at `~/.molcrafts/molq/config/jobs.db` by
+  default, via molcfg / `MOLCRAFTS_HOME`)
 - the **`JobReconciler`** (syncs persisted state with the scheduler)
 - the **`JobMonitor`** (blocking waits, polling strategies)
 - the **`EventBus`** (lifecycle event pub/sub)
@@ -96,6 +97,33 @@ submitor.cancel_job(handle.job_id)
 The Submitor surface is verb_noun: `submit_job`, `list_jobs`, `get_job`,
 `cancel_job`, `watch_jobs`, `refresh_jobs`, `cleanup_jobs`, `run_daemon`,
 `on_event`, `off_event`. See [API reference](api.md#submitor).
+
+## Plugins — observe lifecycle without touching the core
+
+Plugins attach to a `Submitor` through a narrow host (`PluginContext`: event
+bus + record accessors + config). They must not write scheduler/store state.
+
+| Kind | How it ships | Discovery |
+|------|--------------|-----------|
+| **Official** (e.g. `nerve`) | Inside `molq.plugins.*`, same wheel as molq | Builtin registry |
+| **Third-party** | Separate package | setuptools entry point group `molq.plugins` |
+
+```python
+submitor = mq.Submitor(target=cluster, plugins=["nerve"])
+```
+
+Config (default path `~/.molcrafts/molq/config/config.toml` via molcfg):
+
+```toml
+[plugins.nerve]
+enabled = true
+expand_threshold = 8
+show_members = "attention"   # never | attention | all
+```
+
+`molq daemon` enables **nerve** when no `plugins` table is present (fail-open
+push to the local Nerve hub at `http://127.0.0.1:17890`). List plugins with
+`molq plugins list`.
 
 ### Multi-cluster
 
