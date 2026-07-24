@@ -1,57 +1,40 @@
-# Single source of truth with .github/workflows/ci.yml Lint job.
-# CI runs ONLY: pip install -e ".[dev]" + pre-commit + pre-commit run --all-files
-# Local hooks use language: system so they invoke the same ruff/ty/pytest from
-# the project env (pinned in pyproject.toml [project.optional-dependencies] dev).
-# Never pin a second ruff via ruff-pre-commit — that was the drift source.
+# Managed by prek: `prek install`
+# Gates via tox from pyproject optional-dependencies `dev`
+#   commit/pre-push: uv run --extra dev tox -e lint
+#   pre-push:        uv run --extra dev tox -e py
 #
-# Stages:
-#   pre-commit — hygiene + ruff + ty  (what CI Lint runs)
-#   pre-push   — full pytest (what CI Test runs; cov optional locally)
+# Install: prek install
 
 default_install_hook_types: [pre-commit, pre-push]
-default_language_version:
-  python: python3.12
 
 repos:
   - repo: https://github.com/pre-commit/pre-commit-hooks
-    rev: v5.0.0
+    rev: v6.0.0
     hooks:
       - id: trailing-whitespace
       - id: end-of-file-fixer
       - id: check-yaml
-        exclude: ^(mkdocs\.yml|docs/)
-      - id: check-toml
+        args: ['--unsafe']
       - id: check-added-large-files
+        args: ['--maxkb=1024']
+      - id: check-merge-conflict
+      - id: mixed-line-ending
+      - id: check-toml
+      - id: check-json
 
   - repo: local
     hooks:
-      # Same binary as CI: `ruff`/`ty` from pip install -e ".[dev]" (pinned).
-      # always_run: match CI `pre-commit run --all-files` even when the
-      # commit only touches yaml/toml/docs.
-      - id: ruff-check
-        name: ruff check src tests (CI Lint)
-        entry: ruff check src tests
+      - id: tox-lint
+        name: "CI lint (uv run --extra dev tox -e lint)"
+        entry: uv run --extra dev tox -e lint
         language: system
         pass_filenames: false
         always_run: true
+        stages: [pre-commit, pre-push]
 
-      - id: ruff-format
-        name: ruff format --check src tests (CI Lint)
-        entry: ruff format --check src tests
-        language: system
-        pass_filenames: false
-        always_run: true
-
-      - id: ty
-        name: ty check src/ (CI Lint)
-        entry: ty check src/
-        language: system
-        pass_filenames: false
-        always_run: true
-
-      - id: pytest
-        name: pytest -q --cov=molq (CI Test)
-        entry: pytest -q --cov=molq --cov-report=term-missing
+      - id: tox-py
+        name: "CI test (uv run --extra dev tox -e py)"
+        entry: uv run --extra dev tox -e py
         language: system
         pass_filenames: false
         always_run: true
