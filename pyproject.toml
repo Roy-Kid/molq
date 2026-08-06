@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "molcrafts-molq"
-version = "0.6.0"
+version = "0.6.1"
 description = "Unified job queue for local execution and HPC schedulers"
 readme = "README.md"
 requires-python = ">=3.12"
@@ -36,10 +36,9 @@ dependencies = [
 
 [project.urls]
 Homepage = "https://github.com/MolCrafts/molq"
-Documentation = "https://molcrafts.github.io/molq/"
+Documentation = "https://docs.molcrafts.org/molq/"
 Repository = "https://github.com/MolCrafts/molq"
 Issues = "https://github.com/MolCrafts/molq/issues"
-Changelog = "https://github.com/MolCrafts/molq/blob/master/CHANGELOG.md"
 
 [project.scripts]
 molq = "molq.cli.main:app"

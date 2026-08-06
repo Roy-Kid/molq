@@ -3,6 +3,45 @@
 Curated highlights per release. Complete history is git tags / GitHub Releases
 (no hand-written `CHANGELOG.md`).
 
+## 0.6.1
+
+Released 2026-08-06.
+
+### Fixed
+
+- **CLI job commands no longer invent an SSH connection.** `molq submit local
+  echo hello` and every other job command failed in 0.6.0 with
+  `remote mkdir failed`, because destination resolution asked `ssh -G` whether
+  the cluster name was an SSH host — and `ssh -G` answers "yes" for any
+  string, including molq's own `cli_local` namespace. SSH is now used only
+  when `--cluster` names a `Host` block actually declared in `~/.ssh/config`.
+- `molq workspace` commands reject an unknown `--cluster` alias with the list
+  of known aliases instead of failing later inside `rsync`.
+- A `Submitor` given a `store=` no longer closes it on `close()`. Sharing one
+  `JobStore` across per-cluster Submitors is a documented pattern, and the
+  first `close()` used to disconnect all of them.
+- Schema versions are compared numerically. As strings, `"10"` sorts before
+  `"8"`, so a future database would have been reported as unreadable rather
+  than as "upgrade molq".
+- Generated job scripts quote the materialized script path, so a working
+  directory containing spaces or `$` no longer corrupts the script.
+- `JobHandle.wait()` honors its timeout and backoff while a retry attempt is
+  being re-targeted.
+
+### Performance
+
+- **SSH connection multiplexing is on by default.** molq performs many small
+  remote operations per job; each previously paid a full TCP and
+  authentication handshake. A shared master connection now covers them. Opt
+  out with `SshTransportOptions(control_master=False)`.
+- Local-scheduler submission waits for the job pid in one remote command
+  instead of polling from the client — over SSH that removed up to ~250
+  connections per submission.
+- A reconcile cycle stamps `last_polled` for every active job in a single
+  transaction rather than one commit per job.
+- SSH connections use a 15-second `ConnectTimeout`, so an unreachable host
+  fails promptly instead of hanging.
+
 ## 0.6.0
 
 Released 2026-07-22.
