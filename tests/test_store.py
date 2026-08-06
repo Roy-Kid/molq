@@ -421,3 +421,60 @@ class TestAllocationMemory:
         assert len(survived) == 1
         assert survived[0].partition == "main"
         store.close()
+
+
+class TestMarkPolled:
+    def test_stamps_every_listed_job(self, memory_store):
+        specs = [_make_spec(job_id=f"job-{i}") for i in range(3)]
+        for spec in specs:
+            memory_store.insert_job(spec)
+
+        memory_store.mark_polled([s.job_id for s in specs], 1234.5)
+
+        for spec in specs:
+            row = memory_store._conn.execute(
+                "SELECT last_polled FROM jobs WHERE job_id = ?", (spec.job_id,)
+            ).fetchone()
+            assert row["last_polled"] == 1234.5
+
+    def test_empty_list_is_a_noop(self, memory_store):
+        memory_store.mark_polled([], 1.0)
+
+    def test_duplicate_ids_are_collapsed(self, memory_store):
+        spec = _make_spec(job_id="dup")
+        memory_store.insert_job(spec)
+        memory_store.mark_polled(["dup", "dup"], 99.0)
+        record = memory_store.get_record("dup")
+        assert record is not None
+
+
+class TestSchemaVersionComparison:
+    """Version comparison must be numeric, not lexicographic."""
+
+    def test_future_version_reports_upgrade_not_unknown(self, tmp_path):
+        db = tmp_path / "future.db"
+        store = JobStore(db)
+        store.close()
+
+        conn = sqlite3.connect(db)
+        # "10" sorts before "8" as a string — the pre-0.6.1 check misread a
+        # future schema as unmigratable garbage.
+        conn.execute("UPDATE molq_meta SET value = '10' WHERE key = 'schema_version'")
+        conn.commit()
+        conn.close()
+
+        with pytest.raises(StoreError, match="newer than supported"):
+            JobStore(db)
+
+    def test_non_numeric_version_is_rejected_clearly(self, tmp_path):
+        db = tmp_path / "junk.db"
+        store = JobStore(db)
+        store.close()
+
+        conn = sqlite3.connect(db)
+        conn.execute("UPDATE molq_meta SET value = 'abc' WHERE key = 'schema_version'")
+        conn.commit()
+        conn.close()
+
+        with pytest.raises(StoreError, match="Unknown schema version"):
+            JobStore(db)

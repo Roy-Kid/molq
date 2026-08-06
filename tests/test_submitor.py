@@ -484,3 +484,37 @@ class TestZeroSideEffects:
         # molq itself should not trigger DB creation
         # The key assertion: no jobs.db created on import
         assert not (molq_dir / "jobs.db").exists()
+
+
+class TestStoreOwnership:
+    """A Submitor closes only the store it opened."""
+
+    def test_caller_supplied_store_survives_close(self, memory_store, mock_scheduler):
+        from molq.cluster import Cluster
+        from molq.submitor import Submitor
+
+        target = Cluster("alpha", "local", _scheduler_impl=mock_scheduler)
+        first = Submitor(target, store=memory_store)
+        second = Submitor(target, store=memory_store)
+
+        first.close()
+
+        # The shared store must still serve the other Submitor — closing it
+        # here used to take down every sibling holding the same connection.
+        assert second.list_jobs() == []
+        second.close()
+        assert memory_store.get_record("nonexistent") is None
+
+    def test_auto_opened_store_is_closed(self, tmp_path, monkeypatch, mock_scheduler):
+        from molq.cluster import Cluster
+        from molq.submitor import Submitor
+
+        monkeypatch.setenv("MOLCRAFTS_HOME", str(tmp_path / "molcrafts"))
+        target = Cluster("alpha", "local", _scheduler_impl=mock_scheduler)
+        submitor = Submitor(target)
+        store = submitor._store
+
+        submitor.close()
+
+        # JobStore.close() releases the connection and drops the reference.
+        assert store._conn is None

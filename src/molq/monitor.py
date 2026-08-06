@@ -62,13 +62,12 @@ class JobMonitor:
                 if state is not None and JobState(state).is_terminal:
                     record = self._store.get_latest_attempt_record(job_id)
                     if record is not None:
-                        if not record.state.is_terminal:
-                            poll_count += 1
-                            continue
-                        if record.job_id != watched_job_id:
-                            poll_count += 1
-                            continue
-                        return record
+                        # A retry may have started a fresh attempt while we
+                        # were polling the previous one.  Fall through to the
+                        # timeout check and backoff sleep so re-targeting the
+                        # new attempt cannot spin without honouring either.
+                        if record.state.is_terminal and record.job_id == watched_job_id:
+                            return record
 
                 if timeout is not None and (time.time() - start) > timeout:
                     raise MolqTimeoutError(

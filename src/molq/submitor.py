@@ -149,6 +149,10 @@ class Submitor:
         # fallback in ``JobStore`` itself.  Callers that want isolation
         # (tests, ops) pass a fully-constructed ``JobStore`` or set
         # ``MOLCRAFTS_HOME`` to redirect the bootstrap location.
+        # Only close what we opened.  Several Submitors legitimately share one
+        # caller-supplied JobStore (the multi-cluster pattern above), and
+        # closing it when the first of them exits would break the rest.
+        self._owns_store = store is None
         self._store = store if store is not None else JobStore(default_jobs_db_path())
         self._jobs_dir = self._resolve_jobs_dir(jobs_dir)
         self._default_retry_policy = default_retry_policy
@@ -548,7 +552,11 @@ class Submitor:
             time.sleep(interval)
 
     def close(self) -> None:
-        """Release plugins and the underlying :class:`JobStore` connection.
+        """Release plugins and this Submitor's :class:`JobStore` connection.
+
+        The store connection is closed only when this Submitor opened it.  A
+        store passed in via ``store=`` belongs to the caller and stays open
+        for whoever else is using it.
 
         Safe to call multiple times.  After ``close()`` no further methods
         should be invoked on this Submitor.
@@ -558,7 +566,8 @@ class Submitor:
             mgr.detach_all()
         store = getattr(self, "_store", None)
         if store is not None:
-            store.close()
+            if getattr(self, "_owns_store", False):
+                store.close()
             self._store = None  # ty: ignore[invalid-assignment]
 
     def __enter__(self) -> Submitor:
