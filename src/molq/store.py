@@ -225,13 +225,22 @@ class JobStore:
                 version = row["value"]
                 if version == _SCHEMA_VERSION:
                     return
-                if version > _SCHEMA_VERSION:
+                # Compare numerically: as strings "10" sorts *before* "8",
+                # so a future schema would be misreported as unknown rather
+                # than as "upgrade molq".
+                try:
+                    version_num = int(version)
+                except (TypeError, ValueError):
+                    raise StoreError(
+                        f"Unknown schema version {version!r}; cannot migrate."
+                    ) from None
+                if version_num > int(_SCHEMA_VERSION):
                     raise StoreError(
                         f"Database schema version {version} is newer than "
                         f"supported version {_SCHEMA_VERSION}. "
                         f"Please upgrade molq."
                     )
-                if version in {"2", "3", "4", "5", "6", "7"}:
+                if 2 <= version_num < int(_SCHEMA_VERSION):
                     self._migrate_from_known_version(version)
                     return
                 raise StoreError(f"Unknown schema version {version!r}; cannot migrate.")
@@ -274,7 +283,7 @@ class JobStore:
         if version == "2":
             self._migrate_v2_to_current()
             return
-        if version in {"3", "4", "5", "6", "7"}:
+        if 3 <= int(version) < int(_SCHEMA_VERSION):
             self._migrate_v3plus_to_current()
             return
         raise StoreError(f"Unknown schema version {version!r}; cannot migrate.")
@@ -527,6 +536,25 @@ class JobStore:
 
         with self._write_lock:
             self._conn.execute(sql, tuple(values))
+            self._conn.commit()
+
+    def mark_polled(self, job_ids: Sequence[str], timestamp: float) -> None:
+        """Stamp ``last_polled`` on many jobs in one transaction.
+
+        The reconciler touches every active job on each cycle.  Doing that
+        one :meth:`update_job` at a time costs a commit (and an fsync) per
+        job per cycle; batching keeps a poll cycle at a single write
+        regardless of how many jobs are in flight.
+        """
+        if not job_ids:
+            return
+        unique = tuple(dict.fromkeys(job_ids))
+        placeholders = ",".join("?" for _ in unique)
+        with self._write_lock:
+            self._conn.execute(
+                f"UPDATE jobs SET last_polled = ? WHERE job_id IN ({placeholders})",
+                (timestamp, *unique),
+            )
             self._conn.commit()
 
     def record_allocation(

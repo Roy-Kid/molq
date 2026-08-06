@@ -86,6 +86,7 @@ class JobReconciler:
         scheduler_states = self._scheduler.poll_many(list(id_map.keys()))
         now = time.time()
         changes: list[StatusChange] = []
+        polled: list[str] = []
 
         for record in active:
             if not record.scheduler_job_id:
@@ -137,8 +138,10 @@ class JobReconciler:
                         StatusChange(record.job_id, old_state, new_state, now)
                     )
 
-            # Update last_polled
-            self._store.update_job(record.job_id, last_polled=now)
+            polled.append(record.job_id)
+
+        # One write for the whole cycle instead of one per job.
+        self._store.mark_polled(polled, now)
 
         if changes and not self._store.get_active_records(self._cluster_name):
             self._emit_all_completed()

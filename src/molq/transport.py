@@ -340,6 +340,46 @@ def _merge_copy(src: Path, dst: Path, *, exclude: set[str]) -> None:
 # SshTransport
 # ---------------------------------------------------------------------------
 
+# Unix domain sockets cap out near 104 bytes on macOS / 108 on Linux, and
+# OpenSSH expands ``%C`` to a 40-character hash.  Budget for the expansion so
+# we silently skip multiplexing rather than making ssh warn on every call.
+_SOCKET_PATH_BUDGET = 100
+_CONTROL_TOKEN_GROWTH = 38  # len("%C") -> 40
+
+
+def _ssh_control_path() -> str | None:
+    """Return a ControlPath template, or ``None`` if one can't be provided.
+
+    Prefers ``~/.ssh/molq/`` — the conventional home for OpenSSH state, owned
+    by the user by construction.  Falls back to a per-user directory under
+    the system temp dir, which on macOS is often long enough to blow the
+    socket-path limit; in that case multiplexing is skipped rather than
+    letting ssh complain on every call.
+    """
+    uid = getattr(os, "getuid", lambda: 0)()
+    candidates = [Path.home() / ".ssh" / "molq"]
+    tmp_base = Path(tempfile.gettempdir()) / f"molq-ssh-{uid}"
+    if tmp_base not in candidates:
+        candidates.append(tmp_base)
+
+    for base in candidates:
+        template = str(base / "%C")
+        if len(template) + _CONTROL_TOKEN_GROWTH > _SOCKET_PATH_BUDGET:
+            continue
+        try:
+            base.mkdir(mode=0o700, parents=True, exist_ok=True)
+            # Refuse a directory we do not own: a pre-created socket dir in a
+            # shared location would otherwise let another user observe or
+            # hijack the multiplexed session.
+            if base.stat().st_uid != uid:
+                continue
+        except OSError:
+            continue
+        return template
+
+    logger.debug("no usable ssh ControlPath; connection multiplexing disabled")
+    return None
+
 
 @dataclass(frozen=True)
 class SshTransport:
@@ -376,6 +416,29 @@ class SshTransport:
             return "~"
         return shlex.quote(path)
 
+    def _mux_opts(self) -> list[str]:
+        """Connection-multiplexing options, or ``[]`` when unavailable.
+
+        A single molq job performs many small remote operations (write the
+        wrapper, mkdir, poll ``.exit_code``, read logs).  Without a shared
+        master connection each one is a fresh TCP + auth handshake, which
+        dominates wall-clock on any real cluster — and multiplies on hosts
+        with Kerberos or hardware-token auth.
+        """
+        if not self.options.control_master:
+            return []
+        control_path = _ssh_control_path()
+        if control_path is None:
+            return []
+        return [
+            "-o",
+            "ControlMaster=auto",
+            "-o",
+            f"ControlPath={control_path}",
+            "-o",
+            f"ControlPersist={self.options.control_persist}",
+        ]
+
     def _ssh_argv(self) -> list[str]:
         argv: list[str] = [
             self._ssh_bin,
@@ -387,7 +450,10 @@ class SshTransport:
             "RemoteCommand=none",
             "-o",
             "RequestTTY=no",
+            "-o",
+            f"ConnectTimeout={self.options.connect_timeout}",
         ]
+        argv += self._mux_opts()
         if self.options.port is not None:
             argv += ["-p", str(self.options.port)]
         if self.options.identity_file:
@@ -406,7 +472,10 @@ class SshTransport:
             "RemoteCommand=none",
             "-o",
             "RequestTTY=no",
+            "-o",
+            f"ConnectTimeout={self.options.connect_timeout}",
         ]
+        parts += self._mux_opts()
         if self.options.port is not None:
             parts += ["-p", str(self.options.port)]
         if self.options.identity_file:

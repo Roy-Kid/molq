@@ -174,8 +174,7 @@ class TestSlurmScheduler:
 
         scheduler.submit(spec, job_dir)
         script = (job_dir / "run_slurm.sh").read_text()
-        assert 'bash "' in script
-        assert "user_script.sh" in script
+        assert f"bash {job_dir / 'user_script.sh'}" in script
 
     @patch("molq.transport.subprocess.run")
     def test_cancel(self, mock_run):
@@ -624,3 +623,27 @@ class TestListQueue:
         assert entries[0].state == JobState.RUNNING
         assert entries[0].partition == "gpu"
         assert entries[0].name == "train_job"
+
+
+class TestGeneratedScriptQuoting:
+    """Generated job scripts must survive paths with shell metacharacters."""
+
+    @patch("molq.transport.subprocess.run")
+    def test_script_path_with_spaces_is_quoted(self, mock_run, tmp_path: Path):
+        mock_run.return_value = MagicMock(stdout="12345\n", stderr="", returncode=0)
+        source = tmp_path / "source.sh"
+        source.write_text("#!/bin/bash\necho hi\n")
+        job_dir = tmp_path / "job dir with spaces"
+        job_dir.mkdir()
+        spec = JobSpec(
+            job_id="spaced",
+            cluster_name="alpha",
+            scheduler="slurm",
+            command=Command.from_submit_args(script=Script.path(source)),
+        )
+
+        SlurmScheduler().submit(spec, job_dir)
+        script = (job_dir / "run_slurm.sh").read_text()
+        # The interpreter line must be a single quoted argument, not a bare
+        # path that the shell would split on the spaces.
+        assert f"bash '{job_dir / 'user_script.sh'}'" in script

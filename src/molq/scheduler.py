@@ -124,6 +124,12 @@ class SchedulerCapabilities:
 # Shell Scheduler (transport-aware "no batch system, just run it")
 # ---------------------------------------------------------------------------
 
+# How long submit() waits for the wrapper to publish the job pid, expressed as
+# remote-side poll attempts.  250 * 0.02s = 5s, matching the previous
+# client-side budget but costing a single round trip instead of one per poll.
+_PID_WAIT_ATTEMPTS = 250
+_PID_WAIT_INTERVAL = "0.02"
+
 
 class ShellScheduler:
     """Run jobs via a plain shell on whatever the transport points at.
@@ -213,10 +219,25 @@ class ShellScheduler:
         # and capture the pid the wrapper writes into .pid.  We also put the
         # wrapper itself into nohup + background so closing the ssh session
         # doesn't terminate it.
+        #
+        # The wait for .pid happens *inside* this one remote command on
+        # purpose.  Polling it from Python would cost one round trip per
+        # attempt — over SSH that was up to ~250 connections per submission.
+        # `-s` (exists and non-empty) avoids reading a half-written pid.
         launch = (
             f"nohup bash {_shell_quote(str(wrapper_path))} "
             f"> /dev/null 2>&1 < /dev/null &\n"
-            f"echo $!\n"
+            f"wrapper_pid=$!\n"
+            f"for _ in $(seq 1 {_PID_WAIT_ATTEMPTS}); do\n"
+            f"  if [ -s {_shell_quote(str(pid_path))} ]; then\n"
+            f"    cat {_shell_quote(str(pid_path))}\n"
+            f"    exit 0\n"
+            f"  fi\n"
+            f"  sleep {_PID_WAIT_INTERVAL}\n"
+            f"done\n"
+            # Fallback: the wrapper pid still identifies the job for
+            # kill/poll purposes.
+            f"echo $wrapper_pid\n"
         )
         try:
             result = self._transport.run(["bash", "-c", launch], timeout=30)
@@ -231,22 +252,8 @@ class ShellScheduler:
                 stderr=result.stderr,
                 command=["bash", "-c", launch],
             )
-        # The pid we get back is the wrapper's pid; the actual job pid is in
-        # .pid on the transport's filesystem.  Either pid identifies the job
-        # for kill/poll purposes — we use the inner job pid because that's the
-        # one users would expect (e.g. matches `ps`).  Wait briefly for the
-        # wrapper to write .pid (typical: <50ms).
-        import time as _time
-
-        deadline = _time.monotonic() + 5.0
-        while _time.monotonic() < deadline:
-            if self._transport.exists(str(pid_path)):
-                try:
-                    return self._transport.read_text(str(pid_path)).strip()
-                except (FileNotFoundError, TransportError):
-                    pass
-            _time.sleep(0.02)
-        # Fallback: return the wrapper pid; cancel/poll still work via this pid.
+        # stdout is the inner job pid (what users see in `ps`), or the wrapper
+        # pid if .pid never materialised.  Either identifies the job.
         return result.stdout.strip()
 
     def poll_many(self, scheduler_job_ids: Sequence[str]) -> dict[str, JobState]:
@@ -1131,7 +1138,10 @@ def _payload_lines(spec: JobSpec, job_dir: Path) -> list[str]:
         if cmd.script.variant == "inline":
             return list((cmd.script.text or "").splitlines())
         if cmd.script.variant == "path":
-            return [f'bash "{job_dir / "user_script.sh"}"']
+            # Single-quote rather than interpolate: a job_dir containing a
+            # space, quote, or `$` would otherwise break the generated script
+            # or splice shell expansion into it.
+            return [f"bash {_shell_quote(str(job_dir / 'user_script.sh'))}"]
     return []
 
 

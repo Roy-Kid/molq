@@ -477,3 +477,35 @@ def test_ssh_upload_invokes_rsync(
     assert argv[-1] == "cluster:/scratch/work"
     # source has trailing slash for directory recursion
     assert argv[-2].endswith("/")
+
+
+class TestSshConnectionMultiplexing:
+    """Every remote op reuses one master connection by default."""
+
+    def test_control_options_present_by_default(self):
+        t = SshTransport(SshTransportOptions(host="example"))
+        argv = t._ssh_argv()
+        assert "ControlMaster=auto" in argv
+        assert any(a.startswith("ControlPath=") for a in argv)
+        assert "ControlPersist=60s" in argv
+
+    def test_control_options_reach_rsync(self):
+        t = SshTransport(SshTransportOptions(host="example"))
+        assert "ControlMaster=auto" in t._ssh_e_arg()
+
+    def test_opt_out(self):
+        t = SshTransport(SshTransportOptions(host="example", control_master=False))
+        argv = t._ssh_argv()
+        assert "ControlMaster=auto" not in argv
+        assert not any(a.startswith("ControlPath=") for a in argv)
+
+    def test_connect_timeout_is_set(self):
+        t = SshTransport(SshTransportOptions(host="example", connect_timeout=7))
+        assert "ConnectTimeout=7" in t._ssh_argv()
+
+    def test_control_path_fits_socket_limit(self):
+        from molq.transport import _CONTROL_TOKEN_GROWTH, _ssh_control_path
+
+        path = _ssh_control_path()
+        if path is not None:
+            assert len(path) + _CONTROL_TOKEN_GROWTH <= 100
