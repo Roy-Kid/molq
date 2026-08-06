@@ -1,5 +1,6 @@
 """Tests for molq.cli.main — CLI commands."""
 
+import shutil
 from unittest.mock import MagicMock, patch
 
 import pytest
@@ -337,3 +338,67 @@ class TestAllocationsCommand:
         assert "proj1" in result.output
         assert "high" in result.output
         assert "4" in result.output
+
+
+class TestDestinationResolution:
+    """The CLI must never invent an SSH transport for a name that is not a
+    real ``Host`` alias.
+
+    Regression for v0.6.0: ``_open_submitor`` optimistically called
+    ``Cluster.from_ssh_alias(...)``, and ``ssh -G`` succeeds for *any*
+    string, so the default namespace ``cli_local`` produced an
+    ``SshTransport`` pointed at a nonexistent host. Every job command then
+    failed with ``remote mkdir failed``.
+
+    These tests exercise the real ``_open_submitor`` — deliberately not
+    mocked, unlike the command tests above.
+    """
+
+    @pytest.fixture
+    def isolated_home(self, tmp_path, monkeypatch):
+        home = tmp_path / "home"
+        (home / ".ssh").mkdir(parents=True)
+        monkeypatch.setenv("HOME", str(home))
+        monkeypatch.setenv("MOLCRAFTS_HOME", str(tmp_path / "molcrafts"))
+        return home
+
+    def test_default_namespace_stays_local(self, isolated_home):
+        from molq.cli.main import SchedulerType, _open_submitor
+        from molq.transport import LocalTransport
+
+        with _open_submitor(SchedulerType.local) as submitor:
+            assert isinstance(submitor.target.transport, LocalTransport)
+            assert submitor.cluster_name == "cli_local"
+
+    def test_unknown_cluster_name_stays_local(self, isolated_home):
+        from molq.cli.main import SchedulerType, _open_submitor
+        from molq.transport import LocalTransport
+
+        with _open_submitor(SchedulerType.slurm, cluster="not-an-ssh-host") as submitor:
+            assert isinstance(submitor.target.transport, LocalTransport)
+            assert submitor.cluster_name == "not-an-ssh-host"
+
+    @pytest.mark.skipif(
+        shutil.which("ssh") is None, reason="requires an OpenSSH client"
+    )
+    def test_configured_ssh_alias_uses_ssh_transport(self, isolated_home):
+        (isolated_home / ".ssh" / "config").write_text(
+            "Host testbox\n  HostName testbox.example.org\n  User alice\n"
+        )
+        from molq.cli.main import SchedulerType, _open_submitor
+        from molq.transport import SshTransport
+
+        with _open_submitor(SchedulerType.slurm, cluster="testbox") as submitor:
+            assert isinstance(submitor.target.transport, SshTransport)
+            assert submitor.cluster_name == "testbox"
+
+    def test_submit_local_end_to_end(self, isolated_home, tmp_path):
+        """The headline smoke test: `molq submit local echo hello` works."""
+        workdir = tmp_path / "work"
+        workdir.mkdir()
+        result = runner.invoke(
+            app,
+            ["submit", "local", "--workdir", str(workdir), "echo", "hello"],
+        )
+        assert result.exit_code == 0, result.output
+        assert "Job submitted" in result.output

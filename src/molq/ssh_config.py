@@ -103,22 +103,26 @@ def _iter_config_files(config_path: Path) -> list[Path]:
     return out
 
 
-def list_ssh_hosts(
+def ssh_alias_names(
     config_path: str | Path | None = None,
-) -> list[SshHost]:
-    """Return concrete ``Host`` aliases discovered in ``~/.ssh/config``.
+) -> list[str]:
+    """Return the concrete ``Host`` alias names declared in ``~/.ssh/config``.
 
-    Wildcard patterns (``Host *``) and ``Match`` blocks are skipped — they
-    are templates, not nameable destinations.  Each surviving alias is
-    resolved through :func:`resolve_ssh_host` so the returned objects carry
-    the *effective* hostname/user/port/identityfile, including anything
-    pulled in via ``Include`` directives.
+    Parse-only: unlike :func:`list_ssh_hosts` this does **not** shell out to
+    ``ssh -G`` per alias, so it is cheap enough to call on every CLI
+    invocation.  Use it to answer "is this name a destination the user
+    actually configured?" — ``ssh -G`` cannot answer that, because it happily
+    prints a config block for any string you hand it.
+
+    Wildcard patterns (``Host *``) and ``Match`` blocks are skipped; they are
+    templates, not nameable destinations.  ``Include`` directives are
+    followed.
 
     Args:
         config_path: Override the default ``~/.ssh/config`` location.
 
     Returns:
-        Hosts in declaration order (deduplicated).  Empty list when the
+        Alias names in declaration order (deduplicated).  Empty list when the
         config file does not exist.
     """
     cfg = _expand(Path(config_path) if config_path else DEFAULT_USER_CONFIG)
@@ -145,9 +149,33 @@ def list_ssh_hosts(
                     continue
                 seen.add(token)
                 aliases.append(token)
+    return aliases
+
+
+def list_ssh_hosts(
+    config_path: str | Path | None = None,
+) -> list[SshHost]:
+    """Return concrete ``Host`` aliases discovered in ``~/.ssh/config``.
+
+    Wildcard patterns (``Host *``) and ``Match`` blocks are skipped — they
+    are templates, not nameable destinations.  Each surviving alias is
+    resolved through :func:`resolve_ssh_host` so the returned objects carry
+    the *effective* hostname/user/port/identityfile, including anything
+    pulled in via ``Include`` directives.
+
+    Args:
+        config_path: Override the default ``~/.ssh/config`` location.
+
+    Returns:
+        Hosts in declaration order (deduplicated).  Empty list when the
+        config file does not exist.
+    """
+    cfg = _expand(Path(config_path) if config_path else DEFAULT_USER_CONFIG)
+    if not cfg.exists():
+        return []
 
     out: list[SshHost] = []
-    for alias in aliases:
+    for alias in ssh_alias_names(cfg):
         try:
             out.append(resolve_ssh_host(alias, config_path=cfg))
         except OSError:
@@ -253,6 +281,7 @@ __all__ = [
     "SshHost",
     "list_ssh_hosts",
     "resolve_ssh_host",
+    "ssh_alias_names",
     "to_ssh_target",
 ]
 

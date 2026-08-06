@@ -59,6 +59,47 @@ class SchedulerType(StrEnum):
     lsf = "lsf"
 
 
+def _is_ssh_alias(name: str, ssh_config: str | None = None) -> bool:
+    """True when *name* is a ``Host`` alias the user declared in ssh config.
+
+    Deliberately parse-based rather than ``ssh -G``-based: ``ssh -G`` prints a
+    resolved config block for *any* string, so it can never tell a real
+    destination from a typo or from molq's own ``cli_<scheduler>`` namespace.
+    """
+    from molq.ssh_config import ssh_alias_names
+
+    try:
+        return name in set(ssh_alias_names(ssh_config))
+    except OSError:
+        return False
+
+
+def _resolve_target(
+    scheduler: SchedulerType,
+    cluster_name: str,
+    *,
+    ssh_requested: bool,
+) -> "Cluster":
+    """Build the destination Cluster for a job command.
+
+    SSH is used only when the caller explicitly named a cluster *and* that
+    name is a configured ``Host`` alias.  Everything else — including the
+    default ``cli_<scheduler>`` namespace — runs on this host.
+    """
+    from molq import Cluster
+
+    if ssh_requested and _is_ssh_alias(cluster_name):
+        try:
+            return Cluster.from_ssh_alias(cluster_name, scheduler=scheduler.value)
+        except OSError as exc:
+            # The alias is real but OpenSSH is unusable (no client on PATH).
+            # Say so instead of silently running the job on the wrong machine.
+            raise typer.BadParameter(
+                f"{cluster_name!r} is an SSH alias but it cannot be resolved: {exc}"
+            ) from exc
+    return Cluster(cluster_name, scheduler.value)
+
+
 @contextmanager
 def _open_submitor(
     scheduler: SchedulerType,
@@ -106,10 +147,9 @@ def _open_submitor(
         )
     else:
         cluster_name = cluster or f"cli_{scheduler.value}"
-        try:
-            target = Cluster.from_ssh_alias(cluster_name, scheduler=scheduler.value)
-        except Exception:
-            target = Cluster(cluster_name, scheduler.value)
+        target = _resolve_target(
+            scheduler, cluster_name, ssh_requested=cluster is not None
+        )
         submitor = Submitor(
             target=target,
             plugins=plugin_names or None,
@@ -1106,6 +1146,7 @@ def _resolve_cluster(
 ) -> "Cluster":
     """Resolve a Cluster from --cluster (SSH alias) or --profile."""
     from molq import Cluster, load_profile
+    from molq.ssh_config import ssh_alias_names
 
     if profile:
         loaded = load_profile(profile, config_path)
@@ -1115,6 +1156,16 @@ def _resolve_cluster(
             scheduler_options=loaded.scheduler_options,
         )
     if cluster:
+        # --cluster on a workspace command means "the remote side", so an
+        # unknown name is an error rather than a silent fall back to local:
+        # syncing into a local directory you did not ask for is worse than
+        # refusing.
+        if not _is_ssh_alias(cluster):
+            known = ssh_alias_names()
+            hint = f" Known aliases: {', '.join(known)}." if known else ""
+            raise typer.BadParameter(
+                f"{cluster!r} is not a Host alias in ~/.ssh/config.{hint}"
+            )
         return Cluster.from_ssh_alias(cluster)
     return Cluster("local", "local")
 
