@@ -71,18 +71,13 @@ import molq as mq
 
 # Cluster = destination (where to run). Submitor = lifecycle (how jobs are tracked).
 cluster = mq.Cluster("devbox", "local")
-submitor = mq.Submitor(target=cluster)
 
-handle = submitor.submit_job(
-    argv=["python", "train.py"],
-    resources=mq.JobResources(
-        cpu_count=4,
-        memory=mq.Memory.gb(8),
-        time_limit=mq.Duration.hours(2),
-    ),
-)
+with mq.Submitor(target=cluster) as queue:
+    handle = queue.submit_job(
+        argv=["python", "-c", "print('hello from molq')"]
+    )
+    record = handle.wait()
 
-record = handle.wait()
 print(record.state)
 ```
 
@@ -90,12 +85,15 @@ Swap to a cluster by changing one line — `mq.Cluster("hpc", "slurm", host="use
 
 ## Documentation
 
-- [Getting Started](docs/getting-started.md) — installation and your first job
-- [Concepts](docs/concepts.md) — Cluster, Submitor, Scheduler, Transport, Workspace, Project
-- [Schedulers](docs/schedulers.md) — scheduler matrix and option classes
-- [Monitoring](docs/monitoring.md) — lifecycle, reconciliation, polling, and dashboards
-- [CLI Reference](docs/cli.md) — command-line usage
-- [API Reference](docs/api.md) — exported classes, enums, options, and errors
+- [Quickstart](docs/getting-started.md) — install and complete a local job
+- [Mental model](docs/concepts.md) — understand destinations, tracking, and records
+- [Submit jobs](docs/jobs.md) — commands, resources, retries, and dependencies
+- [Clusters and schedulers](docs/schedulers.md) — local, SSH, SLURM, PBS, and LSF
+- [Monitor jobs](docs/monitoring.md) — status, logs, history, and dashboards
+- [Remote files](docs/remote-files.md) — stage inputs and collect results
+- [Command line](docs/cli.md) — task-oriented CLI workflows
+- [Plugins and Nerve](docs/plugins.md) — lifecycle observers and menu-bar status
+- [Python API](docs/api.md) — generated, responsibility-based reference
 
 ## MolCrafts ecosystem
 

@@ -20,8 +20,9 @@ The GitHub repository must also have an environment named `pypi`.
 ## Release Checklist
 
 1. Ensure `pyproject.toml` has the intended version (e.g. `0.6.0`).
-2. Update `CHANGELOG.md` and `docs/release-notes.md` with the release date
-   and notable changes. Keep README / CLAUDE.md / docs paths current.
+2. Optionally refresh `docs/release-notes.md` for user-facing highlights.
+   Full history is git log / tags — no `CHANGELOG.md`. Keep README /
+   CLAUDE.md / docs paths current.
 3. Local CI parity (must match `.github/workflows/ci.yml`):
 
    ```bash
@@ -55,7 +56,8 @@ The GitHub repository must also have an environment named `pypi`.
    ```
 
 7. Wait for the `Release` workflow to publish the artifacts to PyPI.
-8. Publish a GitHub release for the tag and paste the changelog entry into the release notes.
+8. Publish a GitHub release for the tag; draft notes from `git log` since the
+   previous tag (or from `docs/release-notes.md` if you keep highlights there).
 
 ## Documentation Release
 

@@ -1,201 +1,158 @@
-# Getting Started
+# Quickstart
 
-## Installation
+This page takes you from installation to a completed local job. You do not
+need an HPC account, a configuration file, or a running daemon.
+
+## Install
+
+molq requires Python 3.12 or newer.
+
+=== "pip"
+
+    ```bash
+    pip install molcrafts-molq
+    ```
+
+=== "uv"
+
+    ```bash
+    uv add molcrafts-molq
+    ```
+
+The distribution is named `molcrafts-molq`; the Python package and command are
+both named `molq`.
 
 ```bash
-pip install molcrafts-molq
+molq --help
 ```
 
-The PyPI distribution name is `molcrafts-molq`; the import name is `molq`.
+## Run a local job
 
-For local development:
-
-```bash
-pip install -e ".[dev]"
-pip install -e ".[docs]"   # zensical + molcrafts-zensical-theme
-```
-
-Preview docs:
-
-```bash
-zensical serve
-```
-
-## The two-axis model in 30 seconds
-
-Two classes, two responsibilities:
-
-| Class       | Owns                                            | Knows about                       |
-|-------------|-------------------------------------------------|-----------------------------------|
-| `Cluster`   | scheduler kind, transport, scheduler options   | **where** jobs run                |
-| `Submitor`  | JobStore, reconciler, monitor, defaults         | **how** jobs are tracked          |
-
-Read [Concepts](concepts.md) for the full picture. The rest of this page
-is a hands-on walk-through.
-
-## First Cluster + Submitor
-
-Start with the local scheduler so you can validate your workflow without a
-cluster:
+Create a destination, attach a queue to it, and submit an argument vector:
 
 ```python
 import molq as mq
 
-cluster  = mq.Cluster("dev", "local")
-submitor = mq.Submitor(target=cluster)
+cluster = mq.Cluster("laptop", "local")
+
+with mq.Submitor(target=cluster) as queue:
+    job = queue.submit_job(
+        argv=["python", "-c", "print('hello from molq')"]
+    )
+    result = job.wait()
+
+print(result.state.value)
+print(result.exit_code)
 ```
 
-The first argument to `Cluster` is a name — it scopes persisted records and
-appears in CLI listings. The second argument is the scheduler kind. For a
-remote SLURM cluster you'd write:
+Expected output:
+
+```text
+succeeded
+0
+```
+
+`"laptop"` is a namespace for persisted records. `"local"` selects the
+no-batch scheduler. The context manager closes the SQLite connection when the
+work is finished; it does not cancel the job.
+
+## Inspect what was submitted
+
+`submit_job()` returns a `JobHandle` immediately:
 
 ```python
-cluster = mq.Cluster("hpc", "slurm", host="user@hpc.example.com")
+with mq.Submitor(target=cluster) as queue:
+    job = queue.submit_job(argv=["sleep", "2"])
+
+    print(job.job_id)            # molq's stable ID
+    print(job.scheduler_job_id)  # backend-specific ID
+    print(job.status())          # cached state
+
+    job.refresh()                # one scheduler reconciliation pass
+    record = job.wait(timeout=30)
 ```
 
-Passing `host=` switches the Transport from `LocalTransport` to
-`SshTransport`. molq shells out to your system `ssh`/`rsync`/`scp`, so it
-inherits `~/.ssh/config`, agent forwarding, ProxyJump, ControlMaster, and
-Kerberos for free.
+The final `JobRecord` contains the state, timestamps, exit code, command,
+working directory, and artifact paths.
 
-## Submit a Job
+You can inspect the same record from the CLI. Reuse the cluster namespace:
 
-Every job uses exactly one command form: `argv`, `command`, or `script`.
+```bash
+molq list local --cluster laptop --all
+molq status JOB_ID local --cluster laptop
+molq inspect JOB_ID local --cluster laptop
+```
+
+!!! tip "Keep the namespace stable"
+
+    Job commands filter records by cluster name. If submission used
+    `"laptop"`, inspection must also use `--cluster laptop`.
+
+## Run your own program
+
+`argv` is the safest command form because arguments are not interpreted by a
+shell:
 
 ```python
-handle = submitor.submit_job(argv=["echo", "hello from molq"])
-
-print(handle.job_id)
-print(handle.status())  # cached state, no scheduler I/O
+with mq.Submitor(target=cluster) as queue:
+    job = queue.submit_job(
+        argv=["python", "analysis.py", "--input", "sample.xyz"]
+    )
+    record = job.wait()
 ```
 
-`submit_job` returns a `JobHandle`. `submitor.list_jobs()` returns
-persisted `JobRecord`s for this Cluster.
+Use `command=` only when you intentionally need shell syntax such as pipes or
+redirection. Use `script=` for multi-line shell logic. See
+[Submit jobs](jobs.md#choose-a-command-form).
 
-## Wait for Completion
+## Move the same workflow to SLURM
 
-```python
-record = handle.wait()
+Use an SSH host alias that already works with `ssh`:
 
-print(record.state.value)
-print(record.exit_code)
+```sshconfig
+Host dardel
+    HostName dardel.pdc.kth.se
+    User alice
 ```
 
-`JobHandle.wait()` blocks until the job reaches a terminal state and
-returns an immutable `JobRecord`.
-
-## Add Typed Resources
+Then change the destination and add scheduler resources:
 
 ```python
 import molq as mq
 
-handle = submitor.submit_job(
-    argv=["python", "experiment.py"],
-    resources=mq.JobResources(
-        cpu_count=4,
-        memory=mq.Memory.gb(8),
-        time_limit=mq.Duration.hours(2),
-    ),
-    scheduling=mq.JobScheduling(partition="gpu"),
-)
+cluster = mq.Cluster("dardel", "slurm", host="dardel")
+
+with mq.Submitor(target=cluster) as queue:
+    job = queue.submit_job(
+        argv=["python", "train.py"],
+        resources=mq.JobResources(
+            cpu_count=8,
+            memory=mq.Memory.gb(32),
+            time_limit=mq.Duration.hours(4),
+        ),
+        scheduling=mq.JobScheduling(
+            partition="gpu",
+            account="project123",
+        ),
+    )
+    print(job.job_id)
 ```
 
-Resource values are typed objects, not raw scheduler strings:
+molq invokes the system `ssh`, `rsync`, and scheduler clients. Your existing
+OpenSSH configuration remains the source of truth for authentication,
+ProxyJump, agents, and connection sharing.
 
-```python
-mq.Memory.parse("32G")
-mq.Duration.parse("04:00:00")
-mq.Duration.parse("2h30m")
-```
+!!! warning "Code and inputs must exist remotely"
 
-> **Note:** the field is named `partition`, not `queue`. Old SQLite rows
-> and TOML profiles using `queue` still load (one-release deprecation).
+    `argv=["python", "train.py"]` does not upload `train.py`. Stage files first
+    with a [Workspace or Project](remote-files.md), or submit from a working
+    directory that already exists on the cluster.
 
-## Use a Script
+## Where to go next
 
-Inline scripts are useful for multi-step workflows:
-
-```python
-handle = submitor.submit_job(
-    script=mq.Script.inline("""
-cd /workspace
-python preprocess.py
-python train.py
-""")
-)
-```
-
-You can also submit an existing file:
-
-```python
-handle = submitor.submit_job(script=mq.Script.path("./run_experiment.sh"))
-```
-
-## Snapshot the cluster's queue
-
-`cluster.get_queue()` returns a parsed snapshot of the scheduler's current
-queue (`squeue --me` for SLURM, `qstat -u $USER` for PBS, `bjobs` for LSF).
-Local clusters return an empty list.
-
-```python
-for entry in cluster.get_queue():
-    print(entry.scheduler_job_id, entry.state, entry.partition)
-```
-
-This is a *live scheduler view* — distinct from `submitor.list_jobs()`,
-which is the persisted molq record.
-
-## Stage files into a remote project
-
-For SSH clusters, `Workspace` and `Project` give you remote-directory
-handles whose file ops go through the cluster's Transport:
-
-```python
-ws   = cluster.get_workspace("scratch", path="/scratch/$USER")
-proj = ws.get_project("alphafold")
-
-proj.ensure()                                 # mkdir -p
-proj.upload("./inputs", recursive=True)       # rsync local → cluster
-handle = proj.submit_job(submitor, argv=["python", "run.py"])
-proj.download("results.csv", "./out.csv")
-```
-
-`Project.submit_job` is sugar that overrides `JobExecution.cwd` to the
-project path before forwarding to `submitor.submit_job(...)`.
-
-## Multi-cluster
-
-Multi-cluster on one process is just multiple Submitors — they share the
-JobStore by default but each filters by their target's name:
-
-```python
-sub_local = mq.Submitor(target=mq.Cluster("dev", "local"))
-sub_hpc   = mq.Submitor(target=mq.Cluster("hpc", "slurm", host="..."))
-
-sub_local.list_jobs()  # only "dev" records
-sub_hpc.list_jobs()    # only "hpc" records
-```
-
-## CLI Basics
-
-```bash
-molq submit local echo "hello"
-molq list local
-molq status <job-id> local
-molq watch <job-id> local
-molq logs <job-id> local --stream stdout
-```
-
-The `monitor` command opens a full-screen dashboard across all clusters:
-
-```bash
-molq monitor
-```
-
-## Next Steps
-
-- [Concepts](concepts.md) — Cluster, Submitor, Scheduler, Transport, Workspace, Project
-- [Schedulers](schedulers.md) — scheduler-specific options
-- [Monitoring](monitoring.md) — lifecycle, reconciliation, dashboards
-- [API Reference](api.md) — full exported surface
-- [CLI Reference](cli.md) — command syntax
+- [Mental model](concepts.md) explains the small set of objects you just used.
+- [Submit jobs](jobs.md) covers resources, execution settings, retries, and
+  dependencies.
+- [Clusters and schedulers](schedulers.md) covers local, SSH, SLURM, PBS, and
+  LSF destinations.
+- [Monitor jobs](monitoring.md) covers status, logs, history, and daemon mode.

@@ -1,159 +1,212 @@
-# Monitoring
+# Monitor jobs
 
-`molq` separates submission from observation. Jobs are persisted in
-SQLite, refreshed by reconciliation, and surfaced through handles, record
-lists, CLI commands, and a Rich dashboard. Reconciliation, polling, and
-events all live on `Submitor`; live scheduler introspection lives on
-`Cluster`.
+molq stores job history in SQLite and updates active records by reconciling
+them with the selected scheduler. You can observe that state through Python,
+the CLI, or the full-screen dashboard.
 
-## Two views of "what is running"
+## Persisted records versus the live queue
 
-| View                      | Source                                  | Includes other users? |
-|---------------------------|-----------------------------------------|-----------------------|
-| `submitor.list_jobs()`    | molq's persisted SQLite records         | No — only your jobs   |
-| `cluster.get_queue()`     | live `squeue --me` / `qstat` / `bjobs`  | Scheduler-dependent     |
+These two views are intentionally different:
 
-Use `list_jobs` when you want molq's own state machine view (with retries,
-transitions, dependencies). Use `get_queue` when you want what the
-scheduler client itself shows.
-
-## Job Lifecycle
-
-Jobs move through a terminal-aware state enum:
+| View | Source | Best for |
+|---|---|---|
+| `queue.list_jobs()` | molq's SQLite store | Your submissions, attempts, transitions, and history |
+| `cluster.get_queue()` | `squeue`, `qstat`, or `bjobs` | The scheduler's current queue |
 
 ```python
-from molq import JobState
-
-JobState.CREATED
-JobState.SUBMITTED
-JobState.QUEUED
-JobState.RUNNING
-JobState.SUCCEEDED
-JobState.FAILED
-JobState.CANCELLED
-JobState.TIMED_OUT
-JobState.LOST
+records = queue.list_jobs(include_terminal=True)
+entries = cluster.get_queue()
 ```
 
-All terminal states report `True` from `is_terminal`.
+A scheduler entry may have been submitted outside molq. A completed molq record
+may no longer appear in the scheduler queue.
 
-## Persistence
+## Follow one job
 
-`JobStore` persists all job records in SQLite with WAL mode enabled. By
-default the database is stored at `~/.molcrafts/molq/config/jobs.db`
-(via molcfg; honour `MOLCRAFTS_HOME` to redirect). Multiple Submitors
-(across multiple Clusters) share this store and filter by their target's
-name.
-
-Each record contains:
-
-- stable `job_id`
-- `cluster_name` (the Submitor's target name)
-- `scheduler` (the scheduler kind)
-- scheduler identity (`scheduler_job_id`)
-- cached state
-- timestamps such as `submitted_at`, `started_at`, and `finished_at`
-- exit code and failure reason
-- execution metadata including default stdout and stderr paths
-
-## Reconciliation
-
-`JobReconciler` is responsible for syncing persisted state with the
-scheduler. Its main loop is:
-
-1. Load active jobs for a cluster.
-2. Batch-query the scheduler (via the Cluster's Transport).
-3. Compare cached state with reported state.
-4. Persist transitions and updated timestamps.
-
-`submitor.refresh_jobs()` runs a reconciliation pass for the current
-target Cluster.
-
-## Blocking waits
-
-`JobMonitor` provides higher-level waiting primitives on top of
-reconciliation.
+`JobHandle.status()` reads cached state. Call `refresh()` for scheduler I/O or
+`wait()` to reconcile until the job is terminal.
 
 ```python
-handle = submitor.submit_job(argv=["python", "train.py"])
-record = handle.wait(timeout=3600)
+job = queue.submit_job(argv=["python", "train.py"])
+
+print(job.status())
+job.refresh()
+
+record = job.wait(timeout=3600)
+print(record.state.value, record.exit_code)
 ```
 
-For multiple jobs:
+A timeout raises `MolqTimeoutError`; it does not cancel the job.
+
+## Wait for several jobs
 
 ```python
-records = submitor.watch_jobs([h.job_id for h in handles], timeout=7200)
+jobs = [
+    queue.submit_job(argv=["python", "task.py", str(i)])
+    for i in range(4)
+]
+
+records = queue.watch_jobs(
+    [job.job_id for job in jobs],
+    timeout=7200,
+)
 ```
 
-## Polling strategies
+Pass no IDs to `watch_jobs()` to wait for every active job in the current
+cluster namespace.
 
-`molq` ships three public polling strategies:
+## Job states
 
-| Strategy                      | Use case                                   |
-|-------------------------------|--------------------------------------------|
-| `FixedStrategy`               | Simple fixed-interval polling              |
-| `ExponentialBackoffStrategy`  | Lower scheduler pressure for long jobs     |
-| `AdaptiveStrategy`            | Polling cadence based on expected runtime  |
+```text
+created → submitted → queued → running → succeeded
+                                      ├→ failed
+                                      ├→ cancelled
+                                      ├→ timed_out
+                                      └→ lost
+```
 
-These strategies live in `molq.strategies` and back the monitor layer.
+Use `record.state.is_terminal` instead of maintaining your own set of final
+states.
 
-## Logs
+## Refresh explicitly
 
-Each submitted job gets default stdout and stderr paths unless you
-override them in `JobExecution`. By default these files live under the
-submission working directory at `.molq/jobs/<job-id>/`.
+Long-lived services can decide when scheduler I/O occurs:
 
-At runtime, those resolved paths are stored in `JobRecord.metadata`
-under:
+```python
+queue.refresh_jobs()
+active = queue.list_jobs()
+```
 
-- `molq.stdout_path`
-- `molq.stderr_path`
-- `molq.job_dir`
+One reconciliation pass:
 
-The CLI exposes them through:
+1. loads active records for this cluster name;
+2. batch-queries the scheduler;
+3. stores changed state and timestamps;
+4. emits lifecycle events;
+5. schedules retries when policy allows.
+
+## Read logs
+
+Default stdout and stderr live below the job's resolved working directory:
+
+```text
+<cwd>/.molq/jobs/<job-id>/
+```
+
+The exact paths are recorded in metadata:
+
+```python
+record = queue.get_job(job.job_id)
+print(record.metadata["molq.stdout_path"])
+print(record.metadata["molq.stderr_path"])
+```
+
+For a local destination, the CLI can read those files directly:
 
 ```bash
-molq logs <job-id> local --stream stdout
-molq logs <job-id> local --stream stderr --tail 50
+molq logs JOB_ID local --cluster laptop
+molq logs JOB_ID local --cluster laptop --stream stderr --tail 50
+molq logs JOB_ID local --cluster laptop --follow
 ```
 
-## Lifecycle events
-
-`Submitor` emits typed events through an `EventBus`. Subscribe with
-`on_event` / unsubscribe with `off_event`:
+For SSH destinations, copy logs through the transport:
 
 ```python
-from molq import EventType
-
-def on_terminated(payload):
-    print(f"{payload.job_id}: {payload.transition.new_state.value}")
-
-submitor.on_event(EventType.JOB_COMPLETED, on_terminated)
-submitor.on_event(EventType.JOB_FAILED, on_terminated)
-
-# Later:
-submitor.off_event(EventType.JOB_COMPLETED, on_terminated)
+paths = queue.fetch_logs(
+    job.job_id,
+    dest_dir="./downloaded-logs",
+)
+print(paths["stdout"])
 ```
 
-## Background reconciliation
+Copy the complete job directory when the workload writes additional outputs:
 
-`submitor.run_daemon(once=False, interval=5.0, run_cleanup=True)` runs a
-lightweight loop that calls `refresh_jobs` (and optionally
-`cleanup_jobs`) on a fixed interval. Useful in long-running services that
-want fresh state without explicit polling at every read.
+```python
+directory = queue.fetch_artifacts(
+    job.job_id,
+    dest_dir="./downloaded-run",
+    exclude=("*.tmp",),
+)
+```
 
-## Full-screen dashboard
+## Inspect history
 
-The Rich dashboard is available in two forms:
+```python
+record = queue.get_job(job_id)
+timeline = queue.get_transitions(job_id)
+attempts = queue.get_retry_family(job_id)
+parents = queue.get_dependencies(job_id)
+children = queue.get_dependents(job_id)
+```
 
-- `RunDashboard` for a focused dashboard experience
-- `MolqMonitor` for a full-screen view across all persisted jobs
+The CLI combines those views:
 
-From the CLI:
+```bash
+molq history slurm --cluster dardel --all
+molq inspect JOB_ID slurm --cluster dardel
+```
+
+## Run reconciliation in the background
+
+For a long-running process:
+
+```python
+queue.run_daemon(
+    interval=5.0,
+    run_cleanup=True,
+)
+```
+
+Or run one pass from the CLI:
+
+```bash
+molq daemon slurm --cluster dardel --once
+```
+
+The daemon performs reconciliation and optional retention cleanup. It is not
+required when application code already calls `wait()`, `refresh_jobs()`, or
+CLI commands regularly.
+
+## Open the dashboard
 
 ```bash
 molq monitor
 molq monitor --all --limit 500 --refresh 1.5
 ```
 
-Closing the dashboard does not cancel running jobs.
+The dashboard reads persisted jobs across cluster namespaces. Closing it does
+not cancel anything.
+
+## Subscribe to lifecycle events
+
+Handlers run synchronously in registration order. Exceptions are logged and
+isolated from the monitoring loop.
+
+```python
+from molq import EventType
+
+
+def report(payload):
+    print(payload.job_id, payload.record.state.value)
+
+
+queue.on_event(EventType.JOB_COMPLETED, report)
+queue.on_event(EventType.JOB_FAILED, report)
+
+# Later
+queue.off_event(EventType.JOB_COMPLETED, report)
+```
+
+## Clean up retained data
+
+Preview cleanup first:
+
+```python
+plan = queue.cleanup_jobs(dry_run=True)
+print(plan["job_dirs"])
+print(plan["records"])
+```
+
+The default retention keeps job directories for 30 days, terminal records for
+90 days, and failed-job directories. Override it with `RetentionPolicy` or a
+[configuration profile](configuration.md).

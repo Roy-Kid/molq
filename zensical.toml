@@ -1,7 +1,7 @@
 [project]
 site_name = "molq"
-site_description = "Unified job queue for local execution and HPC schedulers."
-site_url = "https://molcrafts.github.io/molq/"
+site_description = "One Python interface for local commands and HPC schedulers."
+site_url = "https://docs.molcrafts.org/molq/"
 site_author = "Roy Kid"
 copyright = "Copyright &copy; 2026 MolCrafts"
 docs_dir = "docs"
@@ -12,22 +12,33 @@ edit_uri = "edit/master/docs/"
 
 nav = [
   { "Home" = "index.md" },
-  { "Tutorials" = [
-    { "Getting Started" = "getting-started.md" },
-    { "Concepts" = "concepts.md" },
-    { "Schedulers" = "schedulers.md" },
-    { "Monitoring" = "monitoring.md" },
-    { "CLI" = "cli.md" },
+  { "Start here" = [
+    { "Quickstart" = "getting-started.md" },
+    { "Mental model" = "concepts.md" },
   ] },
-  { "API Reference" = "api.md" },
-  { "Changelog" = "release-notes.md" },
+  { "Guides" = [
+    { "Submit jobs" = "jobs.md" },
+    { "Clusters & schedulers" = "schedulers.md" },
+    { "Monitor jobs" = "monitoring.md" },
+    { "Remote files" = "remote-files.md" },
+    { "Command line" = "cli.md" },
+    { "Plugins & Nerve" = "plugins.md" },
+  ] },
+  { "Reference" = [
+    { "Configuration" = "configuration.md" },
+    { "Python API" = [
+      { "Overview" = "api.md" },
+      { "Core API" = "reference/core.md" },
+      { "Job types" = "reference/types.md" },
+      { "Supporting APIs" = "reference/utilities.md" },
+    ] },
+    { "Release notes" = "release-notes.md" },
+  ] },
 ]
 
-# Shared MolCrafts theme (github.com/MolCrafts/molcrafts-zensical-theme): brand
-# palette, light/dark schemes, navigation features, and the home-page
-# hero/manual-home layout that docs/index.md uses. The theme already supplies
-# the features/palette/fonts — do not re-list them here. Install the theme to
-# build (see the `docs` optional-dependency group in pyproject.toml).
+# The PyPI `molcrafts-zensical-theme` package owns brand colors, light/dark
+# schemes, typography, navigation, and the home-page components used below.
+# Keep those defaults in the theme instead of duplicating them in this site.
 [project.theme]
 name = "molcrafts"
 language = "en"
@@ -60,6 +71,7 @@ show_source = false
 show_root_heading = true
 show_root_full_path = false
 separate_signature = true
-heading_level = 3
+heading_level = 2
 merge_init_into_class = true
+members_order = "source"
 filters = ["!^_"]

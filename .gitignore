@@ -174,3 +174,6 @@ pyrightconfig.json
 # molq runtime artifacts (jobs.db, per-job logs)
 .molq/
 uv.lock
+
+# macOS
+.DS_Store
