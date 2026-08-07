@@ -6,85 +6,58 @@ and management) and JobHandle (lightweight handle for a submitted job).
 
 from __future__ import annotations
 
-import json
-import shutil
 import time
-from dataclasses import dataclass, replace
+from dataclasses import replace
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
-from molq.callbacks import EventBus, EventPayload, EventType
+from molq import artifacts, jobpaths
+from molq.callbacks import EventBus, EventType, emit_transition
 
 if TYPE_CHECKING:
     from molq.cluster import Cluster
 from molq.config import load_profile
+from molq.dependencies import (
+    merge_dependency_refs,
+    resolve_dependencies,
+)
 from molq.errors import (
-    ConfigError,
     JobNotFoundError,
     ScriptError,
 )
+from molq.handle import JobHandle
 from molq.merge import merge_defaults
 from molq.models import (
     Command,
     JobDependency,
     JobRecord,
     JobSpec,
+    RememberedAllocation,
     RetentionPolicy,
     RetryPolicy,
     StatusTransition,
     SubmitorDefaults,
 )
 from molq.monitor import JobMonitor
-from molq.plugin import PluginManager
+from molq.plugin import PluginManager, store_context_factory
 from molq.reconciler import JobReconciler
+from molq.retention import apply_retention
+from molq.retry import retry_delay_seconds, should_retry
 from molq.scheduler import SchedulerCapabilities
 from molq.serde import (
+    build_submit_request,
     deserialize_execution,
     deserialize_resources,
     deserialize_retry_policy,
     deserialize_scheduling,
     deserialize_script,
-    dump_submit_request,
     load_submit_request,
-    serialize_execution,
-    serialize_resources,
-    serialize_retry_policy,
-    serialize_scheduling,
-    serialize_script,
 )
 from molq.status import JobState
 from molq.store import JobStore, default_jobs_db_path
 from molq.transport import Transport
-from molq.types import DependencyRef, JobExecution, JobResources, JobScheduling, Script
-
-# ---------------------------------------------------------------------------
-# Dependency condition → scheduler keyword/expression maps
-# ---------------------------------------------------------------------------
-
-# SLURM:  --dependency=<keyword>:<jobid>[,<keyword>:<jobid2>...]
-_SLURM_DEP_KEYWORDS: dict[str, str] = {
-    "after_started": "after",
-    "after_success": "afterok",
-    "after_failure": "afternotok",
-    "after": "afterany",
-}
-
-# PBS:  -W depend=<type>:<jobid>[:<jobid2>...][,<type2>:<jobid3>...]
-# IDs with the same type are colon-joined; different types are comma-joined.
-_PBS_DEP_KEYWORDS: dict[str, str] = {
-    "after_started": "after",
-    "after_success": "afterok",
-    "after_failure": "afternotok",
-    "after": "afterany",
-}
-
-# LSF:  -w "<expr> [&& <expr2> ...]"
-_LSF_DEP_KEYWORDS: dict[str, str] = {
-    "after_started": "started",
-    "after_success": "done",
-    "after_failure": "exit",
-    "after": "ended",
-}
+from molq.types import JobExecution, JobResources, JobScheduling, Script
+from molq.validation import default_capabilities, validate_spec
 
 
 class Submitor:
@@ -148,6 +121,10 @@ class Submitor:
         # fallback in ``JobStore`` itself.  Callers that want isolation
         # (tests, ops) pass a fully-constructed ``JobStore`` or set
         # ``MOLCRAFTS_HOME`` to redirect the bootstrap location.
+        # Only close what we opened.  Several Submitors legitimately share one
+        # caller-supplied JobStore (the multi-cluster pattern above), and
+        # closing it when the first of them exits would break the rest.
+        self._owns_store = store is None
         self._store = store if store is not None else JobStore(default_jobs_db_path())
         self._jobs_dir = self._resolve_jobs_dir(jobs_dir)
         self._default_retry_policy = default_retry_policy
@@ -299,6 +276,15 @@ class Submitor:
             self._target.name, include_terminal=include_terminal
         )
 
+    def remembered_allocations(
+        self, *, limit: int | None = None
+    ) -> list[RememberedAllocation]:
+        """Return scheduling configs previously used to submit to this cluster.
+
+        Ordered most-recently-used first. Pure local recall — no cluster query.
+        """
+        return self._store.list_allocations(self._target.name, limit=limit)
+
     def get_transitions(self, job_id: str) -> list[StatusTransition]:
         """Return the persisted transition timeline for a job."""
         record = self._store.get_record(job_id)
@@ -341,23 +327,13 @@ class Submitor:
         names: list[str],
         configs: dict[str, dict[str, Any]],
     ) -> None:
-        from molq.plugin import PluginContext
-
-        def ctx_factory(name: str, pcfg: Any) -> PluginContext:
-            return PluginContext(
-                event_bus=self._event_bus,
-                cluster_name=self._target.name,
-                config=pcfg,
-                get_record=self._store.get_record,
-                list_active_records=lambda: self._store.get_active_records(
-                    self._target.name
-                ),
-                list_records=lambda: self._store.list_records(
-                    self._target.name, include_terminal=True
-                ),
-            )
-
-        self._plugin_manager.load(names, ctx_factory=ctx_factory, configs=configs)
+        self._plugin_manager.load(
+            names,
+            ctx_factory=store_context_factory(
+                self._event_bus, self._target.name, self._store
+            ),
+            configs=configs,
+        )
 
     def watch_jobs(
         self,
@@ -408,34 +384,17 @@ class Submitor:
         dry_run: bool = False,
         retention_policy: RetentionPolicy | None = None,
     ) -> dict[str, list[str]]:
-        policy = retention_policy or self._retention_policy
-        now = time.time()
-        job_dir_cutoff = now - policy.keep_job_dirs_for_days * 86400
-        record_cutoff = now - policy.keep_terminal_records_for_days * 86400
-        artifact_candidates, record_candidates = self._store.list_cleanup_candidates(
+        """Delete expired job directories and terminal records.
+
+        Returns ``{"job_dirs": [...], "records": [...]}`` — what was removed,
+        or what would be under *dry_run*.
+        """
+        return apply_retention(
+            self._store,
             self._target.name,
-            job_dir_cutoff=job_dir_cutoff,
-            record_cutoff=record_cutoff,
-            include_failed_job_dirs=not policy.keep_failed_job_dirs,
+            retention_policy or self._retention_policy,
+            dry_run=dry_run,
         )
-        deleted_dirs: list[str] = []
-        deleted_records: list[str] = []
-
-        for record in artifact_candidates:
-            job_dir = record.metadata.get("molq.job_dir")
-            if not job_dir:
-                continue
-            deleted_dirs.append(job_dir)
-            if not dry_run:
-                shutil.rmtree(job_dir, ignore_errors=True)
-                self._store.update_job(record.job_id, cleaned_at=now)
-
-        if record_candidates:
-            deleted_records = [record.job_id for record in record_candidates]
-            if not dry_run:
-                self._store.delete_terminal_records(deleted_records)
-
-        return {"job_dirs": deleted_dirs, "records": deleted_records}
 
     def fetch_logs(
         self,
@@ -446,11 +405,6 @@ class Submitor:
     ) -> dict[str, Path]:
         """Pull captured log files from the cluster's filesystem to local.
 
-        The job's recorded log paths (``metadata["molq.stdout_path"]`` /
-        ``"molq.stderr_path"``) live on the cluster's filesystem.  For a
-        remote :class:`~molq.cluster.Cluster` (SSH transport), this method
-        rsyncs them down to *dest_dir*.  For a local cluster, it's a copy.
-
         Args:
             job_id: Job to fetch logs for.
             dest_dir: Local directory.  Defaults to a per-job folder under
@@ -458,37 +412,19 @@ class Submitor:
             streams: Subset of ``("stdout", "stderr")``.
 
         Returns:
-            Mapping ``stream_name -> local_path`` for streams that existed
-            on the remote side.  Missing-on-remote streams are silently
-            skipped.
+            Mapping ``stream_name -> local_path`` for streams that existed on
+            the cluster.  Missing streams are silently skipped.
 
         Raises:
             JobNotFoundError: When *job_id* is unknown.
         """
         record = self.get_job(job_id)
-        keys = {"stdout": "molq.stdout_path", "stderr": "molq.stderr_path"}
-
-        if dest_dir is None:
-            # _jobs_dir is None by default — fall back to a local scratch
-            # directory rather than the (possibly remote) per-job cwd.
-            base = self._jobs_dir or Path.cwd() / ".molq" / "fetched"
-            dest = base / job_id / "logs"
-        else:
-            dest = Path(dest_dir).expanduser()
-        dest.mkdir(parents=True, exist_ok=True)
-
-        out: dict[str, Path] = {}
-        transport = self._target.transport
-        for stream in streams:
-            remote_path = record.metadata.get(keys[stream])
-            if not remote_path:
-                continue
-            if not transport.exists(remote_path):
-                continue
-            local_path = dest / f"{stream}.log"
-            transport.download(remote_path, str(local_path))
-            out[stream] = local_path
-        return out
+        dest = (
+            Path(dest_dir).expanduser()
+            if dest_dir is not None
+            else artifacts.local_scratch_dir(self._jobs_dir, job_id, "logs")
+        )
+        return artifacts.fetch_logs(self._transport, record, dest, streams)
 
     def fetch_artifacts(
         self,
@@ -506,21 +442,12 @@ class Submitor:
         Returns the local destination directory.
         """
         record = self.get_job(job_id)
-        job_dir = record.metadata.get("molq.job_dir")
-        if not job_dir:
-            raise FileNotFoundError(
-                f"Job {job_id} has no recorded molq.job_dir to mirror"
-            )
-        if dest_dir is None:
-            base = self._jobs_dir or Path.cwd() / ".molq" / "fetched"
-            dest = base / job_id / "mirror"
-        else:
-            dest = Path(dest_dir).expanduser()
-        dest.mkdir(parents=True, exist_ok=True)
-        self._target.transport.download(
-            job_dir, str(dest), recursive=True, exclude=exclude
+        dest = (
+            Path(dest_dir).expanduser()
+            if dest_dir is not None
+            else artifacts.local_scratch_dir(self._jobs_dir, job_id, "mirror")
         )
-        return dest
+        return artifacts.fetch_job_dir(self._transport, record, dest, exclude)
 
     def run_daemon(
         self,
@@ -538,7 +465,11 @@ class Submitor:
             time.sleep(interval)
 
     def close(self) -> None:
-        """Release plugins and the underlying :class:`JobStore` connection.
+        """Release plugins and this Submitor's :class:`JobStore` connection.
+
+        The store connection is closed only when this Submitor opened it.  A
+        store passed in via ``store=`` belongs to the caller and stays open
+        for whoever else is using it.
 
         Safe to call multiple times.  After ``close()`` no further methods
         should be invoked on this Submitor.
@@ -548,7 +479,8 @@ class Submitor:
             mgr.detach_all()
         store = getattr(self, "_store", None)
         if store is not None:
-            store.close()
+            if getattr(self, "_owns_store", False):
+                store.close()
             self._store = None  # ty: ignore[invalid-assignment]
 
     def __enter__(self) -> Submitor:
@@ -569,76 +501,11 @@ class Submitor:
     # Internal
     # ------------------------------------------------------------------
 
-    def _materialize_script(self, script: Script, job_dir: Path) -> None:
-        """Prepare script files in the job directory.
-
-        Reads the user's script from the local filesystem and writes it into
-        ``job_dir`` via the transport — so for an :class:`SshTransport` the
-        materialised copy lands on the remote host.
-        """
-        if script.variant == "path" and script.file_path:
-            target = job_dir / "user_script.sh"
-            content = Path(script.file_path).read_bytes()
-            self._transport.write_bytes(str(target), content, mode=0o700)
-
     def _resolve_jobs_dir(self, jobs_dir: str | Path | None) -> Path | None:
         if jobs_dir is not None:
             return Path(jobs_dir).expanduser().resolve()
 
         return None
-
-    def _default_jobs_dir(self, cwd: str) -> Path:
-        return Path(cwd) / ".molq" / "jobs"
-
-    def _prepare_job_dir(
-        self,
-        job_id: str,
-        cwd: str,
-        dir_name: str | None = None,
-    ) -> Path:
-        jobs_dir = self._job_dir_root(cwd)
-        self._transport.mkdir(str(jobs_dir), parents=True, exist_ok=True)
-        job_dir = self._job_dir_path(job_id, cwd, dir_name)
-        self._transport.mkdir(str(job_dir), parents=True, exist_ok=True)
-        # mode=0o700 is honoured by LocalTransport-backed pathlib only on
-        # creation; for SshTransport mkdir uses the remote umask.  Set it
-        # explicitly so both paths converge.
-        try:
-            self._transport.chmod(str(job_dir), 0o700)
-        except Exception:
-            # chmod failures are non-fatal — directory exists and is usable.
-            pass
-        return job_dir
-
-    def _job_dir_root(self, cwd: str) -> Path:
-        return self._jobs_dir or self._default_jobs_dir(cwd)
-
-    def _job_dir_path(
-        self,
-        job_id: str,
-        cwd: str,
-        dir_name: str | None = None,
-    ) -> Path:
-        return self._job_dir_root(cwd) / (dir_name or job_id)
-
-    def _resolve_cwd(self, cwd: str | Path | None) -> str:
-        base = Path(cwd).expanduser() if cwd is not None else Path.cwd()
-        return str(base.resolve())
-
-    def _resolve_output_path(
-        self,
-        path: str | None,
-        cwd: str,
-        job_dir: Path,
-        default_name: str,
-    ) -> Path:
-        if path is None:
-            return job_dir / default_name
-
-        candidate = Path(path).expanduser()
-        if candidate.is_absolute():
-            return candidate
-        return Path(cwd) / candidate
 
     def _submit_prepared(
         self,
@@ -679,7 +546,7 @@ class Submitor:
         requested_execution = merged_execution
         request_scheduling = replace(
             merged_scheduling,
-            dependencies=self._merge_dependency_refs(
+            dependencies=merge_dependency_refs(
                 merged_scheduling.dependencies,
                 after_started=after_started or [],
                 after=after or [],
@@ -688,13 +555,13 @@ class Submitor:
             ),
         )
 
-        cwd = self._resolve_cwd(merged_execution.cwd)
+        cwd = jobpaths.resolve_cwd(merged_execution.cwd)
         job_id = JobSpec.new_job_id() if attempt > 1 else root_job_id
-        job_dir = self._job_dir_path(job_id, cwd, dir_name)
-        stdout_path = self._resolve_output_path(
+        job_dir = jobpaths.job_dir_path(self._jobs_dir, job_id, cwd, dir_name)
+        stdout_path = jobpaths.resolve_output_path(
             merged_execution.output_file, cwd, job_dir, "stdout.log"
         )
-        stderr_path = self._resolve_output_path(
+        stderr_path = jobpaths.resolve_output_path(
             merged_execution.error_file, cwd, job_dir, "stderr.log"
         )
         canonical_execution = replace(
@@ -704,7 +571,12 @@ class Submitor:
             error_file=str(stderr_path),
         )
 
-        dependency_string, dependencies = self._resolve_dependencies(
+        dependency_string, dependencies = resolve_dependencies(
+            self._store,
+            self._scheduler_impl,
+            self._scheduler_capabilities(),
+            self._target.name,
+            self._target.scheduler,
             job_id=job_id,
             root_job_id=root_job_id,
             explicit_dependency=merged_scheduling.dependency,
@@ -725,22 +597,18 @@ class Submitor:
         merged_metadata["molq.stdout_path"] = str(stdout_path)
         merged_metadata["molq.stderr_path"] = str(stderr_path)
 
-        request_json = dump_submit_request(
-            {
-                "argv": list(cmd.argv) if cmd.argv is not None else None,
-                "command": cmd.command,
-                "script": serialize_script(cmd.script),
-                "resources": serialize_resources(merged_resources),
-                "scheduling": serialize_scheduling(request_scheduling),
-                "execution": serialize_execution(requested_execution),
-                "metadata": user_metadata,
-                "retry": serialize_retry_policy(retry),
-                "after_started": list(after_started or []),
-                "after": list(after or []),
-                "after_failure": list(after_failure or []),
-                "after_success": list(after_success or []),
-                "profile_name": profile_name,
-            }
+        request_json = build_submit_request(
+            command=cmd,
+            resources=merged_resources,
+            scheduling=request_scheduling,
+            execution=requested_execution,
+            metadata=user_metadata,
+            retry=retry,
+            after_started=after_started or [],
+            after=after or [],
+            after_failure=after_failure or [],
+            after_success=after_success or [],
+            profile_name=profile_name,
         )
 
         spec = JobSpec(
@@ -761,12 +629,19 @@ class Submitor:
             profile_name=profile_name,
             dir_name=dir_name,
         )
-        self._validate_spec(spec, requested_execution=requested_execution)
+        validate_spec(
+            spec,
+            self._scheduler_capabilities(),
+            requested_execution=requested_execution,
+            scheduler_name=self._target.scheduler,
+        )
 
-        job_dir = self._prepare_job_dir(job_id, cwd, dir_name)
+        job_dir = jobpaths.prepare_job_dir(
+            self._transport, self._jobs_dir, job_id, cwd, dir_name
+        )
         if cmd.script is not None and cmd.script.variant == "path":
-            self._materialize_script(cmd.script, job_dir)
-        self._write_manifest(spec)
+            jobpaths.materialize_script(self._transport, cmd.script, job_dir)
+        jobpaths.write_manifest(self._transport, self._jobs_dir, spec, time.time())
         self._store.insert_job(spec)
         if dependencies:
             self._store.add_dependencies(
@@ -823,6 +698,7 @@ class Submitor:
             scheduler_job_id=scheduler_job_id,
             submitted_at=now,
         )
+        self._store.record_allocation(self._target.name, merged_scheduling, now=now)
         self._store.record_transition(
             job_id,
             JobState.CREATED,
@@ -849,197 +725,10 @@ class Submitor:
             dependencies,
         )
 
-    def _merge_dependency_refs(
-        self,
-        dependencies: tuple[DependencyRef, ...],
-        *,
-        after_started: list[str],
-        after: list[str],
-        after_failure: list[str],
-        after_success: list[str],
-    ) -> tuple[DependencyRef, ...]:
-        merged = list(dependencies)
-        merged.extend(
-            DependencyRef(job_id=job_id, condition="after_started")
-            for job_id in after_started
-        )
-        merged.extend(
-            DependencyRef(job_id=job_id, condition="after") for job_id in after
-        )
-        merged.extend(
-            DependencyRef(job_id=job_id, condition="after_failure")
-            for job_id in after_failure
-        )
-        merged.extend(
-            DependencyRef(job_id=job_id, condition="after_success")
-            for job_id in after_success
-        )
-        return tuple(merged)
-
-    def _resolve_dependencies(
-        self,
-        *,
-        job_id: str,
-        root_job_id: str,
-        explicit_dependency: str | None,
-        dependency_refs: tuple[DependencyRef, ...],
-    ) -> tuple[str | None, list[JobDependency]]:
-        if explicit_dependency:
-            return explicit_dependency, []
-        if not dependency_refs:
-            return None, []
-
-        caps = self._scheduler_capabilities()
-        if not caps.supports_dependency:
-            raise ConfigError(
-                f"Scheduler {self._target.scheduler!r} does not support job dependencies",
-                scheduler=self._target.scheduler,
-            )
-
-        seen: set[tuple[str, str]] = set()
-        # (condition, scheduler_job_id) pairs in submission order
-        pairs: list[tuple[str, str]] = []
-        dependencies: list[JobDependency] = []
-
-        for ref in dependency_refs:
-            dep_job_id = ref.job_id
-            if dep_job_id in {job_id, root_job_id}:
-                raise ConfigError(
-                    "A job cannot depend on itself",
-                    dependency_job_id=dep_job_id,
-                )
-
-            key = (dep_job_id, ref.condition)
-            if key in seen:
-                continue
-            seen.add(key)
-
-            dep_record = self._store.get_latest_attempt_record(dep_job_id)
-            if dep_record is None:
-                raise JobNotFoundError(dep_job_id, self._target.name)
-            if dep_record.scheduler != self._target.scheduler:
-                raise ConfigError(
-                    f"Dependency job {dep_job_id!r} belongs to scheduler"
-                    f" {dep_record.scheduler!r}, not {self._target.scheduler!r}",
-                    dependency_job_id=dep_job_id,
-                )
-            if dep_record.cluster_name != self._target.name:
-                raise ConfigError(
-                    f"Dependency job {dep_job_id!r} belongs to cluster"
-                    f" {dep_record.cluster_name!r}, not {self._target.name!r}",
-                    dependency_job_id=dep_job_id,
-                )
-            if dep_record.scheduler_job_id is None:
-                raise ConfigError(
-                    f"Dependency job {dep_job_id!r} does not have a scheduler job id yet",
-                    dependency_job_id=dep_job_id,
-                )
-
-            sid = dep_record.scheduler_job_id
-            pairs.append((ref.condition, sid))
-            dependencies.append(
-                JobDependency(
-                    job_id="",
-                    dependency_job_id=dep_job_id,
-                    dependency_type=ref.condition,
-                    scheduler_dependency=self._format_single_dep(ref.condition, sid),
-                )
-            )
-
-        return self._format_dep_string(pairs), dependencies
-
-    def _format_single_dep(self, condition: str, scheduler_job_id: str) -> str:
-        """Format one (condition, jobid) edge for storage in job_dependencies."""
-        if self._target.scheduler == "slurm":
-            kw = _SLURM_DEP_KEYWORDS.get(condition)
-            if kw is None:
-                raise ConfigError(
-                    f"Unsupported dependency condition {condition!r}",
-                    scheduler=self._target.scheduler,
-                )
-            return f"{kw}:{scheduler_job_id}"
-        if self._target.scheduler == "pbs":
-            kw = _PBS_DEP_KEYWORDS.get(condition)
-            if kw is None:
-                raise ConfigError(
-                    f"Unsupported dependency condition {condition!r}",
-                    scheduler=self._target.scheduler,
-                )
-            return f"{kw}:{scheduler_job_id}"
-        if self._target.scheduler == "lsf":
-            kw = _LSF_DEP_KEYWORDS.get(condition)
-            if kw is None:
-                raise ConfigError(
-                    f"Unsupported dependency condition {condition!r}",
-                    scheduler=self._target.scheduler,
-                )
-            return f"{kw}({scheduler_job_id})"
-        return f"{condition}:{scheduler_job_id}"
-
-    def _format_dep_string(self, pairs: list[tuple[str, str]]) -> str:
-        """Format the complete dependency string for scheduling.dependency."""
-        if self._target.scheduler == "slurm":
-            parts: list[str] = []
-            for condition, sid in pairs:
-                kw = _SLURM_DEP_KEYWORDS.get(condition)
-                if kw is None:
-                    raise ConfigError(
-                        f"Unsupported dependency condition {condition!r}",
-                        scheduler=self._target.scheduler,
-                    )
-                parts.append(f"{kw}:{sid}")
-            return ",".join(parts)
-
-        if self._target.scheduler == "pbs":
-            # PBS groups IDs by type: afterok:123:456,afternotok:789
-            groups: dict[str, list[str]] = {}
-            for condition, sid in pairs:
-                kw = _PBS_DEP_KEYWORDS.get(condition)
-                if kw is None:
-                    raise ConfigError(
-                        f"Unsupported dependency condition {condition!r}",
-                        scheduler=self._target.scheduler,
-                    )
-                groups.setdefault(kw, []).append(sid)
-            return ",".join(f"{kw}:{':'.join(sids)}" for kw, sids in groups.items())
-
-        if self._target.scheduler == "lsf":
-            # LSF: done(123) && done(456) && exit(789)
-            exprs: list[str] = []
-            for condition, sid in pairs:
-                kw = _LSF_DEP_KEYWORDS.get(condition)
-                if kw is None:
-                    raise ConfigError(
-                        f"Unsupported dependency condition {condition!r}",
-                        scheduler=self._target.scheduler,
-                    )
-                exprs.append(f"{kw}({sid})")
-            return " && ".join(exprs)
-
-        return ""
-
-    def _write_manifest(self, spec: JobSpec) -> None:
-        job_dir = self._job_dir_path(spec.job_id, spec.cwd, spec.dir_name)
-        manifest_path = job_dir / "manifest.json"
-        self._transport.write_text(
-            str(manifest_path),
-            json.dumps(
-                {
-                    "job_id": spec.job_id,
-                    "root_job_id": spec.root_job_id,
-                    "attempt": spec.attempt,
-                    "script_path": str(job_dir / "user_script.sh")
-                    if spec.command.script is not None
-                    and spec.command.script.variant == "path"
-                    else None,
-                    "stdout_path": spec.metadata.get("molq.stdout_path"),
-                    "stderr_path": spec.metadata.get("molq.stderr_path"),
-                    "created_at": time.time(),
-                },
-                sort_keys=True,
-            ),
-            mode=0o600,
-        )
+    def _scheduler_capabilities(self) -> SchedulerCapabilities:
+        if hasattr(self._scheduler_impl, "capabilities"):
+            return self._scheduler_impl.capabilities()
+        return default_capabilities()
 
     def _emit_status_change(
         self,
@@ -1053,65 +742,26 @@ class Submitor:
         record = self._store.get_record(job_id)
         if record is None:
             return
-        transition = StatusTransition(
-            job_id=job_id,
-            old_state=old_state,
-            new_state=new_state,
-            timestamp=timestamp,
-            reason=reason,
-        )
-        self._event_bus.emit(
-            EventType.STATUS_CHANGE,
-            EventPayload(
-                event=EventType.STATUS_CHANGE,
+        emit_transition(
+            self._event_bus,
+            StatusTransition(
                 job_id=job_id,
-                transition=transition,
-                record=record,
+                old_state=old_state,
+                new_state=new_state,
+                timestamp=timestamp,
+                reason=reason,
             ),
+            record,
         )
-        event = {
-            JobState.RUNNING: EventType.JOB_STARTED,
-            JobState.SUCCEEDED: EventType.JOB_COMPLETED,
-            JobState.FAILED: EventType.JOB_FAILED,
-            JobState.CANCELLED: EventType.JOB_CANCELLED,
-            JobState.LOST: EventType.JOB_LOST,
-        }.get(new_state)
-        if event is not None:
-            self._event_bus.emit(
-                event,
-                EventPayload(
-                    event=event,
-                    job_id=job_id,
-                    transition=transition,
-                    record=record,
-                ),
-            )
-        if new_state == JobState.TIMED_OUT:
-            payload = EventPayload(
-                event=EventType.JOB_TIMED_OUT,
-                job_id=job_id,
-                transition=transition,
-                record=record,
-            )
-            self._event_bus.emit(EventType.JOB_TIMED_OUT, payload)
-            self._event_bus.emit(EventType.JOB_TIMEOUT, payload)
 
     def _handle_terminal_record(self, record: JobRecord) -> None:
         request = load_submit_request(self._store.get_request_json(record.job_id))
         retry_policy = deserialize_retry_policy(request.get("retry"))
-        if retry_policy is None:
+        if not should_retry(record, retry_policy):
             return
-        if record.attempt >= retry_policy.max_attempts:
-            return
-        if record.state not in retry_policy.retry_on_states:
-            return
-        if (
-            retry_policy.retry_on_exit_codes is not None
-            and record.exit_code not in retry_policy.retry_on_exit_codes
-        ):
-            return
+        assert retry_policy is not None  # narrowed by should_retry
 
-        delay = self._retry_delay_seconds(retry_policy, record.attempt)
+        delay = retry_delay_seconds(retry_policy, record.attempt)
         if delay > 0:
             time.sleep(delay)
 
@@ -1140,182 +790,5 @@ class Submitor:
             profile_name=request.get("profile_name"),
         )
 
-    def _retry_delay_seconds(self, policy: RetryPolicy, attempt: int) -> float:
-        if policy.backoff.mode == "fixed":
-            return min(policy.backoff.initial_seconds, policy.backoff.maximum_seconds)
-        delay = policy.backoff.initial_seconds * (
-            policy.backoff.factor ** max(attempt - 1, 0)
-        )
-        return min(delay, policy.backoff.maximum_seconds)
 
-    def _validate_spec(
-        self,
-        spec: JobSpec,
-        *,
-        requested_execution: JobExecution,
-    ) -> None:
-        capabilities = self._scheduler_capabilities()
-        unsupported: list[str] = []
-
-        def require(field: str, supported: bool, requested: bool) -> None:
-            if requested and not supported:
-                unsupported.append(field)
-
-        r, s, e = spec.resources, spec.scheduling, spec.execution
-        req_e = requested_execution
-        require("execution.cwd", capabilities.supports_cwd, req_e.cwd is not None)
-        require("execution.env", capabilities.supports_env, bool(req_e.env))
-        require(
-            "execution.job_name", capabilities.supports_job_name, e.job_name is not None
-        )
-        require(
-            "execution.output_file",
-            capabilities.supports_output_file,
-            e.output_file is not None,
-        )
-        require(
-            "execution.error_file",
-            capabilities.supports_error_file,
-            e.error_file is not None,
-        )
-        require(
-            "resources.cpu_count",
-            capabilities.supports_cpu_count,
-            r.cpu_count is not None,
-        )
-        require("resources.memory", capabilities.supports_memory, r.memory is not None)
-        require(
-            "resources.gpu_count",
-            capabilities.supports_gpu_count,
-            r.gpu_count is not None,
-        )
-        require(
-            "resources.gpu_type", capabilities.supports_gpu_type, r.gpu_type is not None
-        )
-        require(
-            "resources.time_limit",
-            capabilities.supports_time_limit,
-            r.time_limit is not None,
-        )
-        require(
-            "scheduling.partition",
-            capabilities.supports_partition,
-            s.partition is not None,
-        )
-        require(
-            "scheduling.account", capabilities.supports_account, s.account is not None
-        )
-        require(
-            "scheduling.priority",
-            capabilities.supports_priority,
-            s.priority is not None,
-        )
-        require(
-            "scheduling.dependency",
-            capabilities.supports_dependency,
-            s.dependency is not None,
-        )
-        require(
-            "scheduling.node_count",
-            capabilities.supports_node_count,
-            s.node_count is not None,
-        )
-        require(
-            "scheduling.exclusive_node",
-            capabilities.supports_exclusive_node,
-            s.exclusive_node,
-        )
-        require(
-            "scheduling.array_spec",
-            capabilities.supports_array_jobs,
-            s.array_spec is not None,
-        )
-        require("scheduling.email", capabilities.supports_email, s.email is not None)
-        require("scheduling.qos", capabilities.supports_qos, s.qos is not None)
-        require(
-            "scheduling.reservation",
-            capabilities.supports_reservation,
-            s.reservation is not None,
-        )
-
-        if unsupported:
-            fields = ", ".join(unsupported)
-            raise ConfigError(
-                f"Scheduler {self._target.scheduler!r} does not support requested fields: {fields}",
-                scheduler=self._target.scheduler,
-                unsupported_fields=tuple(unsupported),
-            )
-
-    def _scheduler_capabilities(self) -> SchedulerCapabilities:
-        if hasattr(self._scheduler_impl, "capabilities"):
-            return self._scheduler_impl.capabilities()
-        return SchedulerCapabilities(
-            supports_cwd=True,
-            supports_env=True,
-            supports_output_file=True,
-            supports_error_file=True,
-            supports_job_name=True,
-            supports_cpu_count=True,
-            supports_memory=True,
-            supports_gpu_count=True,
-            supports_gpu_type=True,
-            supports_time_limit=True,
-            supports_partition=True,
-            supports_account=True,
-            supports_priority=True,
-            supports_dependency=True,
-            supports_node_count=True,
-            supports_exclusive_node=True,
-            supports_array_jobs=True,
-            supports_email=True,
-            supports_qos=True,
-            supports_reservation=True,
-        )
-
-
-# ---------------------------------------------------------------------------
-# JobHandle
-# ---------------------------------------------------------------------------
-
-
-@dataclass
-class JobHandle:
-    """Lightweight handle for a submitted job.
-
-    Returned by Submitor.submit(). Provides single-job operations.
-    """
-
-    job_id: str
-    cluster_name: str
-    scheduler: str
-    scheduler_job_id: str | None
-    _state: JobState
-    _submitor: Submitor
-
-    def status(self) -> JobState:
-        """Return cached job state (no I/O)."""
-        return self._state
-
-    def refresh(self) -> JobHandle:
-        """Reconcile with scheduler and return updated handle."""
-        latest = self._submitor._store.get_latest_attempt_record(self.job_id)
-        watched_job_id = latest.job_id if latest is not None else self.job_id
-        new_state = self._submitor._reconciler.reconcile_one(watched_job_id)
-        latest = self._submitor._store.get_latest_attempt_record(self.job_id)
-        if new_state is not None:
-            self._state = new_state
-        if latest is not None:
-            self.scheduler_job_id = latest.scheduler_job_id
-        return self
-
-    def wait(self, timeout: float | None = None) -> JobRecord:
-        """Block until this job reaches a terminal state."""
-        return self._submitor._monitor_instance.wait_one(
-            self.job_id,
-            timeout=timeout,
-        )
-
-    def cancel(self) -> None:
-        """Cancel this job."""
-        self._submitor.cancel_job(self.job_id)
-        self._state = JobState.CANCELLED
+__all__ = ["JobHandle", "Submitor"]

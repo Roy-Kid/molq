@@ -477,3 +477,261 @@ def test_ssh_upload_invokes_rsync(
     assert argv[-1] == "cluster:/scratch/work"
     # source has trailing slash for directory recursion
     assert argv[-2].endswith("/")
+
+
+class TestSshConnectionMultiplexing:
+    """Every remote op reuses one master connection by default."""
+
+    def test_control_options_present_by_default(self):
+        t = SshTransport(SshTransportOptions(host="example"))
+        argv = t._ssh_argv()
+        assert "ControlMaster=auto" in argv
+        assert any(a.startswith("ControlPath=") for a in argv)
+        assert "ControlPersist=60s" in argv
+
+    def test_control_options_reach_rsync(self):
+        t = SshTransport(SshTransportOptions(host="example"))
+        assert "ControlMaster=auto" in t._ssh_e_arg()
+
+    def test_opt_out(self):
+        t = SshTransport(SshTransportOptions(host="example", control_master=False))
+        argv = t._ssh_argv()
+        assert "ControlMaster=auto" not in argv
+        assert not any(a.startswith("ControlPath=") for a in argv)
+
+    def test_connect_timeout_is_set(self):
+        t = SshTransport(SshTransportOptions(host="example", connect_timeout=7))
+        assert "ConnectTimeout=7" in t._ssh_argv()
+
+    def test_control_path_fits_socket_limit(self):
+        from molq.transport import _CONTROL_TOKEN_GROWTH, _ssh_control_path
+
+        path = _ssh_control_path()
+        if path is not None:
+            assert len(path) + _CONTROL_TOKEN_GROWTH <= 100
+
+
+# ---------------------------------------------------------------------------
+# stat / getsize run POSIX shell, not remote python3
+# ---------------------------------------------------------------------------
+
+
+@pytest.fixture
+def loopback_ssh(tmp_path: Path):
+    """A stand-in `ssh` that runs the remote command on this machine.
+
+    This exercises the *actual generated shell*, which is the fragile part:
+    `stat` takes different flags on GNU and BSD, and a login shell may have no
+    python3 on PATH at all.
+    """
+    stub = tmp_path / "fake_ssh"
+    # molq invokes `ssh <opts...> <host> -- <remote_cmd>`, so the command to
+    # run is the final argument.
+    stub.write_text('#!/bin/sh\nfor a in "$@"; do cmd="$a"; done\nexec sh -c "$cmd"\n')
+    stub.chmod(0o755)
+    return str(stub)
+
+
+def _loopback_transport(ssh_bin: str) -> SshTransport:
+    # The stub ignores every ssh option and runs the final argument, so the
+    # host value is irrelevant.
+    return SshTransport(options=SshTransportOptions(host="h"), _ssh_bin=ssh_bin)
+
+
+class TestSshStatWithoutPython:
+    def test_stat_reports_file_metadata(self, loopback_ssh, tmp_path: Path):
+        target = tmp_path / "payload.txt"
+        target.write_text("0123456789")
+
+        info = _loopback_transport(loopback_ssh).stat(str(target))
+
+        assert info["size"] == 10
+        assert info["is_file"] is True
+        assert info["is_dir"] is False
+        assert isinstance(info["mtime"], float)
+        assert info["mtime"] > 0
+
+    def test_stat_reports_directory(self, loopback_ssh, tmp_path: Path):
+        info = _loopback_transport(loopback_ssh).stat(str(tmp_path))
+        assert info["is_dir"] is True
+        assert info["is_file"] is False
+
+    def test_stat_missing_path_raises_filenotfound(self, loopback_ssh, tmp_path: Path):
+        t = _loopback_transport(loopback_ssh)
+        with pytest.raises(FileNotFoundError):
+            t.stat(str(tmp_path / "absent"))
+
+    def test_getsize(self, loopback_ssh, tmp_path: Path):
+        target = tmp_path / "payload.bin"
+        target.write_bytes(b"x" * 4096)
+        assert _loopback_transport(loopback_ssh).getsize(str(target)) == 4096
+
+    def test_getsize_missing_path_raises_filenotfound(self, loopback_ssh, tmp_path):
+        t = _loopback_transport(loopback_ssh)
+        with pytest.raises(FileNotFoundError):
+            t.getsize(str(tmp_path / "absent"))
+
+    def test_stat_does_not_invoke_python(self, loopback_ssh, tmp_path: Path):
+        target = tmp_path / "f.txt"
+        target.write_text("hi")
+        t = _loopback_transport(loopback_ssh)
+        captured: list[str] = []
+        original = t._shell
+
+        def spy(remote_cmd, **kw):
+            captured.append(remote_cmd)
+            return original(remote_cmd, **kw)
+
+        object.__setattr__(t, "_shell", spy)
+        t.stat(str(target))
+        assert captured and "python" not in captured[0]
+
+
+class TestSshReadPortability:
+    """read_bytes must work against BSD/macOS hosts, not just GNU coreutils."""
+
+    def test_round_trips_through_a_real_shell(self, loopback_ssh, tmp_path: Path):
+        target = tmp_path / "payload.bin"
+        # Non-UTF8 bytes and a NUL: the reason base64 is used at all.
+        target.write_bytes(b"\x00\xff\xfe binary \n")
+
+        got = _loopback_transport(loopback_ssh).read_bytes(str(target))
+        assert got == b"\x00\xff\xfe binary \n"
+
+    def test_read_text_round_trip(self, loopback_ssh, tmp_path: Path):
+        target = tmp_path / "payload.txt"
+        target.write_text("hello\nworld\n")
+        assert _loopback_transport(loopback_ssh).read_text(str(target)) == (
+            "hello\nworld\n"
+        )
+
+    def test_missing_file_raises_filenotfound(self, loopback_ssh, tmp_path: Path):
+        t = _loopback_transport(loopback_ssh)
+        with pytest.raises(FileNotFoundError):
+            t.read_bytes(str(tmp_path / "absent"))
+
+    def test_write_then_read_round_trip(self, loopback_ssh, tmp_path: Path):
+        t = _loopback_transport(loopback_ssh)
+        target = tmp_path / "written.txt"
+        t.write_text(str(target), "round trip\n")
+        assert t.read_text(str(target)) == "round trip\n"
+
+
+class TestControlPathInteroperability:
+    """molq and your own `ssh` should share one master connection.
+
+    The socket is identified purely by the resolved ControlPath string, so
+    sharing works exactly when both sides resolve to the same path. molq
+    therefore must not override a ControlPath the user already configured.
+    """
+
+    @pytest.fixture(autouse=True)
+    def _clear_probe_cache(self):
+        from molq.transport import _host_configures_control_path
+
+        _host_configures_control_path.cache_clear()
+        yield
+        _host_configures_control_path.cache_clear()
+
+    @pytest.fixture
+    def fake_ssh_g(self, tmp_path):
+        """Factory: a stub `ssh` whose -G output we control."""
+
+        def make(control_path: str | None) -> str:
+            line = f"controlpath {control_path}" if control_path else ""
+            stub = tmp_path / f"ssh_g_{abs(hash(control_path))}"
+            stub.write_text(
+                "#!/bin/sh\n"
+                'if [ "$1" = "-G" ]; then\n'
+                "  echo 'hostname example.org'\n"
+                f"  {'echo ' + repr(line) if line else 'true'}\n"
+                "  exit 0\n"
+                "fi\n"
+                "exit 0\n"
+            )
+            stub.chmod(0o755)
+            return str(stub)
+
+        return make
+
+    def test_configured_control_path_is_inherited_not_overridden(self, fake_ssh_g):
+        ssh_bin = fake_ssh_g("~/.ssh/cm-%r@%h:%p")
+        t = SshTransport(options=SshTransportOptions(host="h"), _ssh_bin=ssh_bin)
+
+        argv = t._ssh_argv()
+
+        # No ControlPath of our own: the user's config decides where the
+        # socket lives, so plain `ssh h` lands on the same one.
+        assert not any(a.startswith("ControlPath=") for a in argv)
+        # But we still ask to become master if none is running yet.
+        assert "ControlMaster=auto" in argv
+
+    def test_configured_persistence_is_left_alone(self, fake_ssh_g):
+        ssh_bin = fake_ssh_g("~/.ssh/cm-%r@%h:%p")
+        t = SshTransport(options=SshTransportOptions(host="h"), _ssh_bin=ssh_bin)
+
+        # Their ControlPersist governs a socket they also use; overriding it
+        # would shorten the lifetime of someone else's connection.
+        assert not any(a.startswith("ControlPersist=") for a in t._ssh_argv())
+
+    def test_molq_supplies_its_own_when_nothing_is_configured(self, fake_ssh_g):
+        ssh_bin = fake_ssh_g(None)
+        t = SshTransport(options=SshTransportOptions(host="h"), _ssh_bin=ssh_bin)
+
+        argv = t._ssh_argv()
+        assert any(a.startswith("ControlPath=") and "molq-" in a for a in argv)
+        assert "ControlPersist=60s" in argv
+
+    def test_control_path_none_counts_as_unconfigured(self, fake_ssh_g):
+        # `ControlPath none` is how a user disables an inherited setting.
+        ssh_bin = fake_ssh_g("none")
+        t = SshTransport(options=SshTransportOptions(host="h"), _ssh_bin=ssh_bin)
+        assert any(a.startswith("ControlPath=") and "molq-" in a for a in t._ssh_argv())
+
+    def test_explicit_control_path_wins_over_config(self, fake_ssh_g):
+        ssh_bin = fake_ssh_g("~/.ssh/cm-%r@%h:%p")
+        t = SshTransport(
+            options=SshTransportOptions(host="h", control_path="/tmp/mine-%C"),
+            _ssh_bin=ssh_bin,
+        )
+        assert "ControlPath=/tmp/mine-%C" in t._ssh_argv()
+
+    def test_opting_out_beats_everything(self, fake_ssh_g):
+        ssh_bin = fake_ssh_g("~/.ssh/cm-%r@%h:%p")
+        t = SshTransport(
+            options=SshTransportOptions(
+                host="h", control_master=False, control_path="/tmp/mine"
+            ),
+            _ssh_bin=ssh_bin,
+        )
+        argv = t._ssh_argv()
+        assert not any("Control" in a for a in argv)
+
+    def test_inheritance_also_applies_to_rsync(self, fake_ssh_g):
+        ssh_bin = fake_ssh_g("~/.ssh/cm-%r@%h:%p")
+        t = SshTransport(options=SshTransportOptions(host="h"), _ssh_bin=ssh_bin)
+
+        # rsync shells out to ssh too, so it must inherit the same socket.
+        e_arg = t._ssh_e_arg()
+        assert "ControlMaster=auto" in e_arg
+        assert "ControlPath=" not in e_arg
+
+    def test_probe_is_cached_per_host(self, fake_ssh_g):
+        from molq.transport import _host_configures_control_path
+
+        ssh_bin = fake_ssh_g("~/.ssh/cm-%r@%h:%p")
+        t = SshTransport(options=SshTransportOptions(host="h"), _ssh_bin=ssh_bin)
+        for _ in range(5):
+            t._ssh_argv()
+
+        # `ssh -G` runs once per host, not once per remote operation.
+        assert _host_configures_control_path.cache_info().currsize == 1
+        assert _host_configures_control_path.cache_info().hits >= 4
+
+    def test_unusable_ssh_falls_back_to_molq_socket(self, tmp_path):
+        from molq.transport import _host_configures_control_path
+
+        assert (
+            _host_configures_control_path("h", str(tmp_path / "does-not-exist"))
+            is False
+        )

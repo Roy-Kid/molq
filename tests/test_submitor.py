@@ -406,6 +406,64 @@ class TestJobHandle:
 
 
 # ---------------------------------------------------------------------------
+# Allocation memory (scheduling-config recall)
+# ---------------------------------------------------------------------------
+
+
+class TestAllocationMemory:
+    def test_successful_submit_records_allocation(self, submitor):
+        submitor.submit_job(
+            argv=["echo", "hi"],
+            scheduling=JobScheduling(partition="gpu", account="proj1", qos="high"),
+        )
+        remembered = submitor.remembered_allocations()
+        assert len(remembered) == 1
+        alloc = remembered[0]
+        assert alloc.partition == "gpu"
+        assert alloc.account == "proj1"
+        assert alloc.qos == "high"
+        assert alloc.reservation is None
+        assert alloc.use_count == 1
+
+    def test_submit_without_scheduling_records_nothing(self, submitor):
+        submitor.submit_job(argv=["echo", "hi"])
+        assert submitor.remembered_allocations() == []
+
+    def test_submit_all_none_scheduling_records_nothing(self, submitor):
+        submitor.submit_job(argv=["echo", "hi"], scheduling=JobScheduling())
+        assert submitor.remembered_allocations() == []
+
+    def test_failed_submit_records_nothing(self, submitor, mock_scheduler):
+        mock_scheduler.submit.side_effect = RuntimeError("boom")
+        with pytest.raises(RuntimeError, match="boom"):
+            submitor.submit_job(
+                argv=["echo", "hi"],
+                scheduling=JobScheduling(partition="gpu", account="proj1"),
+            )
+        assert submitor.remembered_allocations() == []
+
+    def test_repeated_identity_bumps_use_count(self, submitor):
+        for _ in range(3):
+            submitor.submit_job(
+                argv=["echo", "hi"],
+                scheduling=JobScheduling(partition="gpu", account="proj1"),
+            )
+        remembered = submitor.remembered_allocations()
+        assert len(remembered) == 1
+        assert remembered[0].use_count == 3
+
+    def test_remembered_allocations_limit(self, submitor):
+        submitor.submit_job(
+            argv=["echo", "a"], scheduling=JobScheduling(partition="gpu")
+        )
+        submitor.submit_job(
+            argv=["echo", "b"], scheduling=JobScheduling(partition="cpu")
+        )
+        assert len(submitor.remembered_allocations()) == 2
+        assert len(submitor.remembered_allocations(limit=1)) == 1
+
+
+# ---------------------------------------------------------------------------
 # Zero side effects
 # ---------------------------------------------------------------------------
 
@@ -426,3 +484,37 @@ class TestZeroSideEffects:
         # molq itself should not trigger DB creation
         # The key assertion: no jobs.db created on import
         assert not (molq_dir / "jobs.db").exists()
+
+
+class TestStoreOwnership:
+    """A Submitor closes only the store it opened."""
+
+    def test_caller_supplied_store_survives_close(self, memory_store, mock_scheduler):
+        from molq.cluster import Cluster
+        from molq.submitor import Submitor
+
+        target = Cluster("alpha", "local", _scheduler_impl=mock_scheduler)
+        first = Submitor(target, store=memory_store)
+        second = Submitor(target, store=memory_store)
+
+        first.close()
+
+        # The shared store must still serve the other Submitor — closing it
+        # here used to take down every sibling holding the same connection.
+        assert second.list_jobs() == []
+        second.close()
+        assert memory_store.get_record("nonexistent") is None
+
+    def test_auto_opened_store_is_closed(self, tmp_path, monkeypatch, mock_scheduler):
+        from molq.cluster import Cluster
+        from molq.submitor import Submitor
+
+        monkeypatch.setenv("MOLCRAFTS_HOME", str(tmp_path / "molcrafts"))
+        target = Cluster("alpha", "local", _scheduler_impl=mock_scheduler)
+        submitor = Submitor(target)
+        store = submitor._store
+
+        submitor.close()
+
+        # JobStore.close() releases the connection and drops the reference.
+        assert store._conn is None

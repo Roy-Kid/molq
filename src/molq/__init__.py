@@ -31,7 +31,6 @@ from molq.config import (
     load_config,
     load_profile,
 )
-from molq.dashboard import DashboardState, JobRow, MolqMonitor, RunDashboard
 from molq.errors import (
     CommandError,
     ConfigError,
@@ -48,6 +47,7 @@ from molq.models import (
     DependencyPreviewItem,
     JobDependency,
     JobRecord,
+    RememberedAllocation,
     RetentionPolicy,
     RetryBackoff,
     RetryPolicy,
@@ -68,8 +68,13 @@ from molq.plugin import (
     available_plugins,
     create_plugin,
 )
-from molq.scheduler import QueueEntry, SchedulerCapabilities
-from molq.ssh_config import SshHost, list_ssh_hosts, resolve_ssh_host
+from molq.scheduler import DependencyEdge, QueueEntry, SchedulerCapabilities
+from molq.ssh_config import (
+    SshHost,
+    list_ssh_hosts,
+    resolve_ssh_host,
+    ssh_alias_names,
+)
 from molq.status import JobState
 from molq.store import dependency_relation_state
 from molq.submitor import JobHandle, Submitor
@@ -107,6 +112,7 @@ __all__ = [
     "Submitor",
     "JobHandle",
     "QueueEntry",
+    "DependencyEdge",
     "Workspace",
     "Project",
     # Types
@@ -123,6 +129,7 @@ __all__ = [
     # Models
     "SubmitorDefaults",
     "JobRecord",
+    "RememberedAllocation",
     "JobDependency",
     "DependencyPreview",
     "DependencyPreviewItem",
@@ -146,6 +153,7 @@ __all__ = [
     "SshHost",
     "list_ssh_hosts",
     "resolve_ssh_host",
+    "ssh_alias_names",
     # Errors
     "MolqError",
     "ConfigError",
@@ -157,3 +165,33 @@ __all__ = [
     "MolqTimeoutError",
     "StoreError",
 ]
+
+
+# ---------------------------------------------------------------------------
+# Lazily-loaded names
+# ---------------------------------------------------------------------------
+
+#: Dashboard exports, resolved on first attribute access.  ``molq.dashboard``
+#: pulls in rich plus termios/tty — a fifth of import time, and Unix-only —
+#: which nothing on the submit path needs.
+_LAZY_MODULES = {
+    "DashboardState": "molq.dashboard",
+    "JobRow": "molq.dashboard",
+    "MolqMonitor": "molq.dashboard",
+    "RunDashboard": "molq.dashboard",
+}
+
+
+def __getattr__(name: str):
+    module_name = _LAZY_MODULES.get(name)
+    if module_name is None:
+        raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
+    import importlib
+
+    value = getattr(importlib.import_module(module_name), name)
+    globals()[name] = value  # cache so later lookups skip this path
+    return value
+
+
+def __dir__() -> list[str]:
+    return sorted(set(globals()) | set(_LAZY_MODULES))

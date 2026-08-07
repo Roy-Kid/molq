@@ -18,6 +18,7 @@ methods should be added as concrete schedulers need them, not speculatively.
 
 from __future__ import annotations
 
+import base64
 import os
 import shlex
 import shutil
@@ -25,15 +26,15 @@ import subprocess
 import tempfile
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass, field
+from functools import lru_cache
 from pathlib import Path
 from typing import Protocol, runtime_checkable
 
-import mollog
-
+from molq._log import get_logger
 from molq.errors import MolqError
 from molq.options import SshTransportOptions
 
-logger = mollog.get_logger(__name__)
+logger = get_logger(__name__)
 
 
 # ---------------------------------------------------------------------------
@@ -98,12 +99,7 @@ class Transport(Protocol):
         input: str | None = None,
         timeout: float | None = None,
     ) -> CommandResult:
-        """Execute *argv* and return its result.
-
-        Never raises on non-zero exit — callers check ``result.returncode``.
-        Raises :class:`TransportError` only on transport-layer failure
-        (ssh connection refused, command not found, timeout).
-        """
+        """Execute *argv* and return its result."""
         ...
 
     def read_text(self, path: str) -> str: ...
@@ -111,11 +107,21 @@ class Transport(Protocol):
     def write_text(self, path: str, data: str, *, mode: int = 0o600) -> None: ...
     def write_bytes(self, path: str, data: bytes, *, mode: int = 0o600) -> None: ...
     def exists(self, path: str) -> bool: ...
+    def is_dir(self, path: str) -> bool: ...
+    def is_file(self, path: str) -> bool: ...
     def mkdir(
         self, path: str, *, parents: bool = True, exist_ok: bool = True
     ) -> None: ...
     def chmod(self, path: str, mode: int) -> None: ...
     def remove(self, path: str, *, recursive: bool = False) -> None: ...
+    def rename(self, src: str, dst: str) -> None: ...
+    def copy(self, src: str, dst: str) -> None: ...
+    def copytree(self, src: str, dst: str) -> None: ...
+    def touch(self, path: str) -> None: ...
+    def symlink(self, src: str, dst: str) -> None: ...
+    def listdir(self, path: str) -> list[str]: ...
+    def stat(self, path: str) -> dict[str, object]: ...
+    def getsize(self, path: str) -> int: ...
     def upload(
         self,
         local: str,
@@ -123,10 +129,7 @@ class Transport(Protocol):
         *,
         recursive: bool = False,
         exclude: Sequence[str] = (),
-    ) -> None:
-        """Copy *local* → *remote*.  *remote* is on the transport's filesystem."""
-        ...
-
+    ) -> None: ...
     def download(
         self,
         remote: str,
@@ -134,9 +137,7 @@ class Transport(Protocol):
         *,
         recursive: bool = False,
         exclude: Sequence[str] = (),
-    ) -> None:
-        """Copy *remote* → *local*.  *remote* is on the transport's filesystem."""
-        ...
+    ) -> None: ...
 
 
 # ---------------------------------------------------------------------------
@@ -261,6 +262,43 @@ class LocalTransport:
     ) -> None:
         _local_copy(remote, local, recursive=recursive, exclude=exclude)
 
+    def is_dir(self, path: str) -> bool:
+        return Path(path).is_dir()
+
+    def is_file(self, path: str) -> bool:
+        return Path(path).is_file()
+
+    def rename(self, src: str, dst: str) -> None:
+        os.rename(src, dst)
+
+    def copy(self, src: str, dst: str) -> None:
+        Path(dst).parent.mkdir(parents=True, exist_ok=True)
+        shutil.copy2(src, dst)
+
+    def copytree(self, src: str, dst: str) -> None:
+        shutil.copytree(src, dst)
+
+    def touch(self, path: str) -> None:
+        Path(path).touch()
+
+    def symlink(self, src: str, dst: str) -> None:
+        Path(dst).symlink_to(src)
+
+    def listdir(self, path: str) -> list[str]:
+        return [p.name for p in Path(path).iterdir()]
+
+    def stat(self, path: str) -> dict[str, object]:
+        st = os.stat(path)
+        return {
+            "size": st.st_size,
+            "mtime": st.st_mtime,
+            "is_dir": Path(path).is_dir(),
+            "is_file": Path(path).is_file(),
+        }
+
+    def getsize(self, path: str) -> int:
+        return os.path.getsize(path)
+
 
 def _local_copy(src: str, dst: str, *, recursive: bool, exclude: Sequence[str]) -> None:
     src_path = Path(src)
@@ -301,6 +339,73 @@ def _merge_copy(src: Path, dst: Path, *, exclude: set[str]) -> None:
 # SshTransport
 # ---------------------------------------------------------------------------
 
+# Unix domain sockets cap out near 104 bytes on macOS / 108 on Linux, and
+# OpenSSH expands ``%C`` to a 40-character hash.  Budget for the expansion so
+# we silently skip multiplexing rather than making ssh warn on every call.
+_SOCKET_PATH_BUDGET = 100
+_CONTROL_TOKEN_GROWTH = 38  # len("%C") -> 40
+
+# Exit status a remote helper script uses to report "path does not exist",
+# chosen to not collide with the shell's own conventional codes (1, 2, 126-165).
+_ENOENT_EXIT = 44
+
+
+@lru_cache(maxsize=128)
+def _host_configures_control_path(host: str, ssh_bin: str = "ssh") -> bool:
+    """True when ``~/.ssh/config`` already sets a ControlPath for *host*.
+
+    Asks OpenSSH itself (``ssh -G``) rather than parsing the config, so
+    ``Match`` blocks, ``Include``, and the system-wide config are all honoured.
+    Cached: this runs once per host, not once per remote operation.
+
+    A failure to ask (no ssh binary, bad flags) is reported as "not
+    configured" — molq then falls back to its own socket, which is the same
+    behaviour as before the check existed.
+    """
+    try:
+        proc = subprocess.run(
+            [ssh_bin, "-G", host],
+            capture_output=True,
+            text=True,
+            check=False,
+            timeout=10,
+        )
+    except (OSError, subprocess.SubprocessError):
+        return False
+    if proc.returncode != 0:
+        return False
+    for line in proc.stdout.splitlines():
+        key, _, value = line.partition(" ")
+        if key.lower() == "controlpath":
+            configured = value.strip()
+            return bool(configured) and configured.lower() != "none"
+    return False
+
+
+def _ssh_control_path() -> str | None:
+    """Return a ControlPath template, or ``None`` if one can't be provided.
+
+    Sockets live directly in ``~/.ssh`` as ``molq-<hash>``, the same flat
+    layout other OpenSSH tooling uses — one well-known private directory per
+    user rather than a molq-specific subdirectory.  ``%C`` is a hash of the
+    connection tuple, so distinct hosts never share a socket.
+    """
+    uid = getattr(os, "getuid", lambda: 0)()
+    ssh_dir = Path.home() / ".ssh"
+    template = str(ssh_dir / "molq-%C")
+    if len(template) + _CONTROL_TOKEN_GROWTH > _SOCKET_PATH_BUDGET:
+        logger.debug(f"ssh ControlPath would exceed socket limit: {template}")
+        return None
+    try:
+        ssh_dir.mkdir(mode=0o700, parents=True, exist_ok=True)
+        # Refuse a directory we do not own — a socket somewhere another user
+        # controls would let them observe or hijack the multiplexed session.
+        if ssh_dir.stat().st_uid != uid:
+            return None
+    except OSError:
+        return None
+    return template
+
 
 @dataclass(frozen=True)
 class SshTransport:
@@ -323,6 +428,69 @@ class SshTransport:
 
     # ── helpers ─────────────────────────────────────────────────────────────
 
+    @staticmethod
+    def _quote_remote_path(path: str) -> str:
+        """Shell-quote *path* while preserving ``~`` tilde expansion for the remote shell.
+
+        ``shlex.quote`` wraps everything in single quotes, which prevents the
+        remote shell from expanding ``~``.  This helper keeps the tilde prefix
+        outside the quoted portion so ``~/work`` expands to the remote home.
+        """
+        if path.startswith("~/"):
+            return "~/" + shlex.quote(path[2:])
+        if path == "~":
+            return "~"
+        return shlex.quote(path)
+
+    def _mux_opts(self) -> list[str]:
+        """Connection-multiplexing options, or ``[]`` when unavailable.
+
+        A single molq job performs many small remote operations (write the
+        wrapper, mkdir, poll ``.exit_code``, read logs).  Without a shared
+        master connection each one is a fresh TCP + auth handshake, which
+        dominates wall-clock on any real cluster — and multiplies on hosts
+        with Kerberos or hardware-token auth.
+
+        Three cases, in order:
+
+        1. ``control_path`` set explicitly — use it verbatim.
+        2. ``~/.ssh/config`` already defines a ``ControlPath`` for this host —
+           inherit it by passing no path at all.  molq then shares the very
+           same socket as your own ``ssh``: whichever runs first becomes the
+           master and the other rides along.
+        3. Nothing configured — supply molq's own ``~/.ssh/molq-%C``.
+        """
+        if not self.options.control_master:
+            return []
+
+        # ControlMaster=auto in every case: reuse a live master, become one
+        # otherwise.  Without it a configured ControlPath alone would only
+        # *use* a master someone else started.
+        opts = ["-o", "ControlMaster=auto"]
+
+        if self.options.control_path:
+            return opts + [
+                "-o",
+                f"ControlPath={self.options.control_path}",
+                "-o",
+                f"ControlPersist={self.options.control_persist}",
+            ]
+
+        if _host_configures_control_path(self.options.host, self._ssh_bin):
+            # Inherit path *and* persistence from the user's config — their
+            # ControlPersist governs a socket they also use.
+            return opts
+
+        control_path = _ssh_control_path()
+        if control_path is None:
+            return []
+        return opts + [
+            "-o",
+            f"ControlPath={control_path}",
+            "-o",
+            f"ControlPersist={self.options.control_persist}",
+        ]
+
     def _ssh_argv(self) -> list[str]:
         argv: list[str] = [
             self._ssh_bin,
@@ -330,7 +498,14 @@ class SshTransport:
             "BatchMode=yes",
             "-o",
             "StrictHostKeyChecking=accept-new",
+            "-o",
+            "RemoteCommand=none",
+            "-o",
+            "RequestTTY=no",
+            "-o",
+            f"ConnectTimeout={self.options.connect_timeout}",
         ]
+        argv += self._mux_opts()
         if self.options.port is not None:
             argv += ["-p", str(self.options.port)]
         if self.options.identity_file:
@@ -341,7 +516,18 @@ class SshTransport:
 
     def _ssh_e_arg(self) -> str:
         """Build the ``-e`` argument for rsync that injects our ssh options."""
-        parts: list[str] = [self._ssh_bin, "-o", "BatchMode=yes"]
+        parts: list[str] = [
+            self._ssh_bin,
+            "-o",
+            "BatchMode=yes",
+            "-o",
+            "RemoteCommand=none",
+            "-o",
+            "RequestTTY=no",
+            "-o",
+            f"ConnectTimeout={self.options.connect_timeout}",
+        ]
+        parts += self._mux_opts()
         if self.options.port is not None:
             parts += ["-p", str(self.options.port)]
         if self.options.identity_file:
@@ -402,8 +588,8 @@ class SshTransport:
             for k, v in env.items():
                 parts.append(f"{shlex.quote(k)}={shlex.quote(v)}")
         if cwd:
-            parts += ["cd", shlex.quote(cwd), "&&"]
-        parts += [shlex.quote(a) for a in argv]
+            parts += ["cd", self._quote_remote_path(cwd), "&&"]
+        parts += [self._quote_remote_path(a) for a in argv]
         remote_cmd = " ".join(parts)
         return self._shell(remote_cmd, input=input, timeout=timeout)
 
@@ -412,7 +598,9 @@ class SshTransport:
 
     def read_bytes(self, path: str) -> bytes:
         # Use base64 so we don't have to worry about embedded NULs / non-UTF8.
-        result = self._shell(f"base64 -- {shlex.quote(path)}")
+        # Feed it on stdin rather than as an argument: BSD/macOS base64 takes
+        # only -i/stdin, so `base64 -- <file>` fails against a macOS host.
+        result = self._shell(f"base64 < {self._quote_remote_path(path)}")
         if result.returncode != 0:
             if (
                 "No such file" in result.stderr
@@ -424,8 +612,6 @@ class SshTransport:
                 returncode=result.returncode,
                 stderr=result.stderr,
             )
-        import base64
-
         return base64.b64decode(result.stdout)
 
     def write_text(self, path: str, data: str, *, mode: int = 0o600) -> None:
@@ -434,11 +620,9 @@ class SshTransport:
     def write_bytes(self, path: str, data: bytes, *, mode: int = 0o600) -> None:
         # Atomic-ish: write to .tmp and rename.  Use base64 over stdin to
         # carry arbitrary bytes through ssh cleanly.
-        import base64
-
         encoded = base64.b64encode(data).decode("ascii")
-        q_path = shlex.quote(path)
-        q_tmp = shlex.quote(f"{path}.tmp")
+        q_path = self._quote_remote_path(path)
+        q_tmp = self._quote_remote_path(f"{path}.tmp")
         remote_cmd = (
             f"base64 -d > {q_tmp} && chmod {mode:o} {q_tmp} && mv {q_tmp} {q_path}"
         )
@@ -451,7 +635,7 @@ class SshTransport:
             )
 
     def exists(self, path: str) -> bool:
-        result = self._shell(f"test -e {shlex.quote(path)}")
+        result = self._shell(f"test -e {self._quote_remote_path(path)}")
         if result.returncode == 0:
             return True
         if result.returncode == 1:
@@ -464,7 +648,7 @@ class SshTransport:
 
     def mkdir(self, path: str, *, parents: bool = True, exist_ok: bool = True) -> None:
         flag = "-p" if parents or exist_ok else ""
-        cmd = f"mkdir {flag} {shlex.quote(path)}".strip()
+        cmd = f"mkdir {flag} {self._quote_remote_path(path)}".strip()
         result = self._shell(cmd)
         if result.returncode != 0:
             raise TransportError(
@@ -474,7 +658,7 @@ class SshTransport:
             )
 
     def chmod(self, path: str, mode: int) -> None:
-        result = self._shell(f"chmod {mode:o} {shlex.quote(path)}")
+        result = self._shell(f"chmod {mode:o} {self._quote_remote_path(path)}")
         if result.returncode != 0:
             raise TransportError(
                 f"remote chmod failed: {path}",
@@ -484,7 +668,7 @@ class SshTransport:
 
     def remove(self, path: str, *, recursive: bool = False) -> None:
         flag = "-rf" if recursive else "-f"
-        result = self._shell(f"rm {flag} -- {shlex.quote(path)}")
+        result = self._shell(f"rm {flag} -- {self._quote_remote_path(path)}")
         if result.returncode != 0:
             raise TransportError(
                 f"remote remove failed: {path}",
@@ -517,6 +701,111 @@ class SshTransport:
         self._rsync(
             self._remote_target(remote), local, recursive=recursive, exclude=exclude
         )
+
+    def is_dir(self, path: str) -> bool:
+        result = self._shell(f"test -d {self._quote_remote_path(path)}")
+        return result.returncode == 0
+
+    def is_file(self, path: str) -> bool:
+        result = self._shell(f"test -f {self._quote_remote_path(path)}")
+        return result.returncode == 0
+
+    def rename(self, src: str, dst: str) -> None:
+        result = self._shell(
+            f"mv -- {self._quote_remote_path(src)} {self._quote_remote_path(dst)}"
+        )
+        if result.returncode != 0:
+            raise TransportError(f"remote rename failed: {src} -> {dst}")
+
+    def copy(self, src: str, dst: str) -> None:
+        result = self._shell(
+            f"cp -- {self._quote_remote_path(src)} {self._quote_remote_path(dst)}"
+        )
+        if result.returncode != 0:
+            raise TransportError(f"remote copy failed: {src} -> {dst}")
+
+    def copytree(self, src: str, dst: str) -> None:
+        result = self._shell(
+            f"cp -r -- {self._quote_remote_path(src)} {self._quote_remote_path(dst)}"
+        )
+        if result.returncode != 0:
+            raise TransportError(f"remote copytree failed: {src} -> {dst}")
+
+    def touch(self, path: str) -> None:
+        result = self._shell(f"touch -- {self._quote_remote_path(path)}")
+        if result.returncode != 0:
+            raise TransportError(f"remote touch failed: {path}")
+
+    def symlink(self, src: str, dst: str) -> None:
+        result = self._shell(
+            f"ln -s -- {self._quote_remote_path(src)} {self._quote_remote_path(dst)}"
+        )
+        if result.returncode != 0:
+            raise TransportError(f"remote symlink failed: {src} -> {dst}")
+
+    def listdir(self, path: str) -> list[str]:
+        result = self._shell(f"ls -1A -- {self._quote_remote_path(path)}")
+        if result.returncode != 0:
+            return []
+        return [line for line in result.stdout.strip().split("\n") if line]
+
+    def stat(self, path: str) -> dict[str, object]:
+        q = self._quote_remote_path(path)
+        # GNU coreutils first, BSD/macOS second.  Deliberately not python3:
+        # HPC login nodes routinely keep Python behind `module load`, so it is
+        # not on the default PATH of a non-interactive ssh session.
+        remote_cmd = (
+            f"test -e {q} || exit {_ENOENT_EXIT}; "
+            f"sz=$(stat -c %s {q} 2>/dev/null || stat -f %z {q}); "
+            f"mt=$(stat -c %Y {q} 2>/dev/null || stat -f %m {q}); "
+            f"d=0; f=0; "
+            f"if [ -d {q} ]; then d=1; fi; "
+            f"if [ -f {q} ]; then f=1; fi; "
+            f'printf "%s %s %s %s\\n" "$sz" "$mt" "$d" "$f"'
+        )
+        result = self._shell(remote_cmd)
+        if result.returncode == _ENOENT_EXIT:
+            raise FileNotFoundError(path)
+        if result.returncode != 0:
+            raise TransportError(
+                f"remote stat failed: {path}",
+                returncode=result.returncode,
+                stderr=result.stderr,
+            )
+        try:
+            size, mtime, is_dir, is_file = result.stdout.split()
+            return {
+                "size": int(size),
+                "mtime": float(mtime),
+                "is_dir": is_dir == "1",
+                "is_file": is_file == "1",
+            }
+        except ValueError as exc:
+            raise TransportError(
+                f"unparseable remote stat output for {path}: {result.stdout!r}"
+            ) from exc
+
+    def getsize(self, path: str) -> int:
+        q = self._quote_remote_path(path)
+        remote_cmd = (
+            f"test -e {q} || exit {_ENOENT_EXIT}; "
+            f"stat -c %s {q} 2>/dev/null || stat -f %z {q}"
+        )
+        result = self._shell(remote_cmd)
+        if result.returncode == _ENOENT_EXIT:
+            raise FileNotFoundError(path)
+        if result.returncode != 0:
+            raise TransportError(
+                f"remote getsize failed: {path}",
+                returncode=result.returncode,
+                stderr=result.stderr,
+            )
+        try:
+            return int(result.stdout.strip())
+        except ValueError as exc:
+            raise TransportError(
+                f"unparseable remote size for {path}: {result.stdout!r}"
+            ) from exc
 
     def _rsync(
         self, src: str, dst: str, *, recursive: bool, exclude: Sequence[str]

@@ -73,6 +73,17 @@ class SshTransportOptions:
     ``host`` is the only required field — everything else falls back to the
     user's ``~/.ssh/config``.  ``rsync_opts`` defaults preserve partial
     transfers across flaky links and avoid extra renames on busy schedulers.
+
+    Connection multiplexing (``control_master``) is on by default: molq
+    performs many small remote operations per job, and without a shared
+    master connection each one pays a full TCP + authentication handshake.
+    Set ``control_master=False`` for hosts that refuse multiplexed sessions.
+
+    molq does not fight your SSH config over *where* that socket lives. When
+    ``~/.ssh/config`` already sets a ``ControlPath`` for the host, molq
+    inherits it, so molq and your own ``ssh`` share one master connection.
+    Only when no ``ControlPath`` is configured does molq supply its own
+    (``~/.ssh/molq-%C``).  ``control_path`` overrides both.
     """
 
     host: str  # "user@host" or alias from ssh_config
@@ -80,3 +91,9 @@ class SshTransportOptions:
     identity_file: str | None = None
     ssh_opts: tuple[str, ...] = ()  # extra "-o" pairs / flags forwarded to ssh
     rsync_opts: tuple[str, ...] = ("-a", "--partial", "--inplace")
+    control_master: bool = True
+    control_persist: str = "60s"
+    connect_timeout: int = 15
+    #: Explicit ControlPath. ``None`` means "inherit from ssh_config, or fall
+    #: back to molq's own socket". Accepts OpenSSH tokens such as ``%C``.
+    control_path: str | None = None

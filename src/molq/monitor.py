@@ -8,8 +8,7 @@ from __future__ import annotations
 
 import threading
 
-import mollog
-
+from molq._log import get_logger
 from molq.errors import MolqTimeoutError
 from molq.models import JobRecord
 from molq.reconciler import JobReconciler
@@ -17,7 +16,7 @@ from molq.status import JobState
 from molq.store import JobStore
 from molq.strategies import ExponentialBackoffStrategy, PollingStrategy
 
-logger = mollog.get_logger(__name__)
+logger = get_logger(__name__)
 
 
 class JobMonitor:
@@ -62,13 +61,12 @@ class JobMonitor:
                 if state is not None and JobState(state).is_terminal:
                     record = self._store.get_latest_attempt_record(job_id)
                     if record is not None:
-                        if not record.state.is_terminal:
-                            poll_count += 1
-                            continue
-                        if record.job_id != watched_job_id:
-                            poll_count += 1
-                            continue
-                        return record
+                        # A retry may have started a fresh attempt while we
+                        # were polling the previous one.  Fall through to the
+                        # timeout check and backoff sleep so re-targeting the
+                        # new attempt cannot spin without honouring either.
+                        if record.state.is_terminal and record.job_id == watched_job_id:
+                            return record
 
                 if timeout is not None and (time.time() - start) > timeout:
                     raise MolqTimeoutError(
@@ -104,6 +102,10 @@ class JobMonitor:
     ) -> list[JobRecord]:
         """Block until specified jobs (or all active) reach terminal state.
 
+        Returns the records for the jobs that were waited on — with
+        ``job_ids=None`` that is the set of jobs active when the call started,
+        not the cluster's entire history.
+
         Raises:
             MolqTimeoutError: If timeout exceeded.
         """
@@ -111,6 +113,13 @@ class JobMonitor:
 
         start = time.time()
         poll_count = 0
+        # Snapshot up front so the result set is bounded and stable even if
+        # other processes submit into this cluster while we wait.
+        watched: list[str] = (
+            list(job_ids)
+            if job_ids is not None
+            else [r.job_id for r in self._store.get_active_records(cluster_name)]
+        )
 
         try:
             while True:
@@ -129,7 +138,7 @@ class JobMonitor:
                 if all_terminal:
                     if job_ids is not None:
                         return [r for r in records if r is not None]
-                    return self._store.list_records(cluster_name, include_terminal=True)
+                    return self._records_for(watched)
 
                 if timeout is not None and (time.time() - start) > timeout:
                     raise MolqTimeoutError(
@@ -145,7 +154,12 @@ class JobMonitor:
             logger.info("Monitoring interrupted by user")
             raise
 
-        return self._store.list_records(cluster_name, include_terminal=True)
+        return self._records_for(watched)
+
+    def _records_for(self, job_ids: list[str]) -> list[JobRecord]:
+        """Latest-attempt records for *job_ids*, skipping any that vanished."""
+        records = (self._store.get_latest_attempt_record(jid) for jid in job_ids)
+        return [record for record in records if record is not None]
 
     def stop(self) -> None:
         """Signal the monitor to stop."""

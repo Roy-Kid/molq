@@ -34,7 +34,8 @@ zensical serve
 
 - Keep public API changes intentional and documented.
 - Add or update tests for behavior changes and bug fixes.
-- Update `README.md`, `docs/`, and `CHANGELOG.md` when public behavior changes.
+- Update `README.md` and `docs/` when public behavior changes.
+  Release history lives in git tags / GitHub Releases (no `CHANGELOG.md`).
 - Keep scheduler-specific changes explicit about which backend they affect.
 
 ## Pull Requests

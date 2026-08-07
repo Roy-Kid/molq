@@ -8,9 +8,10 @@ from pathlib import Path
 import pytest
 
 from molq.errors import StoreError
-from molq.models import Command, JobDependency, JobSpec
+from molq.models import Command, JobDependency, JobSpec, RememberedAllocation
 from molq.status import JobState
 from molq.store import JobStore
+from molq.types import JobScheduling
 
 
 @pytest.fixture
@@ -44,7 +45,7 @@ class TestSchemaCreation:
         row = memory_store._conn.execute(
             "SELECT value FROM molq_meta WHERE key = 'schema_version'"
         ).fetchone()
-        assert row["value"] == "7"
+        assert row["value"] == "8"
 
     def test_file_backed(self, file_store: JobStore):
         assert isinstance(file_store.db_path, Path)
@@ -308,3 +309,279 @@ class TestConcurrency:
         records = store.list_records("dev", include_terminal=True)
         assert len(records) == 20
         store.close()
+
+
+class TestAllocationMemory:
+    """Persisted, retention-independent memory of used scheduling configs."""
+
+    def test_allocations_table_created(self, memory_store: JobStore):
+        rows = memory_store._conn.execute(
+            "SELECT name FROM sqlite_master WHERE type='table' AND name='allocations'"
+        ).fetchall()
+        assert len(rows) == 1
+
+    def test_record_first_use(self, memory_store: JobStore):
+        memory_store.record_allocation(
+            "hpc",
+            JobScheduling(partition="main", account="proj1", qos="normal"),
+            now=100.0,
+        )
+        got = memory_store.list_allocations("hpc")
+        assert len(got) == 1
+        alloc = got[0]
+        assert isinstance(alloc, RememberedAllocation)
+        assert (alloc.partition, alloc.account, alloc.qos) == (
+            "main",
+            "proj1",
+            "normal",
+        )
+        assert alloc.use_count == 1
+        assert alloc.last_used == 100.0
+
+    def test_record_same_identity_bumps_count(self, memory_store: JobStore):
+        sched = JobScheduling(partition="main", account="proj1")
+        memory_store.record_allocation("hpc", sched, now=100.0)
+        memory_store.record_allocation("hpc", sched, now=200.0)
+        got = memory_store.list_allocations("hpc")
+        assert len(got) == 1
+        assert got[0].use_count == 2
+        assert got[0].last_used == 200.0
+
+    def test_nullable_fields_distinct_identities(self, memory_store: JobStore):
+        # None in different positions must not collide via NULL ambiguity.
+        memory_store.record_allocation("hpc", JobScheduling(partition="main"), now=1.0)
+        memory_store.record_allocation("hpc", JobScheduling(account="main"), now=2.0)
+        memory_store.record_allocation(
+            "hpc", JobScheduling(partition="main", account="main"), now=3.0
+        )
+        got = memory_store.list_allocations("hpc")
+        assert len(got) == 3
+        assert all(a.use_count == 1 for a in got)
+
+    def test_list_ordered_by_recency_with_limit(self, memory_store: JobStore):
+        memory_store.record_allocation("hpc", JobScheduling(partition="a"), now=10.0)
+        memory_store.record_allocation("hpc", JobScheduling(partition="b"), now=30.0)
+        memory_store.record_allocation("hpc", JobScheduling(partition="c"), now=20.0)
+        got = memory_store.list_allocations("hpc", limit=2)
+        assert [a.partition for a in got] == ["b", "c"]
+
+    def test_scoped_by_cluster(self, memory_store: JobStore):
+        memory_store.record_allocation("hpc", JobScheduling(partition="a"), now=1.0)
+        memory_store.record_allocation("other", JobScheduling(partition="b"), now=2.0)
+        assert [a.partition for a in memory_store.list_allocations("hpc")] == ["a"]
+
+    def test_all_none_scheduling_not_recorded(self, memory_store: JobStore):
+        memory_store.record_allocation("hpc", JobScheduling(), now=1.0)
+        assert memory_store.list_allocations("hpc") == []
+
+    def test_migration_v7_to_v8_preserves_jobs(self, tmp_path: Path):
+        # Build a current-schema DB, then simulate a v7 DB (no allocations
+        # table, version pinned to "7") and reopen to exercise the migration.
+        db = tmp_path / "mig.db"
+        store = JobStore(db)
+        store.insert_job(_make_spec("keep-me", "hpc"))
+        store._conn.execute("DROP TABLE allocations")
+        store._conn.execute(
+            "UPDATE molq_meta SET value = '7' WHERE key = 'schema_version'"
+        )
+        store._conn.commit()
+        store.close()
+
+        reopened = JobStore(db)
+        version = reopened._conn.execute(
+            "SELECT value FROM molq_meta WHERE key = 'schema_version'"
+        ).fetchone()["value"]
+        assert version == "8"
+        tables = {
+            r["name"]
+            for r in reopened._conn.execute(
+                "SELECT name FROM sqlite_master WHERE type='table'"
+            ).fetchall()
+        }
+        assert "allocations" in tables
+        assert reopened.get_record("keep-me") is not None
+        reopened.close()
+
+    def test_remembered_allocation_is_public_export(self):
+        # AC-1: importable from the molq top-level package, not just molq.models.
+        import molq
+
+        assert molq.RememberedAllocation is RememberedAllocation
+
+    def test_retention_deletes_jobs_keeps_allocations(self, tmp_path: Path):
+        # AC-9: pruning terminal job rows must not touch remembered allocations.
+        store = JobStore(tmp_path / "ret.db")
+        store.insert_job(_make_spec("doomed", "hpc"))
+        store.record_allocation("hpc", JobScheduling(partition="main"), now=1.0)
+
+        store.delete_terminal_records(["doomed"])
+
+        assert store.get_record("doomed") is None
+        survived = store.list_allocations("hpc")
+        assert len(survived) == 1
+        assert survived[0].partition == "main"
+        store.close()
+
+
+class TestMarkPolled:
+    def test_stamps_every_listed_job(self, memory_store):
+        specs = [_make_spec(job_id=f"job-{i}") for i in range(3)]
+        for spec in specs:
+            memory_store.insert_job(spec)
+
+        memory_store.mark_polled([s.job_id for s in specs], 1234.5)
+
+        for spec in specs:
+            row = memory_store._conn.execute(
+                "SELECT last_polled FROM jobs WHERE job_id = ?", (spec.job_id,)
+            ).fetchone()
+            assert row["last_polled"] == 1234.5
+
+    def test_empty_list_is_a_noop(self, memory_store):
+        memory_store.mark_polled([], 1.0)
+
+    def test_duplicate_ids_are_collapsed(self, memory_store):
+        spec = _make_spec(job_id="dup")
+        memory_store.insert_job(spec)
+        memory_store.mark_polled(["dup", "dup"], 99.0)
+        record = memory_store.get_record("dup")
+        assert record is not None
+
+
+class TestSchemaVersionComparison:
+    """Version comparison must be numeric, not lexicographic."""
+
+    def test_future_version_reports_upgrade_not_unknown(self, tmp_path):
+        db = tmp_path / "future.db"
+        store = JobStore(db)
+        store.close()
+
+        conn = sqlite3.connect(db)
+        # "10" sorts before "8" as a string — the pre-0.6.1 check misread a
+        # future schema as unmigratable garbage.
+        conn.execute("UPDATE molq_meta SET value = '10' WHERE key = 'schema_version'")
+        conn.commit()
+        conn.close()
+
+        with pytest.raises(StoreError, match="newer than supported"):
+            JobStore(db)
+
+    def test_non_numeric_version_is_rejected_clearly(self, tmp_path):
+        db = tmp_path / "junk.db"
+        store = JobStore(db)
+        store.close()
+
+        conn = sqlite3.connect(db)
+        conn.execute("UPDATE molq_meta SET value = 'abc' WHERE key = 'schema_version'")
+        conn.commit()
+        conn.close()
+
+        with pytest.raises(StoreError, match="Unknown schema version"):
+            JobStore(db)
+
+
+class TestBoundedReads:
+    def test_list_records_honors_limit(self, memory_store):
+        for i in range(5):
+            memory_store.insert_job(_make_spec(job_id=f"lim-{i}"))
+        assert len(memory_store.list_records("dev", include_terminal=True)) == 5
+        assert (
+            len(memory_store.list_records("dev", include_terminal=True, limit=2)) == 2
+        )
+
+    def test_get_latest_attempt_unknown_job_is_none(self, memory_store):
+        assert memory_store.get_latest_attempt_record("no-such-job") is None
+
+    def test_get_latest_attempt_returns_highest_attempt(self, memory_store):
+        root = "root-1"
+        memory_store.insert_job(_make_spec(job_id=root))
+        second = JobSpec(
+            job_id="attempt-2",
+            cluster_name="dev",
+            scheduler="local",
+            command=Command.from_submit_args(argv=["echo", "hi"]),
+            root_job_id=root,
+            attempt=2,
+        )
+        memory_store.insert_job(second)
+
+        latest = memory_store.get_latest_attempt_record(root)
+        assert latest is not None
+        assert latest.job_id == "attempt-2"
+        assert latest.attempt == 2
+
+
+class TestCleanupCandidateFiltering:
+    """Cutoffs are applied in SQL; only expiring rows come back."""
+
+    def _finished(self, store, job_id, state, finished_at, cleaned_at=None):
+        store.insert_job(_make_spec(job_id=job_id))
+        store.update_job(
+            job_id, state=state, finished_at=finished_at, cleaned_at=cleaned_at
+        )
+
+    def test_only_rows_past_the_cutoff_are_returned(self, memory_store):
+        self._finished(memory_store, "old", JobState.SUCCEEDED, 100.0)
+        self._finished(memory_store, "new", JobState.SUCCEEDED, 5000.0)
+
+        artifacts, records = memory_store.list_cleanup_candidates(
+            "dev",
+            job_dir_cutoff=1000.0,
+            record_cutoff=1000.0,
+            include_failed_job_dirs=True,
+        )
+        assert [r.job_id for r in artifacts] == ["old"]
+        assert [r.job_id for r in records] == ["old"]
+
+    def test_active_jobs_are_never_candidates(self, memory_store):
+        memory_store.insert_job(_make_spec(job_id="running"))
+        memory_store.update_job("running", state=JobState.RUNNING)
+
+        artifacts, records = memory_store.list_cleanup_candidates(
+            "dev", job_dir_cutoff=1e12, record_cutoff=1e12, include_failed_job_dirs=True
+        )
+        assert artifacts == [] and records == []
+
+    def test_already_cleaned_rows_are_not_artifact_candidates(self, memory_store):
+        self._finished(
+            memory_store, "done", JobState.SUCCEEDED, 100.0, cleaned_at=200.0
+        )
+
+        artifacts, records = memory_store.list_cleanup_candidates(
+            "dev",
+            job_dir_cutoff=1000.0,
+            record_cutoff=1000.0,
+            include_failed_job_dirs=True,
+        )
+        assert artifacts == []
+        # Still eligible for record deletion.
+        assert [r.job_id for r in records] == ["done"]
+
+    def test_failed_job_dirs_can_be_preserved(self, memory_store):
+        self._finished(memory_store, "ok", JobState.SUCCEEDED, 100.0)
+        self._finished(memory_store, "bad", JobState.FAILED, 100.0)
+
+        kept, _ = memory_store.list_cleanup_candidates(
+            "dev",
+            job_dir_cutoff=1000.0,
+            record_cutoff=1000.0,
+            include_failed_job_dirs=False,
+        )
+        assert [r.job_id for r in kept] == ["ok"]
+
+        both, _ = memory_store.list_cleanup_candidates(
+            "dev",
+            job_dir_cutoff=1000.0,
+            record_cutoff=1000.0,
+            include_failed_job_dirs=True,
+        )
+        assert {r.job_id for r in both} == {"ok", "bad"}
+
+    def test_jobs_without_finish_time_are_skipped(self, memory_store):
+        memory_store.insert_job(_make_spec(job_id="no-finish"))
+        memory_store.update_job("no-finish", state=JobState.SUCCEEDED)
+
+        artifacts, records = memory_store.list_cleanup_candidates(
+            "dev", job_dir_cutoff=1e12, record_cutoff=1e12, include_failed_job_dirs=True
+        )
+        assert artifacts == [] and records == []

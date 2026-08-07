@@ -174,8 +174,7 @@ class TestSlurmScheduler:
 
         scheduler.submit(spec, job_dir)
         script = (job_dir / "run_slurm.sh").read_text()
-        assert 'bash "' in script
-        assert "user_script.sh" in script
+        assert f"bash {job_dir / 'user_script.sh'}" in script
 
     @patch("molq.transport.subprocess.run")
     def test_cancel(self, mock_run):
@@ -624,3 +623,147 @@ class TestListQueue:
         assert entries[0].state == JobState.RUNNING
         assert entries[0].partition == "gpu"
         assert entries[0].name == "train_job"
+
+
+class TestGeneratedScriptQuoting:
+    """Generated job scripts must survive paths with shell metacharacters."""
+
+    @patch("molq.transport.subprocess.run")
+    def test_script_path_with_spaces_is_quoted(self, mock_run, tmp_path: Path):
+        mock_run.return_value = MagicMock(stdout="12345\n", stderr="", returncode=0)
+        source = tmp_path / "source.sh"
+        source.write_text("#!/bin/bash\necho hi\n")
+        job_dir = tmp_path / "job dir with spaces"
+        job_dir.mkdir()
+        spec = JobSpec(
+            job_id="spaced",
+            cluster_name="alpha",
+            scheduler="slurm",
+            command=Command.from_submit_args(script=Script.path(source)),
+        )
+
+        SlurmScheduler().submit(spec, job_dir)
+        script = (job_dir / "run_slurm.sh").read_text()
+        # The interpreter line must be a single quoted argument, not a bare
+        # path that the shell would split on the spaces.
+        assert f"bash '{job_dir / 'user_script.sh'}'" in script
+
+
+class TestLSFTerminalParsing:
+    """`bhist -l` is prose that echoes the job's own command line back."""
+
+    def _bhist(self, body: str):
+        return MagicMock(stdout=body, stderr="", returncode=0)
+
+    @patch("molq.transport.subprocess.run")
+    def test_done_successfully(self, mock_run):
+        mock_run.return_value = self._bhist(
+            "Job <99>, User <alice>, Command <sleep 5>\n"
+            "Mon Jan  1 10:01:45: Done successfully. The CPU time used is 5.0 seconds.\n"
+        )
+        result = LSFScheduler().resolve_terminal("99")
+        assert result.state == JobState.SUCCEEDED
+        assert result.exit_code == 0
+
+    @patch("molq.transport.subprocess.run")
+    def test_exited_with_code(self, mock_run):
+        mock_run.return_value = self._bhist(
+            "Job <99>, User <alice>, Command <false>\n"
+            "Mon Jan  1 10:01:45: Exited with exit code 3. The CPU time used is 0.1s.\n"
+        )
+        result = LSFScheduler().resolve_terminal("99")
+        assert result.state == JobState.FAILED
+        assert result.exit_code == 3
+
+    @patch("molq.transport.subprocess.run")
+    def test_killed_by_owner_is_cancelled(self, mock_run):
+        mock_run.return_value = self._bhist(
+            "Job <99>, User <alice>, Command <sleep 500>\n"
+            "Mon Jan  1 10:01:45: Signal <KILL> requested by user <alice>;\n"
+            "Mon Jan  1 10:01:46: Exited by signal 15. TERM_OWNER: job killed by owner.\n"
+        )
+        result = LSFScheduler().resolve_terminal("99")
+        assert result.state == JobState.CANCELLED
+
+    @patch("molq.transport.subprocess.run")
+    def test_command_name_containing_done_does_not_decide(self, mock_run):
+        # Regression: a bare `"done" in output` check called this job a success
+        # purely because of its command name.
+        mock_run.return_value = self._bhist(
+            "Job <99>, User <alice>, Command </work/rundone.sh>\n"
+            "Mon Jan  1 10:00:05: Dispatched to <node1>;\n"
+        )
+        assert LSFScheduler().resolve_terminal("99") is None
+
+    @patch("molq.transport.subprocess.run")
+    def test_path_containing_exit_does_not_decide(self, mock_run):
+        mock_run.return_value = self._bhist(
+            "Job <99>, User <alice>, Command </work/exitpoll/run.sh>\n"
+            "Mon Jan  1 10:00:05: Dispatched to <node1>;\n"
+        )
+        assert LSFScheduler().resolve_terminal("99") is None
+
+    @patch("molq.transport.subprocess.run")
+    def test_still_running_returns_none(self, mock_run):
+        mock_run.return_value = self._bhist(
+            "Job <99>, User <alice>, Command <sleep 500>\n"
+            "Mon Jan  1 10:00:05: Dispatched to <node1>;\n"
+            "Mon Jan  1 10:00:06: Starting (Pid 4242);\n"
+        )
+        assert LSFScheduler().resolve_terminal("99") is None
+
+
+class TestDependencyFormatting:
+    """Each backend owns its own dependency syntax."""
+
+    def _edges(self, *pairs):
+        from molq.scheduler import DependencyEdge
+
+        return [DependencyEdge(condition=c, scheduler_job_id=i) for c, i in pairs]
+
+    def test_slurm_comma_joins_keyword_id_pairs(self):
+        edges = self._edges(("after_success", "1"), ("after_failure", "2"))
+        assert SlurmScheduler().format_dependencies(edges) == "afterok:1,afternotok:2"
+
+    def test_slurm_single_edge(self):
+        (edge,) = self._edges(("after", "42"))
+        assert SlurmScheduler().format_dependency(edge) == "afterany:42"
+
+    def test_pbs_groups_ids_sharing_a_keyword(self):
+        edges = self._edges(
+            ("after_success", "1"), ("after_success", "2"), ("after_failure", "3")
+        )
+        assert PBSScheduler().format_dependencies(edges) == "afterok:1:2,afternotok:3"
+
+    def test_lsf_builds_a_boolean_expression(self):
+        edges = self._edges(("after_success", "1"), ("after_failure", "2"))
+        assert LSFScheduler().format_dependencies(edges) == "done(1) && exit(2)"
+
+    def test_lsf_single_edge(self):
+        (edge,) = self._edges(("after_started", "7"))
+        assert LSFScheduler().format_dependency(edge) == "started(7)"
+
+    @pytest.mark.parametrize(
+        "scheduler", [SlurmScheduler(), PBSScheduler(), LSFScheduler()]
+    )
+    def test_unknown_condition_is_rejected(self, scheduler):
+        from molq.errors import ConfigError
+
+        (edge,) = self._edges(("after_lunch", "1"))
+        with pytest.raises(ConfigError, match="Unsupported dependency condition"):
+            scheduler.format_dependency(edge)
+
+    def test_shell_scheduler_refuses_dependencies(self):
+        from molq.errors import ConfigError
+
+        (edge,) = self._edges(("after_success", "1"))
+        with pytest.raises(ConfigError, match="does not support job dependencies"):
+            ShellScheduler().format_dependency(edge)
+
+    def test_shell_scheduler_declares_no_dependency_support(self):
+        assert ShellScheduler().capabilities().supports_dependency is False
+
+    def test_empty_edge_set_is_empty_string(self):
+        assert SlurmScheduler().format_dependencies([]) == ""
+        assert PBSScheduler().format_dependencies([]) == ""
+        assert LSFScheduler().format_dependencies([]) == ""

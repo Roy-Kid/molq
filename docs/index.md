@@ -1,172 +1,170 @@
 ---
 title: molq
-description: Unified job queue for local execution and HPC schedulers.
+description: One Python interface for local commands and HPC schedulers.
 hide:
   - navigation
   - toc
 hero:
+  kicker: Job orchestration
   title: molq
-  description: One submission interface for local runs and HPC queues. Pair a <code>Cluster</code> (where) with a <code>Submitor</code> (lifecycle), track jobs in SQLite, and watch them from the CLI or the menu bar.
+  description: Submit, track, and inspect the same workload on your laptop or an HPC cluster. molq keeps scheduler details at the edge and job history in one durable queue.
+  actions:
+    - label: Run your first job
+      href: getting-started/
+      style: primary
+    - label: Connect a cluster
+      href: schedulers/
+    - label: Python API
+      href: api/
   install:
     label: Install
-    command: pip install molcrafts-molq
+    methods:
+      - label: pip
+        command: pip install molcrafts-molq
+      - label: uv
+        command: uv add molcrafts-molq
   badges:
     - img: https://img.shields.io/pypi/v/molcrafts-molq
       href: https://pypi.org/project/molcrafts-molq/
       alt: PyPI version
-    - img: https://img.shields.io/badge/python-3.12%2B-blue.svg
+    - img: https://img.shields.io/pypi/pyversions/molcrafts-molq
       href: https://pypi.org/project/molcrafts-molq/
-      alt: Python 3.12+
-    - img: https://img.shields.io/badge/license-MIT-blue.svg
+      alt: Supported Python versions
+    - img: https://img.shields.io/badge/license-MIT-18432B
       href: https://github.com/MolCrafts/molq/blob/master/LICENSE
-      alt: License MIT
-  actions:
-    - label: Get started
-      href: getting-started/
-      style: primary
-    - label: Concepts
-      href: concepts/
-    - label: API reference
-      href: api/
+      alt: MIT license
 ---
 
-<h1 class="molcrafts-sr-only">molq</h1>
+<h1 class="molcrafts-sr-only">molq documentation</h1>
 
 <div class="molcrafts-manual-home" markdown>
-
-<!-- ────────────────────────────────────────────────────────────
-     AT A GLANCE — compact frame: static label + one code block
-     ──────────────────────────────────────────────────────────── -->
 
 <section class="molcrafts-manual-section molcrafts-manual-section--compact" markdown>
 
 <div class="molcrafts-manual-section__header" markdown>
 
-<span class="molcrafts-manual-eyebrow">At a glance</span>
+<span class="molcrafts-manual-eyebrow">Start local</span>
 
-## Cluster × Submitor, same code local or remote
+## One queue, seven lines
 
-`Cluster` is the destination (scheduler + transport). `Submitor` owns
-lifecycle, SQLite, and events. Swap `"local"` for `"slurm"` and pass
-`host=` for SSH — no other code changes.
+Begin with a real local process. The same `submit_job()` and `wait()` calls
+work when the destination becomes SLURM, PBS, or LSF.
 
 </div>
 
 ```python
 import molq as mq
 
-cluster  = mq.Cluster("hpc", "slurm", host="user@hpc.example.com")
-submitor = mq.Submitor(target=cluster)
+cluster = mq.Cluster("laptop", "local")
+with mq.Submitor(target=cluster) as queue:
+    job = queue.submit_job(
+        argv=["python", "-c", "print('hello from molq')"]
+    )
+    result = job.wait()
 
-handle = submitor.submit_job(
-    argv=["python", "train.py"],
-    resources=mq.JobResources(
-        cpu_count=8,
-        memory=mq.Memory.gb(32),
-        time_limit=mq.Duration.hours(4),
-    ),
-    scheduling=mq.JobScheduling(partition="gpu"),
-)
-record = handle.wait()
-print(record.state, cluster.get_queue())
+print(result.state.value)
 ```
 
 </section>
 
-<!-- ────────────────────────────────────────────────────────────
-     CAPABILITIES — stack frame + 2-column grid of linked cards
-     ──────────────────────────────────────────────────────────── -->
+<section class="molcrafts-manual-section molcrafts-manual-section--stack" markdown>
+
+<div class="molcrafts-manual-section__header" markdown>
+
+<span class="molcrafts-manual-eyebrow">Choose a path</span>
+
+## Find the page you need
+
+</div>
+
+<nav class="molcrafts-manual-index" aria-label="Documentation entry points">
+  <a href="getting-started/">
+    <span>01</span>
+    <strong>Run a first job</strong>
+    <em>Install molq, execute a local command, and inspect the result.</em>
+  </a>
+  <a href="jobs/">
+    <span>02</span>
+    <strong>Describe a real workload</strong>
+    <em>Add resources, working directories, retries, and dependencies.</em>
+  </a>
+  <a href="schedulers/">
+    <span>03</span>
+    <strong>Connect an HPC cluster</strong>
+    <em>Choose a scheduler and run it locally or through an SSH alias.</em>
+  </a>
+  <a href="monitoring/">
+    <span>04</span>
+    <strong>Inspect running work</strong>
+    <em>Understand persisted state, live queues, logs, and dashboards.</em>
+  </a>
+</nav>
+
+</section>
+
+<section class="molcrafts-manual-section" markdown>
+
+<div class="molcrafts-manual-section__header" markdown>
+
+<span class="molcrafts-manual-eyebrow">Mental model</span>
+
+## Four objects are enough
+
+`Cluster` describes a destination. `Submitor` owns submission and tracking.
+`JobHandle` follows one submitted job. `JobRecord` is an immutable snapshot
+you can store, print, or return from a service.
+
+</div>
+
+<dl class="molcrafts-feature-matrix">
+  <div>
+    <dt>Cluster</dt>
+    <dd>Scheduler plus transport: what queue system to use and where its commands execute.</dd>
+  </div>
+  <div>
+    <dt>Submitor</dt>
+    <dd>The lifecycle boundary: submission, SQLite history, reconciliation, retries, and events.</dd>
+  </div>
+  <div>
+    <dt>JobHandle</dt>
+    <dd>The live convenience object returned by submission: status, refresh, wait, and cancel.</dd>
+  </div>
+  <div>
+    <dt>JobRecord</dt>
+    <dd>A frozen view of state, timestamps, exit status, command metadata, and artifact paths.</dd>
+  </div>
+</dl>
+
+</section>
 
 <section class="molcrafts-manual-section molcrafts-manual-section--stack" markdown>
 
 <div class="molcrafts-manual-section__header" markdown>
 
-<span class="molcrafts-manual-eyebrow">What molq gives you</span>
+<span class="molcrafts-manual-eyebrow">Backends</span>
 
-## One queue model, several backends
+## Change the destination, keep the workflow
 
 </div>
 
 <div class="molcrafts-manual-grid molcrafts-manual-grid--cols-2">
-  <a href="concepts/">
-    <strong>Two-axis design</strong>
-    <p><code>Cluster</code> (where) × <code>Submitor</code> (lifecycle). Scheduler × Transport are independent — local SLURM or remote shell via SSH.</p>
+  <a href="schedulers/#common-destinations">
+    <strong>Local</strong>
+    <em>Run ordinary processes on this machine or a remote workstation.</em>
   </a>
-  <a href="schedulers/">
-    <strong>local · SLURM · PBS · LSF</strong>
-    <p>Typed resources and options instead of hand-built <code>sbatch</code> strings. Live queue snapshots with <code>cluster.get_queue()</code>.</p>
+  <a href="schedulers/#slurm">
+    <strong>SLURM</strong>
+    <em>Submit with sbatch and reconcile with squeue and sacct.</em>
   </a>
-  <a href="monitoring/">
-    <strong>Durable monitoring</strong>
-    <p>SQLite WAL store, reconciliation, retries, dependencies, and a Rich full-screen dashboard.</p>
+  <a href="schedulers/#pbs">
+    <strong>PBS / Torque</strong>
+    <em>Translate the same typed request into qsub options.</em>
   </a>
-  <a href="cli/">
-    <strong>CLI &amp; plugins</strong>
-    <p>Submit, watch, inspect, daemon. Official Nerve plugin ships with molq for menu-bar job status.</p>
-  </a>
-  <a href="getting-started/">
-    <strong>SSH for free</strong>
-    <p>Uses system <code>ssh</code>/<code>rsync</code> and your <code>~/.ssh/config</code> — ProxyJump, ControlMaster, agent, Kerberos.</p>
-  </a>
-  <a href="api/">
-    <strong>Frozen public types</strong>
-    <p>Immutable dataclasses for resources, records, and events. Zero import side effects.</p>
+  <a href="schedulers/#lsf">
+    <strong>LSF</strong>
+    <em>Submit and monitor through bsub, bjobs, bkill, and bhist.</em>
   </a>
 </div>
-
-</section>
-
-<!-- ────────────────────────────────────────────────────────────
-     MANUAL INDEX — stack frame, full-width numbered chapter list
-     ──────────────────────────────────────────────────────────── -->
-
-<section class="molcrafts-manual-section molcrafts-manual-section--stack" markdown>
-
-<div class="molcrafts-manual-section__header" markdown>
-
-<span class="molcrafts-manual-eyebrow">Find your page</span>
-
-## The manual
-
-</div>
-
-<nav class="molcrafts-manual-index" aria-label="Manual chapters">
-  <a href="getting-started/">
-    <span>01</span>
-    <strong>Getting Started</strong>
-    <em>Install molq, open a Cluster + Submitor, submit the first job.</em>
-  </a>
-  <a href="concepts/">
-    <span>02</span>
-    <strong>Concepts</strong>
-    <em>Cluster, Submitor, Scheduler, Transport, Workspace, plugins.</em>
-  </a>
-  <a href="schedulers/">
-    <span>03</span>
-    <strong>Schedulers</strong>
-    <em>Backend matrix and scheduler option classes.</em>
-  </a>
-  <a href="monitoring/">
-    <span>04</span>
-    <strong>Monitoring</strong>
-    <em>Lifecycle, reconciliation, polling, dashboards, and logs.</em>
-  </a>
-  <a href="cli/">
-    <span>05</span>
-    <strong>CLI</strong>
-    <em>Command groups: jobs, history, live, setup (clusters, workspace, plugins).</em>
-  </a>
-  <a href="api/">
-    <span>06</span>
-    <strong>API Reference</strong>
-    <em>Exported classes, enums, options, plugins, and errors.</em>
-  </a>
-  <a href="release-notes/">
-    <span>07</span>
-    <strong>Changelog</strong>
-    <em>Release series notes.</em>
-  </a>
-</nav>
 
 </section>
 

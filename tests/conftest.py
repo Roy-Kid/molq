@@ -5,9 +5,18 @@ from pathlib import Path
 
 import pytest
 
-from molq.scheduler import SchedulerCapabilities
-from molq.store import JobStore
-from molq.testing import FakeScheduler, make_submitor
+# Neutralize terminal-color env before molq is imported. The CLI builds a
+# module-level Rich Console at import time; a developer terminal that exports
+# FORCE_COLOR (or COLORTERM) makes Rich emit ANSI escapes even into captured,
+# non-TTY test output, which breaks plain-text `in result.output` assertions.
+# CI has none of these set, so this keeps the suite deterministic everywhere.
+for _color_var in ("FORCE_COLOR", "CLICOLOR_FORCE", "COLORTERM"):
+    os.environ.pop(_color_var, None)
+os.environ["NO_COLOR"] = "1"
+
+from molq.scheduler import SchedulerCapabilities  # noqa: E402
+from molq.store import JobStore  # noqa: E402
+from molq.testing import FakeScheduler, make_submitor  # noqa: E402
 
 
 @pytest.fixture(scope="session", autouse=True)
@@ -140,11 +149,19 @@ def mock_scheduler(mocker):
     poll_many() returns {} (no active jobs) by default.
     resolve_terminal() returns None by default.
     """
+    from molq.scheduler import SlurmScheduler
+
     m = mocker.MagicMock()
     _counter = iter(range(10000, 99999))
     m.submit.side_effect = lambda spec, job_dir: str(next(_counter))
     m.poll_many.return_value = {}
     m.resolve_terminal.return_value = None
+    # Dependency syntax belongs to the backend, so delegate to a real one
+    # rather than letting the mock return a MagicMock the Submitor would
+    # happily persist as a dependency string.
+    _slurm = SlurmScheduler()
+    m.format_dependency.side_effect = _slurm.format_dependency
+    m.format_dependencies.side_effect = _slurm.format_dependencies
     m.capabilities.return_value = SchedulerCapabilities(
         supports_cwd=True,
         supports_env=True,

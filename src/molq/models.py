@@ -115,6 +115,25 @@ class RetentionPolicy:
 
 
 @dataclass(frozen=True)
+class RememberedAllocation:
+    """A scheduling config previously used to submit to a cluster.
+
+    Persisted by molq on each successful submission so callers (the molq CLI,
+    molexp's submit UI) can offer "configs you've used before" without
+    re-querying the cluster.  Identity is the (partition, account, qos,
+    reservation) tuple; ``use_count`` / ``last_used`` track usage.
+    """
+
+    partition: str | None
+    account: str | None
+    qos: str | None
+    reservation: str | None
+    label: str | None
+    last_used: float
+    use_count: int
+
+
+@dataclass(frozen=True)
 class JobDependency:
     """Persisted dependency edge between two molq jobs."""
 

@@ -11,6 +11,7 @@ from molq.ssh_config import (
     SshHost,
     list_ssh_hosts,
     resolve_ssh_host,
+    ssh_alias_names,
     to_ssh_target,
 )
 
@@ -107,3 +108,28 @@ def test_to_ssh_target_falls_back_to_alias() -> None:
 def test_to_ssh_target_omits_user_when_missing() -> None:
     host = SshHost(alias="x", hostname="h.example.org")
     assert to_ssh_target(host) == "h.example.org"
+
+
+class TestSshAliasNames:
+    """Cheap alias listing — no `ssh -G` per host."""
+
+    def test_returns_declared_aliases(self, tmp_path):
+        cfg = tmp_path / "config"
+        cfg.write_text(
+            "Host alpha\n  HostName a.example\nHost beta gamma\n  HostName b.example\n"
+        )
+        assert ssh_alias_names(cfg) == ["alpha", "beta", "gamma"]
+
+    def test_skips_wildcard_patterns(self, tmp_path):
+        cfg = tmp_path / "config"
+        cfg.write_text("Host *\n  User root\nHost real\n  HostName r.example\n")
+        assert ssh_alias_names(cfg) == ["real"]
+
+    def test_missing_file_returns_empty(self, tmp_path):
+        assert ssh_alias_names(tmp_path / "nope") == []
+
+    def test_unknown_name_is_not_an_alias(self, tmp_path):
+        cfg = tmp_path / "config"
+        cfg.write_text("Host alpha\n  HostName a.example\n")
+        # `ssh -G` would happily resolve this; parsing must not.
+        assert "cli_local" not in ssh_alias_names(cfg)

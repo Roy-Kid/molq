@@ -216,3 +216,43 @@ def load_submit_request(text: str | None) -> dict[str, Any]:
     if not text:
         return {}
     return json.loads(text)
+
+
+def build_submit_request(
+    *,
+    command: Any,
+    resources: Any,
+    scheduling: Any,
+    execution: Any,
+    metadata: dict[str, str],
+    retry: RetryPolicy | None,
+    after_started: list[str],
+    after: list[str],
+    after_failure: list[str],
+    after_success: list[str],
+    profile_name: str | None,
+) -> str:
+    """Freeze a submission as JSON so a retry can replay it exactly.
+
+    Records the request *as the caller made it* — pre-merge scheduling with
+    logical dependency refs intact, and the execution block before cwd and log
+    paths were resolved — so attempt 2 is built from the same inputs as
+    attempt 1 rather than from attempt 1's resolved output.
+    """
+    return dump_submit_request(
+        {
+            "argv": list(command.argv) if command.argv is not None else None,
+            "command": command.command,
+            "script": serialize_script(command.script),
+            "resources": serialize_resources(resources),
+            "scheduling": serialize_scheduling(scheduling),
+            "execution": serialize_execution(execution),
+            "metadata": metadata,
+            "retry": serialize_retry_policy(retry),
+            "after_started": list(after_started),
+            "after": list(after),
+            "after_failure": list(after_failure),
+            "after_success": list(after_success),
+            "profile_name": profile_name,
+        }
+    )

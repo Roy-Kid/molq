@@ -188,3 +188,52 @@ class TestRetention:
         )
         p = load_config(_write_toml(tmp_path, toml)).profiles["p"]
         assert p.retention.keep_job_dirs_for_days == 7
+
+
+class TestProfileHost:
+    """A profile can name an SSH destination, not just a scheduler."""
+
+    def _write(self, tmp_path, body: str):
+        cfg = tmp_path / "config.toml"
+        cfg.write_text(body)
+        return cfg
+
+    def test_host_is_parsed(self, tmp_path):
+        cfg = self._write(
+            tmp_path,
+            '[profiles.gpu]\nscheduler = "slurm"\ncluster_name = "dardel"\n'
+            'host = "dardel"\n',
+        )
+        profile = load_profile("gpu", cfg)
+        assert profile.host == "dardel"
+
+    def test_host_defaults_to_none(self, tmp_path):
+        cfg = self._write(
+            tmp_path,
+            '[profiles.local]\nscheduler = "local"\ncluster_name = "laptop"\n',
+        )
+        assert load_profile("local", cfg).host is None
+
+    def test_cluster_from_profile_builds_ssh_transport(self, tmp_path):
+        from molq.cluster import Cluster
+        from molq.transport import SshTransport
+
+        cfg = self._write(
+            tmp_path,
+            '[profiles.gpu]\nscheduler = "slurm"\ncluster_name = "dardel"\n'
+            'host = "dardel"\n',
+        )
+        cluster = Cluster.from_profile("gpu", config_path=cfg)
+        assert isinstance(cluster.transport, SshTransport)
+        assert cluster.transport.options.host == "dardel"
+
+    def test_cluster_from_profile_without_host_stays_local(self, tmp_path):
+        from molq.cluster import Cluster
+        from molq.transport import LocalTransport
+
+        cfg = self._write(
+            tmp_path,
+            '[profiles.local]\nscheduler = "local"\ncluster_name = "laptop"\n',
+        )
+        cluster = Cluster.from_profile("local", config_path=cfg)
+        assert isinstance(cluster.transport, LocalTransport)

@@ -16,7 +16,7 @@
 </p>
 
 <p>
-  <a href="https://github.com/MolCrafts/molq/tree/master/docs"><b>Documentation</b></a> &nbsp;&middot;&nbsp;
+  <a href="https://docs.molcrafts.org/molq/"><b>Documentation</b></a> &nbsp;&middot;&nbsp;
   <a href="#quick-start"><b>Quick start</b></a> &nbsp;&middot;&nbsp;
   <a href="#molcrafts-ecosystem"><b>Ecosystem</b></a>
 </p>
@@ -33,9 +33,14 @@ molq is a unified job queue for Python workloads that need the same submission A
 |--------|------------|
 | `cluster` | `Cluster` — destination spec: scheduler kind × transport × scheduler options, plus live queue snapshots |
 | `submitor` | `Submitor` + `JobHandle` — single entry point for submitting, tracking, and waiting on jobs |
-| `scheduler` | `Scheduler` protocol with `Shell`, `Slurm`, `PBS`, and `LSF` backends, each routing shell calls through a transport |
-| `transport` | `LocalTransport` / `SshTransport` — runs shell and file ops here or on a remote host via OpenSSH |
+| `scheduler` | `Scheduler` protocol plus one module per backend (`shell`, `slurm`, `pbs`, `lsf`), each routing shell calls through a transport and owning its own directive and dependency syntax |
+| `transport` | `LocalTransport` / `SshTransport` — runs shell and file ops here or on a remote host via OpenSSH, sharing one multiplexed connection |
 | `store` | `JobStore` — SQLite persistence with WAL mode, UUID job identity, schema versioning, and v1 auto-migration |
+| `validation` | Checks a request against the backend's declared capability matrix before submitting |
+| `jobpaths` | Job directory layout, log path resolution, script staging, and manifests |
+| `dependencies` | Resolves molq job ids + conditions into the backend's submit syntax |
+| `retry` / `retention` | Retry eligibility and backoff; expiry of job directories and old records |
+| `artifacts` | Pulls logs and job directories back from the cluster |
 | `reconciler` | `JobReconciler` — batch-queries schedulers, diffs against the store, syncs job state |
 | `monitor` | Blocking waits and polling engine driven by pluggable strategies |
 | `strategies` | Pluggable polling strategies; exponential backoff by default |
@@ -71,31 +76,30 @@ import molq as mq
 
 # Cluster = destination (where to run). Submitor = lifecycle (how jobs are tracked).
 cluster = mq.Cluster("devbox", "local")
-submitor = mq.Submitor(target=cluster)
 
-handle = submitor.submit_job(
-    argv=["python", "train.py"],
-    resources=mq.JobResources(
-        cpu_count=4,
-        memory=mq.Memory.gb(8),
-        time_limit=mq.Duration.hours(2),
-    ),
-)
+with mq.Submitor(target=cluster) as queue:
+    handle = queue.submit_job(
+        argv=["python", "-c", "print('hello from molq')"]
+    )
+    record = handle.wait()
 
-record = handle.wait()
 print(record.state)
 ```
 
-Swap to a cluster by changing one line — `mq.Cluster("hpc", "slurm", host="user@hpc.example.com")` — and the rest of the code is unchanged. See the [docs](https://github.com/MolCrafts/molq/tree/master/docs) for retries, dependencies, profiles, and the CLI.
+Swap to a cluster by changing one line — `mq.Cluster("hpc", "slurm", host="user@hpc.example.com")` — and the rest of the code is unchanged. See the [documentation](https://docs.molcrafts.org/molq/) for retries, dependencies, profiles, and the CLI.
 
 ## Documentation
 
-- [Getting Started](docs/getting-started.md) — installation and your first job
-- [Concepts](docs/concepts.md) — Cluster, Submitor, Scheduler, Transport, Workspace, Project
-- [Schedulers](docs/schedulers.md) — scheduler matrix and option classes
-- [Monitoring](docs/monitoring.md) — lifecycle, reconciliation, polling, and dashboards
-- [CLI Reference](docs/cli.md) — command-line usage
-- [API Reference](docs/api.md) — exported classes, enums, options, and errors
+- [Quickstart](docs/getting-started.md) — install and complete a local job
+- [Mental model](docs/concepts.md) — understand destinations, tracking, and records
+- [Submit jobs](docs/jobs.md) — commands, resources, retries, and dependencies
+- [Clusters and schedulers](docs/schedulers.md) — local, SSH, SLURM, PBS, and LSF
+- [Monitor jobs](docs/monitoring.md) — status, logs, history, and dashboards
+- [Remote files](docs/remote-files.md) — stage inputs and collect results
+- [Command line](docs/cli.md) — task-oriented CLI workflows
+- [Plugins and Nerve](docs/plugins.md) — lifecycle observers and menu-bar status
+- [Configuration](docs/configuration.md) — profiles, defaults, and remote destinations
+- [Python API](docs/api.md) — generated, responsibility-based reference
 
 ## MolCrafts ecosystem
 
@@ -116,7 +120,7 @@ Swap to a cluster by changing one line — `mq.Cluster("hpc", "slurm", host="use
 
 ## Contributing
 
-Issues and pull requests are welcome — see the [docs](https://github.com/MolCrafts/molq/tree/master/docs) for development setup.
+Issues and pull requests are welcome — see [CONTRIBUTING.md](CONTRIBUTING.md) for development setup.
 
 ## License
 

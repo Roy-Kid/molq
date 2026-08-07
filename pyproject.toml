@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "molcrafts-molq"
-version = "0.6.0"
+version = "0.7.0"
 description = "Unified job queue for local execution and HPC schedulers"
 readme = "README.md"
 requires-python = ">=3.12"
@@ -35,10 +35,9 @@ dependencies = [
 
 [project.urls]
 Homepage = "https://github.com/MolCrafts/molq"
-Documentation = "https://github.com/MolCrafts/molq/tree/master/docs"
+Documentation = "https://docs.molcrafts.org/molq/"
 Repository = "https://github.com/MolCrafts/molq"
 Issues = "https://github.com/MolCrafts/molq/issues"
-Changelog = "https://github.com/MolCrafts/molq/blob/master/CHANGELOG.md"
 
 [project.scripts]
 molq = "molq.cli.main:app"
@@ -54,10 +53,12 @@ dev = [
   # (language: system) resolve the same binaries. Bump deliberately.
   "ruff==0.15.22",
   "ty==0.0.62",
+  "tox>=4.23",
 ]
 docs = [
   "zensical>=0.0.45",
-  "molcrafts-zensical-theme>=0.2.3",
+  "molcrafts-zensical-theme==0.2.3",
+  "mkdocstrings[python]>=1.0.0",
 ]
 
 [tool.setuptools]
@@ -98,4 +99,53 @@ exclude_lines = [
   "if __name__ == .__main__.:",
   "class .*\\bProtocol\\):",
   "@(abc\\.)?abstractmethod",
+]
+
+# Isolated gates — prek + CI: uv run --extra dev tox -e lint|py
+[tool.tox]
+requires = ["tox>=4.23"]
+env_list = ["lint", "py"]
+
+[tool.tox.env.lint]
+description = "CI lint (package installed so ty resolves first-party imports)"
+skip_install = false
+package = "wheel"
+extras = ["dev"]
+base_python = ["python3.12"]
+commands = [
+  ["ruff", "check", "src", "tests"],
+  ["ruff", "format", "--check", "src", "tests"],
+  ["ty", "check", "src/"],
+]
+
+[tool.tox.env.py]
+description = "CI test (non-editable package when package=wheel)"
+base_python = ["python3.12"]
+pass_env = [
+  "HOME",
+  "PATH",
+  "SSH_AUTH_SOCK",
+  "TERM",
+  "VIRTUAL_ENV",
+  "UV_*",
+]
+package = "wheel"
+extras = ["dev"]
+commands_pre = [
+  [
+    "{envpython}",
+    "-c",
+    "import pathlib, site; sps=site.getsitepackages(); print('site-packages', sps)",
+  ],
+]
+commands = [
+  [
+    "{envpython}",
+    "-m",
+    "pytest",
+    "-q",
+    "--cov=molq",
+    "--cov-report=term-missing",
+    "--cov-report=xml",
+  ],
 ]

@@ -1,14 +1,14 @@
-"""Job persistence layer for molq.
+"""Job persistence for molq.
 
-Provides JobStore backed by SQLite with WAL mode, UUID-based job identity,
-schema versioning, and automatic v1 migration.
+SQLite with WAL mode, UUID job identity, and schema versioning.  DDL and
+migrations live in :mod:`molq.store.schema`; row mapping and dependency
+evaluation in :mod:`molq.store.records`.
 """
 
 from __future__ import annotations
 
 import json
 import sqlite3
-import sys
 import threading
 import time
 from collections.abc import Sequence
@@ -16,101 +16,23 @@ from pathlib import Path
 
 from molcfg.paths import project_config_dir
 
-from molq.errors import StoreError
 from molq.models import (
     DependencyPreview,
     DependencyPreviewItem,
     JobDependency,
     JobRecord,
     JobSpec,
+    RememberedAllocation,
     StatusTransition,
 )
 from molq.status import JobState
-
-_SCHEMA_VERSION = "7"
-
-_CREATE_META = """
-CREATE TABLE IF NOT EXISTS molq_meta (
-    key TEXT PRIMARY KEY,
-    value TEXT NOT NULL
+from molq.store.records import (
+    coerce_job_state,
+    dependency_relation_state,
+    row_to_record,
 )
-"""
-
-# v3: dropped UNIQUE(cluster_name, scheduler_job_id).  job_id (UUID) already
-# guarantees row identity, and OS-level PID reuse used to make the constraint
-# fire spuriously when the local scheduler reused a freed PID.
-_CREATE_JOBS = """
-CREATE TABLE IF NOT EXISTS jobs (
-    job_id TEXT PRIMARY KEY,
-    cluster_name TEXT NOT NULL,
-    scheduler TEXT NOT NULL,
-    root_job_id TEXT NOT NULL,
-    attempt INTEGER NOT NULL DEFAULT 1,
-    previous_attempt_job_id TEXT,
-    retry_group_id TEXT,
-    scheduler_job_id TEXT,
-    state TEXT NOT NULL DEFAULT 'created',
-    command_type TEXT NOT NULL,
-    command_display TEXT NOT NULL,
-    cwd TEXT NOT NULL,
-    submitted_at REAL,
-    started_at REAL,
-    finished_at REAL,
-    last_polled REAL,
-    exit_code INTEGER,
-    failure_reason TEXT,
-    metadata TEXT DEFAULT '{}',
-    request_json TEXT DEFAULT '{}',
-    profile_name TEXT,
-    cleaned_at REAL
-)
-"""
-
-_CREATE_TRANSITIONS = """
-CREATE TABLE IF NOT EXISTS status_transitions (
-    id INTEGER PRIMARY KEY AUTOINCREMENT,
-    job_id TEXT NOT NULL REFERENCES jobs(job_id),
-    old_state TEXT,
-    new_state TEXT NOT NULL,
-    timestamp REAL NOT NULL,
-    reason TEXT
-)
-"""
-
-_CREATE_IDX_CLUSTER_STATE = """
-CREATE INDEX IF NOT EXISTS idx_jobs_cluster_state
-ON jobs(cluster_name, state)
-"""
-
-_CREATE_IDX_ROOT_ATTEMPT = """
-CREATE INDEX IF NOT EXISTS idx_jobs_root_attempt
-ON jobs(root_job_id, attempt)
-"""
-
-_CREATE_IDX_RETRY_GROUP = """
-CREATE INDEX IF NOT EXISTS idx_jobs_retry_group
-ON jobs(retry_group_id)
-"""
-
-_CREATE_IDX_TRANSITIONS = """
-CREATE INDEX IF NOT EXISTS idx_transitions_job
-ON status_transitions(job_id)
-"""
-
-_CREATE_DEPENDENCIES = """
-CREATE TABLE IF NOT EXISTS job_dependencies (
-    id INTEGER PRIMARY KEY AUTOINCREMENT,
-    job_id TEXT NOT NULL REFERENCES jobs(job_id),
-    dependency_job_id TEXT NOT NULL REFERENCES jobs(job_id),
-    dependency_type TEXT NOT NULL,
-    scheduler_dependency TEXT NOT NULL
-)
-"""
-
-_CREATE_IDX_DEPENDENCIES = """
-CREATE INDEX IF NOT EXISTS idx_job_dependencies_job
-ON job_dependencies(job_id)
-"""
+from molq.store.schema import _ALLOC_KEY_SEP, SchemaMixin
+from molq.types import JobScheduling
 
 
 def default_jobs_db_path() -> Path:
@@ -131,7 +53,25 @@ def default_jobs_db_path() -> Path:
     return project_config_dir("molq") / "jobs.db"
 
 
-class JobStore:
+def _alloc_key(scheduling: JobScheduling) -> str:
+    """Normalized identity for an allocation: partition/account/qos/reservation.
+
+    ``None`` is encoded as an empty segment so a missing field and an empty
+    string collapse to the same key, and so SQLite's "every NULL is distinct"
+    rule cannot create duplicate rows for the same logical config.
+    """
+    return _ALLOC_KEY_SEP.join(
+        value or ""
+        for value in (
+            scheduling.partition,
+            scheduling.account,
+            scheduling.qos,
+            scheduling.reservation,
+        )
+    )
+
+
+class JobStore(SchemaMixin):
     """SQLite-backed job persistence with WAL mode.
 
     Args:
@@ -167,187 +107,6 @@ class JobStore:
         conn.row_factory = sqlite3.Row
         conn.execute("PRAGMA journal_mode=WAL")
         return conn
-
-    def _ensure_schema(self) -> None:
-        """Check schema version and create/migrate as needed."""
-        try:
-            row = self._conn.execute(
-                "SELECT value FROM molq_meta WHERE key = 'schema_version'"
-            ).fetchone()
-            if row:
-                version = row["value"]
-                if version == _SCHEMA_VERSION:
-                    return
-                if version > _SCHEMA_VERSION:
-                    raise StoreError(
-                        f"Database schema version {version} is newer than "
-                        f"supported version {_SCHEMA_VERSION}. "
-                        f"Please upgrade molq."
-                    )
-                if version in {"2", "3", "4", "5", "6"}:
-                    self._migrate_from_known_version(version)
-                    return
-                raise StoreError(f"Unknown schema version {version!r}; cannot migrate.")
-        except sqlite3.OperationalError:
-            # molq_meta table does not exist
-            if self._has_old_schema():
-                self._migrate_from_v1()
-                return
-
-        # Fresh database or needs schema creation
-        self._create_schema()
-
-    def _has_old_schema(self) -> bool:
-        """Check if this is a v1 database (has 'jobs' table but no 'molq_meta')."""
-        try:
-            row = self._conn.execute(
-                "SELECT name FROM sqlite_master WHERE type='table' AND name='jobs'"
-            ).fetchone()
-            return row is not None
-        except sqlite3.OperationalError:
-            return False
-
-    def _migrate_from_v1(self) -> None:
-        """Back up v1 database and create fresh v3 schema."""
-        self._conn.close()
-
-        if isinstance(self.db_path, Path):
-            backup_path = self.db_path.with_suffix(".db.v1.bak")
-            self.db_path.rename(backup_path)
-            print(
-                f"molq: migrated database to v{_SCHEMA_VERSION}, "
-                f"old data backed up to {backup_path}",
-                file=sys.stderr,
-            )
-
-        self._conn = self._open_connection()
-        self._create_schema()
-
-    def _migrate_from_known_version(self, version: str) -> None:
-        if version == "2":
-            self._migrate_v2_to_v7()
-            return
-        if version in {"3", "4", "5", "6"}:
-            self._migrate_v3_to_v7()
-            return
-        raise StoreError(f"Unknown schema version {version!r}; cannot migrate.")
-
-    def _migrate_v2_to_v7(self) -> None:
-        """Migrate the v2 jobs table directly to the current schema.
-
-        SQLite cannot drop table constraints in place, so we recreate the
-        ``jobs`` table without the constraint and copy rows over.  The whole
-        operation runs inside a single transaction so concurrent readers
-        always observe a consistent snapshot.
-        """
-        with self._write_lock:
-            self._conn.execute("BEGIN IMMEDIATE")
-            try:
-                self._conn.execute("ALTER TABLE jobs RENAME TO _jobs_v2_old")
-                self._conn.execute(_CREATE_META)
-                self._conn.execute(_CREATE_JOBS)
-                self._conn.execute(_CREATE_TRANSITIONS)
-                self._conn.execute(_CREATE_DEPENDENCIES)
-                self._conn.execute(
-                    "INSERT INTO jobs ("
-                    "job_id, cluster_name, scheduler, root_job_id, attempt, "
-                    "previous_attempt_job_id, retry_group_id, scheduler_job_id, "
-                    "state, command_type, command_display, cwd, "
-                    "submitted_at, started_at, finished_at, last_polled, "
-                    "exit_code, failure_reason, metadata, request_json, profile_name, cleaned_at) "
-                    "SELECT job_id, cluster_name, scheduler, job_id, 1, "
-                    "NULL, job_id, scheduler_job_id, "
-                    "state, command_type, command_display, cwd, "
-                    "submitted_at, started_at, finished_at, last_polled, "
-                    "exit_code, failure_reason, metadata, '{}', NULL, NULL "
-                    "FROM _jobs_v2_old"
-                )
-                self._conn.execute("DROP TABLE _jobs_v2_old")
-                self._conn.execute(_CREATE_IDX_CLUSTER_STATE)
-                self._conn.execute(_CREATE_IDX_TRANSITIONS)
-                self._conn.execute(_CREATE_IDX_ROOT_ATTEMPT)
-                self._conn.execute(_CREATE_IDX_RETRY_GROUP)
-                self._conn.execute(_CREATE_IDX_DEPENDENCIES)
-                self._conn.execute(
-                    "INSERT OR REPLACE INTO molq_meta (key, value) VALUES (?, ?)",
-                    ("schema_version", _SCHEMA_VERSION),
-                )
-                self._conn.commit()
-            except Exception:
-                self._conn.rollback()
-                raise
-
-    def _migrate_v3_to_v7(self) -> None:
-        with self._write_lock:
-            self._conn.execute("BEGIN IMMEDIATE")
-            try:
-                columns = {
-                    row["name"]
-                    for row in self._conn.execute("PRAGMA table_info(jobs)").fetchall()
-                }
-                if "root_job_id" not in columns:
-                    self._conn.execute(
-                        "ALTER TABLE jobs ADD COLUMN root_job_id TEXT NOT NULL DEFAULT ''"
-                    )
-                if "attempt" not in columns:
-                    self._conn.execute(
-                        "ALTER TABLE jobs ADD COLUMN attempt INTEGER NOT NULL DEFAULT 1"
-                    )
-                if "previous_attempt_job_id" not in columns:
-                    self._conn.execute(
-                        "ALTER TABLE jobs ADD COLUMN previous_attempt_job_id TEXT"
-                    )
-                if "retry_group_id" not in columns:
-                    self._conn.execute(
-                        "ALTER TABLE jobs ADD COLUMN retry_group_id TEXT"
-                    )
-                if "request_json" not in columns:
-                    self._conn.execute(
-                        "ALTER TABLE jobs ADD COLUMN request_json TEXT DEFAULT '{}'"
-                    )
-                if "profile_name" not in columns:
-                    self._conn.execute("ALTER TABLE jobs ADD COLUMN profile_name TEXT")
-                if "cleaned_at" not in columns:
-                    self._conn.execute("ALTER TABLE jobs ADD COLUMN cleaned_at REAL")
-
-                self._conn.execute(
-                    "UPDATE jobs SET root_job_id = job_id WHERE root_job_id = '' OR root_job_id IS NULL"
-                )
-                self._conn.execute(
-                    "UPDATE jobs SET retry_group_id = root_job_id WHERE retry_group_id IS NULL"
-                )
-                self._conn.execute(_CREATE_DEPENDENCIES)
-                self._conn.execute(_CREATE_IDX_CLUSTER_STATE)
-                self._conn.execute(_CREATE_IDX_TRANSITIONS)
-                self._conn.execute(_CREATE_IDX_ROOT_ATTEMPT)
-                self._conn.execute(_CREATE_IDX_RETRY_GROUP)
-                self._conn.execute(_CREATE_IDX_DEPENDENCIES)
-                self._conn.execute(
-                    "INSERT OR REPLACE INTO molq_meta (key, value) VALUES (?, ?)",
-                    ("schema_version", _SCHEMA_VERSION),
-                )
-                self._conn.commit()
-            except Exception:
-                self._conn.rollback()
-                raise
-
-    def _create_schema(self) -> None:
-        """Create all tables and indexes for the current schema."""
-        with self._write_lock:
-            self._conn.execute(_CREATE_META)
-            self._conn.execute(
-                "INSERT OR REPLACE INTO molq_meta (key, value) VALUES (?, ?)",
-                ("schema_version", _SCHEMA_VERSION),
-            )
-            self._conn.execute(_CREATE_JOBS)
-            self._conn.execute(_CREATE_TRANSITIONS)
-            self._conn.execute(_CREATE_DEPENDENCIES)
-            self._conn.execute(_CREATE_IDX_CLUSTER_STATE)
-            self._conn.execute(_CREATE_IDX_TRANSITIONS)
-            self._conn.execute(_CREATE_IDX_ROOT_ATTEMPT)
-            self._conn.execute(_CREATE_IDX_RETRY_GROUP)
-            self._conn.execute(_CREATE_IDX_DEPENDENCIES)
-            self._conn.commit()
 
     def compare_and_update_state(
         self,
@@ -476,6 +235,103 @@ class JobStore:
             self._conn.execute(sql, tuple(values))
             self._conn.commit()
 
+    def mark_polled(self, job_ids: Sequence[str], timestamp: float) -> None:
+        """Stamp ``last_polled`` on many jobs in one transaction.
+
+        The reconciler touches every active job on each cycle.  Doing that
+        one :meth:`update_job` at a time costs a commit (and an fsync) per
+        job per cycle; batching keeps a poll cycle at a single write
+        regardless of how many jobs are in flight.
+        """
+        if not job_ids:
+            return
+        unique = tuple(dict.fromkeys(job_ids))
+        placeholders = ",".join("?" for _ in unique)
+        with self._write_lock:
+            self._conn.execute(
+                f"UPDATE jobs SET last_polled = ? WHERE job_id IN ({placeholders})",
+                (timestamp, *unique),
+            )
+            self._conn.commit()
+
+    def record_allocation(
+        self,
+        cluster_name: str,
+        scheduling: JobScheduling,
+        *,
+        now: float | None = None,
+    ) -> None:
+        """Remember a scheduling config used to submit to *cluster_name*.
+
+        Upserts on the normalized (partition, account, qos, reservation)
+        identity: a first use inserts with ``use_count=1``; a repeat bumps
+        ``use_count`` and refreshes ``last_used``.  Configs with none of the
+        four identity fields set are ignored (nothing worth remembering).
+        This memory is independent of the ``jobs`` table, so retention cleanup
+        of old jobs never erases it.
+        """
+        if not any(
+            (
+                scheduling.partition,
+                scheduling.account,
+                scheduling.qos,
+                scheduling.reservation,
+            )
+        ):
+            return
+        ts = time.time() if now is None else now
+        with self._write_lock:
+            self._conn.execute(
+                """INSERT INTO allocations
+                (cluster_name, alloc_key, partition, account, qos, reservation,
+                 label, first_used, last_used, use_count)
+                VALUES (?, ?, ?, ?, ?, ?, NULL, ?, ?, 1)
+                ON CONFLICT(cluster_name, alloc_key) DO UPDATE SET
+                    last_used = excluded.last_used,
+                    use_count = use_count + 1""",
+                (
+                    cluster_name,
+                    _alloc_key(scheduling),
+                    scheduling.partition,
+                    scheduling.account,
+                    scheduling.qos,
+                    scheduling.reservation,
+                    ts,
+                    ts,
+                ),
+            )
+            self._conn.commit()
+
+    def list_allocations(
+        self,
+        cluster_name: str,
+        *,
+        limit: int | None = None,
+    ) -> list[RememberedAllocation]:
+        """Return remembered allocations for *cluster_name*, most-recent first."""
+        sql = (
+            "SELECT partition, account, qos, reservation, label, "
+            "last_used, use_count FROM allocations "
+            "WHERE cluster_name = ? ORDER BY last_used DESC"
+        )
+        params: list[object] = [cluster_name]
+        if limit is not None:
+            sql += " LIMIT ?"
+            params.append(limit)
+        rows = self._conn.execute(sql, tuple(params)).fetchall()
+        return [
+            RememberedAllocation(
+                partition=row["partition"],
+                account=row["account"],
+                qos=row["qos"],
+                reservation=row["reservation"],
+                label=row["label"],
+                last_used=row["last_used"],
+                use_count=row["use_count"],
+            )
+            for row in rows
+        ]
+
     def add_dependencies(
         self,
         job_id: str,
@@ -535,30 +391,41 @@ class JobStore:
         ).fetchone()
         if row is None:
             return None
-        return self._row_to_record(row)
+        return row_to_record(row)
 
     def list_records(
         self,
         cluster_name: str,
         include_terminal: bool = False,
+        limit: int | None = None,
     ) -> list[JobRecord]:
-        """List job records for a cluster."""
+        """List job records for a cluster, newest first.
+
+        Args:
+            cluster_name: Scope records to this cluster.
+            include_terminal: Include finished jobs.  With ``True`` this spans
+                the cluster's whole history, so pass *limit* for interactive
+                callers.
+            limit: Cap the result set.  ``None`` returns every matching row.
+        """
+        params: list[object] = [cluster_name]
         if include_terminal:
-            rows = self._conn.execute(
-                "SELECT * FROM jobs WHERE cluster_name = ? ORDER BY submitted_at DESC",
-                (cluster_name,),
-            ).fetchall()
+            sql = "SELECT * FROM jobs WHERE cluster_name = ?"
         else:
             terminal = tuple(s.value for s in JobState if s.is_terminal)
             placeholders = ",".join("?" for _ in terminal)
-            rows = self._conn.execute(
+            sql = (
                 f"SELECT * FROM jobs WHERE cluster_name = ? "
-                f"AND state NOT IN ({placeholders}) "
-                f"ORDER BY submitted_at DESC",
-                (cluster_name, *terminal),
-            ).fetchall()
+                f"AND state NOT IN ({placeholders})"
+            )
+            params.extend(terminal)
+        sql += " ORDER BY submitted_at DESC"
+        if limit is not None:
+            sql += " LIMIT ?"
+            params.append(int(limit))
 
-        return [self._row_to_record(row) for row in rows]
+        rows = self._conn.execute(sql, tuple(params)).fetchall()
+        return [row_to_record(row) for row in rows]
 
     def get_active_records(self, cluster_name: str) -> list[JobRecord]:
         """Get all non-terminal job records for a cluster."""
@@ -595,7 +462,7 @@ class JobStore:
             sql += f" LIMIT {int(limit)}"
 
         rows = self._conn.execute(sql, params).fetchall()
-        return [self._row_to_record(row) for row in rows]
+        return [row_to_record(row) for row in rows]
 
     def get_transitions(self, job_id: str) -> list[StatusTransition]:
         """Return the persisted transition timeline for a job."""
@@ -665,7 +532,7 @@ class JobStore:
         ).fetchall()
         owner_state_map = {
             row["job_id"]: (
-                _coerce_job_state(row["state"]),
+                coerce_job_state(row["state"]),
                 row["started_at"],
             )
             for row in owner_rows
@@ -688,7 +555,7 @@ class JobStore:
 
         for row in upstream_rows:
             owner_job_id = row["job_id"]
-            related_state = _coerce_job_state(row["related_state"])
+            related_state = coerce_job_state(row["related_state"])
             relation_state = dependency_relation_state(
                 row["dependency_type"],
                 related_state,
@@ -735,7 +602,7 @@ class JobStore:
                         job_id=row["dependent_job_id"],
                         dependency_type=row["dependency_type"],
                         relation_state=relation_state,
-                        job_state=_coerce_job_state(row["related_state"]),
+                        job_state=coerce_job_state(row["related_state"]),
                         command_display=row["related_command_display"] or "",
                         scheduler_dependency=row["scheduler_dependency"],
                     )
@@ -761,20 +628,24 @@ class JobStore:
             "SELECT * FROM jobs WHERE root_job_id = ? ORDER BY attempt ASC, submitted_at ASC",
             (record.root_job_id or record.job_id,),
         ).fetchall()
-        return [self._row_to_record(row) for row in rows]
+        return [row_to_record(row) for row in rows]
 
     def get_latest_attempt_record(self, job_id: str) -> JobRecord | None:
-        record = self.get_record(job_id)
-        if record is None:
-            return None
+        """Return the newest attempt in *job_id*'s retry family.
+
+        Resolves the family root in a subquery rather than a separate
+        round trip — the monitor calls this on every poll.
+        """
         row = self._conn.execute(
-            "SELECT * FROM jobs WHERE root_job_id = ? "
-            "ORDER BY attempt DESC, submitted_at DESC LIMIT 1",
-            (record.root_job_id or record.job_id,),
+            "SELECT * FROM jobs WHERE root_job_id = ("
+            "  SELECT COALESCE(NULLIF(root_job_id, ''), job_id)"
+            "  FROM jobs WHERE job_id = ?"
+            ") ORDER BY attempt DESC, submitted_at DESC LIMIT 1",
+            (job_id,),
         ).fetchone()
         if row is None:
             return None
-        return self._row_to_record(row)
+        return row_to_record(row)
 
     def get_request_json(self, job_id: str) -> str | None:
         row = self._conn.execute(
@@ -793,33 +664,42 @@ class JobStore:
         record_cutoff: float,
         include_failed_job_dirs: bool,
     ) -> tuple[list[JobRecord], list[JobRecord]]:
+        # Both cutoffs are expressed in SQL: loading every terminal record for
+        # the cluster just to filter it in Python made cleanup cost scale with
+        # total history rather than with the number of expiring rows.
         terminal = tuple(s.value for s in JobState if s.is_terminal)
         placeholders = ",".join("?" for _ in terminal)
-        rows = self._conn.execute(
+        base = (
             f"SELECT * FROM jobs WHERE cluster_name = ? "
-            f"AND state IN ({placeholders}) ORDER BY finished_at ASC",
-            (cluster_name, *terminal),
+            f"AND state IN ({placeholders}) "
+            f"AND finished_at IS NOT NULL AND finished_at > 0"
+        )
+
+        artifact_sql = f"{base} AND cleaned_at IS NULL AND finished_at <= ?"
+        artifact_params: list[object] = [cluster_name, *terminal, job_dir_cutoff]
+        if not include_failed_job_dirs:
+            keep = (
+                JobState.FAILED.value,
+                JobState.TIMED_OUT.value,
+                JobState.LOST.value,
+            )
+            keep_placeholders = ",".join("?" for _ in keep)
+            artifact_sql += f" AND state NOT IN ({keep_placeholders})"
+            artifact_params.extend(keep)
+        artifact_sql += " ORDER BY finished_at ASC"
+
+        artifact_rows = self._conn.execute(
+            artifact_sql, tuple(artifact_params)
         ).fetchall()
-        records = [self._row_to_record(row) for row in rows]
-        artifact_candidates: list[JobRecord] = []
-        record_candidates: list[JobRecord] = []
-        for record in records:
-            finished_at = record.finished_at or 0.0
-            if finished_at <= 0:
-                continue
-            if (
-                record.cleaned_at is None
-                and finished_at <= job_dir_cutoff
-                and (
-                    include_failed_job_dirs
-                    or record.state
-                    not in {JobState.FAILED, JobState.TIMED_OUT, JobState.LOST}
-                )
-            ):
-                artifact_candidates.append(record)
-            if finished_at <= record_cutoff:
-                record_candidates.append(record)
-        return artifact_candidates, record_candidates
+        record_rows = self._conn.execute(
+            f"{base} AND finished_at <= ? ORDER BY finished_at ASC",
+            (cluster_name, *terminal, record_cutoff),
+        ).fetchall()
+
+        return (
+            [row_to_record(row) for row in artifact_rows],
+            [row_to_record(row) for row in record_rows],
+        )
 
     def delete_terminal_records(self, job_ids: list[str]) -> None:
         if not job_ids:
@@ -841,36 +721,6 @@ class JobStore:
             )
             self._conn.commit()
 
-    def _row_to_record(self, row: sqlite3.Row) -> JobRecord:
-        state_str = row["state"]
-        try:
-            state = JobState(state_str)
-        except ValueError:
-            state = JobState.LOST
-
-        return JobRecord(
-            job_id=row["job_id"],
-            cluster_name=row["cluster_name"],
-            scheduler=row["scheduler"],
-            state=state,
-            scheduler_job_id=row["scheduler_job_id"],
-            submitted_at=row["submitted_at"],
-            started_at=row["started_at"],
-            finished_at=row["finished_at"],
-            exit_code=row["exit_code"],
-            failure_reason=row["failure_reason"],
-            cwd=row["cwd"],
-            command_type=row["command_type"],
-            command_display=row["command_display"],
-            metadata=json.loads(row["metadata"] or "{}"),
-            root_job_id=row["root_job_id"] or row["job_id"],
-            attempt=row["attempt"] or 1,
-            previous_attempt_job_id=row["previous_attempt_job_id"],
-            retry_group_id=row["retry_group_id"],
-            profile_name=row["profile_name"],
-            cleaned_at=row["cleaned_at"],
-        )
-
     def close(self) -> None:
         """Close the database connection.  Idempotent."""
         conn = getattr(self, "_conn", None)
@@ -890,74 +740,3 @@ class JobStore:
             self.close()
         except Exception:
             pass
-
-
-def _coerce_job_state(value: str | None) -> JobState:
-    try:
-        return JobState(value) if value is not None else JobState.LOST
-    except ValueError:
-        return JobState.LOST
-
-
-def dependency_relation_state(
-    dependency_type: str,
-    related_state: JobState,
-    related_started_at: float | None,
-) -> str:
-    """Evaluate whether a single dependency edge is satisfied, pending, or impossible.
-
-    Args:
-        dependency_type: One of the canonical ``DependencyCondition`` values
-            (``"after_success"``, ``"after_failure"``, ``"after_started"``,
-            ``"after"``).
-        related_state: Current ``JobState`` of the upstream job.
-        related_started_at: Unix timestamp of when the upstream job started
-            executing, or ``None`` if it has not started yet.
-
-    Returns:
-        ``"satisfied"`` — the condition is already met.
-        ``"pending"``   — the upstream job has not reached the required state.
-        ``"impossible"`` — the upstream job reached a terminal state that can
-            never satisfy the condition (e.g. ``after_success`` on a failed job).
-
-    Raises:
-        ValueError: If *dependency_type* is not a recognised condition name.
-    """
-    if dependency_type == "after_success":
-        if related_state == JobState.SUCCEEDED:
-            return "satisfied"
-        if related_state.is_terminal:
-            return "impossible"
-        return "pending"
-
-    if dependency_type == "after_failure":
-        if related_state in {
-            JobState.FAILED,
-            JobState.CANCELLED,
-            JobState.TIMED_OUT,
-            JobState.LOST,
-        }:
-            return "satisfied"
-        if related_state == JobState.SUCCEEDED:
-            return "impossible"
-        return "pending"
-
-    if dependency_type == "after_started":
-        if related_started_at is not None or related_state in {
-            JobState.RUNNING,
-            JobState.SUCCEEDED,
-            JobState.FAILED,
-            JobState.CANCELLED,
-            JobState.TIMED_OUT,
-            JobState.LOST,
-        }:
-            return "satisfied"
-        return "pending"
-
-    if dependency_type == "after":
-        return "satisfied" if related_state.is_terminal else "pending"
-
-    raise ValueError(
-        f"Unknown dependency condition {dependency_type!r}. "
-        "Valid values: 'after_success', 'after_failure', 'after_started', 'after'."
-    )

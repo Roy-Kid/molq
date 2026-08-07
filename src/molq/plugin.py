@@ -17,12 +17,11 @@ from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass
 from typing import Any, Protocol, runtime_checkable
 
-import mollog
-
+from molq._log import get_logger
 from molq.callbacks import EventBus
 from molq.models import JobRecord
 
-logger = mollog.get_logger(__name__)
+logger = get_logger(__name__)
 
 # Official plugins: name → "module:attr" factory (attr is callable → MolqPlugin).
 BUILTIN_PLUGIN_FACTORIES: dict[str, str] = {
@@ -195,3 +194,30 @@ class PluginManager:
                 logger.exception(
                     f"Plugin {getattr(plugin, 'name', plugin)!r} detach failed"
                 )
+
+
+def store_context_factory(
+    event_bus: EventBus,
+    cluster_name: str,
+    store: Any,
+) -> Callable[[str, Mapping[str, Any]], PluginContext]:
+    """Build the ``ctx_factory`` :meth:`PluginManager.load` expects.
+
+    Binds a plugin's read-only view to one cluster's slice of the store. The
+    accessors are closures rather than the store itself so a plugin cannot
+    reach a write method or another cluster's records.
+    """
+
+    def make(name: str, config: Mapping[str, Any]) -> PluginContext:
+        return PluginContext(
+            event_bus=event_bus,
+            cluster_name=cluster_name,
+            config=config,
+            get_record=store.get_record,
+            list_active_records=lambda: store.get_active_records(cluster_name),
+            list_records=lambda: store.list_records(
+                cluster_name, include_terminal=True
+            ),
+        )
+
+    return make
