@@ -17,6 +17,8 @@ rows.
 
 ::: molq.types.DependencyRef
 
+::: molq.types.DependencyCondition
+
 ::: molq.models.JobRecord
 
 ::: molq.models.JobDependency
@@ -31,6 +33,8 @@ rows.
 
 ::: molq.models.RetentionPolicy
 
+::: molq.models.RememberedAllocation
+
 ::: molq.status.JobState
 
 ::: molq.scheduler.QueueEntry
@@ -38,3 +42,7 @@ rows.
 ::: molq.scheduler.DependencyEdge
 
 ::: molq.scheduler.SchedulerCapabilities
+
+::: molq.models.DependencyPreview
+
+::: molq.models.DependencyPreviewItem

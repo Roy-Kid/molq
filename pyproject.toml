@@ -28,7 +28,6 @@ classifiers = [
 ]
 dependencies = [
   "typer>=0.9",
-  "pydantic>=2",
   "rich>=14.3.3",
   "molcrafts-mollog",
   "molcrafts-molcfg",

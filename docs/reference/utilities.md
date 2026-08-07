@@ -39,7 +39,15 @@ exception hierarchy.
 
 ::: molq.plugin.available_plugins
 
+`BUILTIN_PLUGIN_FACTORIES` maps each official plugin name to the factory
+that builds it. Official names win over third-party entry points of the
+same name.
+
 ::: molq.plugin.create_plugin
+
+::: molq.config.enabled_plugin_names
+
+::: molq.store.dependency_relation_state
 
 ::: molq.errors
     options:
@@ -53,3 +61,16 @@ exception hierarchy.
         - JobNotFoundError
         - MolqTimeoutError
         - StoreError
+
+## Dashboard
+
+The full-screen monitor behind `molq monitor`. These names are exported
+lazily — importing `molq` does not pull in the terminal UI.
+
+::: molq.dashboard.MolqMonitor
+
+::: molq.dashboard.RunDashboard
+
+::: molq.dashboard.DashboardState
+
+::: molq.dashboard.JobRow

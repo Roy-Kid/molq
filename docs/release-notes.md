@@ -82,6 +82,9 @@ Supersedes the unreleased 0.6.1, whose fixes are all included here.
 
 ### Changed
 
+- **`pydantic` is no longer a dependency.** It was declared but never
+  imported — molq's types are frozen dataclasses — so installing molq pulled
+  in pydantic and pydantic-core for nothing.
 - Per-scheduler dependency syntax moved from `Submitor` onto the `Scheduler`
   protocol (`format_dependency` / `format_dependencies`). Adding a backend no
   longer means editing the lifecycle layer.

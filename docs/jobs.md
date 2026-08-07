@@ -106,6 +106,29 @@ mq.Duration.parse("04:00:00")
 The selected scheduler validates unsupported fields before submission. For
 example, a local job cannot request a SLURM partition.
 
+## Reuse an allocation you have used before
+
+Every successful submission records its partition / account / QoS /
+reservation combination against the cluster. Recalling them is purely local —
+no query goes to the scheduler:
+
+```python
+for allocation in queue.remembered_allocations(limit=5):
+    print(
+        allocation.partition,
+        allocation.account,
+        allocation.use_count,
+    )
+```
+
+Results come back most-recently-used first. This is what lets a submission UI
+offer "the accounts you actually charge to" without asking the cluster, and
+it survives retention cleanup — the memory lives apart from the `jobs` table,
+so expiring old records does not erase it.
+
+A configuration with none of those four fields set is not worth remembering
+and is skipped.
+
 ## Set reusable defaults
 
 Defaults belong to the `Submitor`; values supplied to `submit_job()` override
