@@ -35,29 +35,24 @@ The GitHub repository must also have an environment named `pypi`.
    Install hooks once with `pre-commit install` so commit/push gate the same
    checks (static on commit; full pytest on push).
 
-4. Build distributions:
+4. Tag the release (tag must match the version, with a `v` prefix):
 
    ```bash
-   python -m build
+   git tag v0.7.0
+   git push origin v0.7.0
    ```
 
-5. Optionally verify artifacts:
-
-   ```bash
-   python -m pip install twine
-   python -m twine check dist/*
-   ```
-
-6. Tag the release (tag must match the version, with a `v` prefix):
-
-   ```bash
-   git tag v0.6.0
-   git push origin v0.6.0
-   ```
-
-7. Wait for the `Release` workflow to publish the artifacts to PyPI.
-8. Publish a GitHub release for the tag; draft notes from `git log` since the
+5. Wait for the `Release` workflow. It re-runs lint and the test suite,
+   verifies the tag matches `pyproject.toml`, then builds and publishes.
+6. Publish a GitHub release for the tag; draft notes from `git log` since the
    previous tag (or from `docs/release-notes.md` if you keep highlights there).
+
+> **Do not build or upload by hand.** Trusted publishing means the artifact
+> that reaches PyPI is the one CI builds from the tag. `python -m build`
+> locally is only ever a debugging aid — the `Package` job in `ci.yml` already
+> builds the wheel, runs `twine check --strict`, installs it into a clean
+> environment, imports every subpackage, and runs a job through the console
+> script on every push and pull request.
 
 ## Documentation Release
 

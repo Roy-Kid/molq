@@ -6,6 +6,7 @@ Split out so command modules can import ``app`` without importing each other.
 from __future__ import annotations
 
 from enum import StrEnum
+from typing import Annotated
 
 import typer
 from rich.console import Console
@@ -38,6 +39,34 @@ app = typer.Typer(
 )
 
 console = Console(stderr=True)
+
+
+def _version_callback(requested: bool) -> None:
+    if not requested:
+        return
+    from importlib.metadata import PackageNotFoundError, version
+
+    try:
+        print(version("molcrafts-molq"))
+    except PackageNotFoundError:  # running from a source tree, not installed
+        print("unknown")
+    raise typer.Exit()
+
+
+@app.callback()
+def _main(
+    version: Annotated[
+        bool,
+        typer.Option(
+            "--version",
+            "-V",
+            callback=_version_callback,
+            is_eager=True,
+            help="Show the installed molq version and exit.",
+        ),
+    ] = False,
+) -> None:
+    """Root callback — exists so ``molq --version`` works before any command."""
 
 
 class SchedulerType(StrEnum):

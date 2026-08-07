@@ -493,3 +493,24 @@ class TestLogsOverRemoteTransport:
         result = runner.invoke(app, ["logs", "abc-123", "slurm"])
         assert result.exit_code == 1
         assert "does not exist" in result.output
+
+
+class TestVersionFlag:
+    """`molq --version` answers the first question in any bug report."""
+
+    def test_reports_installed_version(self):
+        result = runner.invoke(app, ["--version"])
+        assert result.exit_code == 0
+        assert result.output.strip()
+
+    def test_short_flag(self):
+        assert runner.invoke(app, ["-V"]).exit_code == 0
+
+    def test_does_not_require_a_subcommand(self):
+        # is_eager: the callback fires before Typer demands a command.
+        result = runner.invoke(app, ["--version"])
+        assert "Usage:" not in result.output
+
+    def test_bare_invocation_still_shows_help(self):
+        result = runner.invoke(app, [])
+        assert "submit" in result.output
