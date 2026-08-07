@@ -272,6 +272,43 @@ for entry in cluster.get_queue():
 This view is not molq history. See
 [Persisted records versus the live queue](monitoring.md#persisted-records-versus-the-live-queue).
 
+## Add a backend
+
+`Scheduler` is a `typing.Protocol`, so a backend is any object implementing
+it — no base class, no registration decorator:
+
+| Method | Responsibility |
+|---|---|
+| `capabilities()` | Which request fields this backend can express |
+| `submit(spec, job_dir)` | Dispatch a job, return the scheduler's job id |
+| `poll_many(ids)` | Batch state query |
+| `cancel(id)` | Kill a job |
+| `resolve_terminal(id)` | Final state for a job that left the queue |
+| `list_queue(user=...)` | The live queue snapshot |
+| `format_dependency(edge)` | One dependency edge in this backend's syntax |
+| `format_dependencies(edges)` | The whole set, for the submit directive |
+
+`capabilities()` is what makes molq reject impossible requests up front rather
+than after a failed submission — a backend that returns
+`supports_gpu_count=False` causes `ConfigError` at submit time.
+
+Dependency syntax belongs to the backend, since only it knows whether waiting
+on job 123 reads `afterok:123`, `done(123)`, or something else:
+
+```python
+from molq import DependencyEdge
+
+SlurmScheduler().format_dependencies([
+    DependencyEdge("after_success", "1"),
+    DependencyEdge("after_failure", "2"),
+])
+# 'afterok:1,afternotok:2'
+```
+
+In-tree backends live one per module under `molq/scheduler/`. Everything a
+backend needs to express — directives, dependency syntax, queue parsing,
+terminal resolution — stays in that one file.
+
 ## Diagnose connection failures
 
 Check the layers in order:

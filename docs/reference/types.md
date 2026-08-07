@@ -34,3 +34,7 @@ rows.
 ::: molq.status.JobState
 
 ::: molq.scheduler.QueueEntry
+
+::: molq.scheduler.DependencyEdge
+
+::: molq.scheduler.SchedulerCapabilities

@@ -73,6 +73,10 @@ local_queue.list_jobs()  # only "laptop"
 hpc_queue.list_jobs()    # only "dardel"
 ```
 
+Passing an explicit `store=` to several Submitors is safe: each one closes
+only a store it opened itself, so closing one does not disconnect its
+siblings.
+
 ## Scheduler and transport are independent
 
 These are different questions:

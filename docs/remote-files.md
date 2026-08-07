@@ -134,7 +134,10 @@ molq workspace list \
   --path /cfs/klemming/scratch/a/alice/protein-screen
 ```
 
-`--cluster` is resolved through `~/.ssh/config`.
+`--cluster` must name a `Host` entry declared in `~/.ssh/config`. Workspace
+commands operate on the remote side, so an unknown name is rejected with the
+list of aliases molq can see rather than silently copying into a local
+directory.
 
 ## Keep staging predictable
 
@@ -143,5 +146,5 @@ molq workspace list \
 - Treat `argv` paths as relative to `JobExecution.cwd`.
 - Download outputs explicitly; a completed job does not copy them back.
 - Keep large reusable datasets outside per-job directories.
-- Use `queue.fetch_logs()` for remote log files and
-  `queue.fetch_artifacts()` for the generated job bundle.
+- Use `molq logs` to read a remote log in place; `queue.fetch_logs()` when you
+  want a local copy, and `queue.fetch_artifacts()` for the whole job bundle.

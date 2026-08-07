@@ -23,6 +23,8 @@ exception hierarchy.
 
 ::: molq.ssh_config.resolve_ssh_host
 
+::: molq.options.SshTransportOptions
+
 ::: molq.callbacks.EventType
 
 ::: molq.callbacks.EventPayload

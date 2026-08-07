@@ -52,8 +52,10 @@ Supersedes the unreleased 0.6.1, whose fixes are all included here.
   run locally.
 - `ssh_alias_names()` lists the `Host` aliases declared in your SSH config
   without the per-alias `ssh -G` round trip.
-- `SshTransportOptions` gained `control_master`, `control_persist`, and
-  `connect_timeout`.
+- `SshTransportOptions` gained `control_master`, `control_persist`,
+  `control_path`, and `connect_timeout`.
+- `DependencyEdge` and `ssh_alias_names` are exported from the package root.
+- `JobStore.list_records()` accepts `limit`.
 
 ### Performance
 
@@ -75,8 +77,8 @@ Supersedes the unreleased 0.6.1, whose fixes are all included here.
   active job, and stamps `last_polled` for the whole cycle in one transaction.
 - Retention cutoffs are applied in SQL. Cleanup used to load every terminal
   record for the cluster and filter in Python.
-- `JobStore.list_records()` accepts `limit`, and `watch_jobs()` returns only
-  the jobs it waited on rather than the cluster's entire history.
+- `watch_jobs()` returns only the jobs it waited on rather than the
+  cluster's entire history.
 
 ### Changed
 

@@ -53,7 +53,9 @@ records = queue.watch_jobs(
 ```
 
 Pass no IDs to `watch_jobs()` to wait for every active job in the current
-cluster namespace.
+cluster namespace. Either way it returns records only for the jobs it waited
+on — with no IDs, the set that was active when the call started, not the
+cluster's whole history.
 
 ## Job states
 
@@ -101,15 +103,21 @@ print(record.metadata["molq.stdout_path"])
 print(record.metadata["molq.stderr_path"])
 ```
 
-For a local destination, the CLI can read those files directly:
+Those paths are on the *cluster's* filesystem. `molq logs` reads them through
+the destination's transport, so the same commands work whether the job ran
+here or on a remote cluster:
 
 ```bash
 molq logs JOB_ID local --cluster laptop
-molq logs JOB_ID local --cluster laptop --stream stderr --tail 50
-molq logs JOB_ID local --cluster laptop --follow
+molq logs JOB_ID slurm --cluster dardel --stream stderr --tail 50
+molq logs JOB_ID slurm --cluster dardel --follow
 ```
 
-For SSH destinations, copy logs through the transport:
+`--tail` is evaluated on the far side, so a multi-gigabyte log does not cross
+the network to show you fifty lines.
+
+To keep a copy locally rather than just read it, download through the
+transport:
 
 ```python
 paths = queue.fetch_logs(

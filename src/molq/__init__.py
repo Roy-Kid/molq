@@ -68,8 +68,13 @@ from molq.plugin import (
     available_plugins,
     create_plugin,
 )
-from molq.scheduler import QueueEntry, SchedulerCapabilities
-from molq.ssh_config import SshHost, list_ssh_hosts, resolve_ssh_host
+from molq.scheduler import DependencyEdge, QueueEntry, SchedulerCapabilities
+from molq.ssh_config import (
+    SshHost,
+    list_ssh_hosts,
+    resolve_ssh_host,
+    ssh_alias_names,
+)
 from molq.status import JobState
 from molq.store import dependency_relation_state
 from molq.submitor import JobHandle, Submitor
@@ -107,6 +112,7 @@ __all__ = [
     "Submitor",
     "JobHandle",
     "QueueEntry",
+    "DependencyEdge",
     "Workspace",
     "Project",
     # Types
@@ -147,6 +153,7 @@ __all__ = [
     "SshHost",
     "list_ssh_hosts",
     "resolve_ssh_host",
+    "ssh_alias_names",
     # Errors
     "MolqError",
     "ConfigError",
