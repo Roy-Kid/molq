@@ -18,6 +18,10 @@ repos:
       - id: mixed-line-ending
       - id: check-toml
       - id: check-json
+        # devcontainer.json is JSONC by specification — the devcontainer
+        # schema permits comments, and this one uses them. A strict JSON
+        # parser is simply the wrong tool for it.
+        exclude: ^\.devcontainer/
 
   - repo: local
     hooks:
