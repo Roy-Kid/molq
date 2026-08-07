@@ -29,12 +29,11 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Protocol, runtime_checkable
 
-import mollog
-
+from molq._log import get_logger
 from molq.errors import MolqError
 from molq.options import SshTransportOptions
 
-logger = mollog.get_logger(__name__)
+logger = get_logger(__name__)
 
 
 # ---------------------------------------------------------------------------

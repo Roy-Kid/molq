@@ -6,8 +6,7 @@ import os
 from collections.abc import Sequence
 from pathlib import Path
 
-import mollog
-
+from molq._log import get_logger
 from molq.errors import SchedulerError
 from molq.models import JobSpec
 from molq.options import PBSSchedulerOptions
@@ -22,7 +21,7 @@ from molq.scheduler.script import _render_job_lines
 from molq.status import JobState
 from molq.transport import LocalTransport, Transport, TransportError
 
-logger = mollog.get_logger(__name__)
+logger = get_logger(__name__)
 
 _PBS_STATE_MAP: dict[str, JobState] = {
     "R": JobState.RUNNING,

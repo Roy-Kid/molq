@@ -8,8 +8,7 @@ from __future__ import annotations
 
 import threading
 
-import mollog
-
+from molq._log import get_logger
 from molq.errors import MolqTimeoutError
 from molq.models import JobRecord
 from molq.reconciler import JobReconciler
@@ -17,7 +16,7 @@ from molq.status import JobState
 from molq.store import JobStore
 from molq.strategies import ExponentialBackoffStrategy, PollingStrategy
 
-logger = mollog.get_logger(__name__)
+logger = get_logger(__name__)
 
 
 class JobMonitor:

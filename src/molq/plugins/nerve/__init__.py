@@ -23,8 +23,7 @@ from dataclasses import dataclass
 from typing import Any
 from urllib.parse import urljoin
 
-import mollog
-
+from molq._log import get_logger
 from molq.callbacks import EventPayload, EventType
 from molq.models import JobRecord
 from molq.plugin import MolqPlugin, PluginContext
@@ -34,7 +33,7 @@ from molq.plugins.nerve.mapping import (
     machine_kind,
 )
 
-logger = mollog.get_logger(__name__)
+logger = get_logger(__name__)
 
 DEFAULT_INGEST = "http://127.0.0.1:17890"
 DEFAULT_EXPAND_THRESHOLD = 8

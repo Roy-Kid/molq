@@ -17,12 +17,11 @@ from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass
 from typing import Any, Protocol, runtime_checkable
 
-import mollog
-
+from molq._log import get_logger
 from molq.callbacks import EventBus
 from molq.models import JobRecord
 
-logger = mollog.get_logger(__name__)
+logger = get_logger(__name__)
 
 # Official plugins: name → "module:attr" factory (attr is callable → MolqPlugin).
 BUILTIN_PLUGIN_FACTORIES: dict[str, str] = {

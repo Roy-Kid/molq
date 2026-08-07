@@ -7,8 +7,7 @@ import re
 from collections.abc import Sequence
 from pathlib import Path
 
-import mollog
-
+from molq._log import get_logger
 from molq.errors import SchedulerError
 from molq.models import JobSpec
 from molq.options import LSFSchedulerOptions
@@ -27,7 +26,7 @@ from molq.scheduler.script import (
 from molq.status import JobState
 from molq.transport import LocalTransport, Transport, TransportError
 
-logger = mollog.get_logger(__name__)
+logger = get_logger(__name__)
 
 # Phrases `bhist -l` emits for a finished job.  Anchored to LSF's own wording
 # so the job's echoed command line cannot be mistaken for an outcome.

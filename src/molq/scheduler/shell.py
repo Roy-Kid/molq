@@ -5,8 +5,7 @@ from __future__ import annotations
 from collections.abc import Sequence
 from pathlib import Path
 
-import mollog
-
+from molq._log import get_logger
 from molq.errors import ConfigError, SchedulerError
 from molq.models import JobSpec
 from molq.options import LocalSchedulerOptions
@@ -20,7 +19,7 @@ from molq.scheduler.script import _render_job_script, _shell_quote
 from molq.status import JobState
 from molq.transport import LocalTransport, Transport, TransportError
 
-logger = mollog.get_logger(__name__)
+logger = get_logger(__name__)
 
 # How long submit() waits for the wrapper to publish the job pid, expressed as
 # remote-side poll attempts.  250 * 0.02s = 5s, matching the previous

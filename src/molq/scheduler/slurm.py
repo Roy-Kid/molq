@@ -5,8 +5,7 @@ from __future__ import annotations
 from collections.abc import Sequence
 from pathlib import Path
 
-import mollog
-
+from molq._log import get_logger
 from molq.errors import SchedulerError
 from molq.models import JobSpec
 from molq.options import SlurmSchedulerOptions
@@ -26,7 +25,7 @@ from molq.scheduler.script import (
 from molq.status import JobState
 from molq.transport import LocalTransport, Transport, TransportError
 
-logger = mollog.get_logger(__name__)
+logger = get_logger(__name__)
 
 _SLURM_STATE_MAP: dict[str, JobState] = {
     "R": JobState.RUNNING,

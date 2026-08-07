@@ -13,9 +13,9 @@ from dataclasses import dataclass
 from enum import StrEnum
 from typing import Any
 
-import mollog
+from molq._log import get_logger
 
-logger = mollog.get_logger(__name__)
+logger = get_logger(__name__)
 
 
 class EventType(StrEnum):
