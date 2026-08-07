@@ -93,3 +93,71 @@ class EventBus:
             except Exception:
                 handler_name = getattr(handler, "__name__", repr(handler))
                 logger.exception(f"Handler {handler_name} failed for event {event}")
+
+
+#: New state -> the extra lifecycle event it fires alongside STATUS_CHANGE.
+_STATE_EVENTS: dict[Any, EventType] = {}
+
+
+def _state_events() -> dict[Any, EventType]:
+    # Built lazily to keep this module free of a molq.status import cycle.
+    if not _STATE_EVENTS:
+        from molq.status import JobState
+
+        _STATE_EVENTS.update(
+            {
+                JobState.RUNNING: EventType.JOB_STARTED,
+                JobState.SUCCEEDED: EventType.JOB_COMPLETED,
+                JobState.FAILED: EventType.JOB_FAILED,
+                JobState.CANCELLED: EventType.JOB_CANCELLED,
+                JobState.LOST: EventType.JOB_LOST,
+            }
+        )
+    return _STATE_EVENTS
+
+
+def emit_transition(bus: EventBus, transition: Any, record: Any) -> None:
+    """Publish one state transition as the full set of lifecycle events.
+
+    Always emits :attr:`EventType.STATUS_CHANGE`, plus the state-specific
+    event for the new state.  ``TIMED_OUT`` fires both
+    :attr:`EventType.JOB_TIMED_OUT` and the older
+    :attr:`EventType.JOB_TIMEOUT` spelling.
+
+    Both the submit path and the reconcile path funnel through here so a
+    subscriber sees the same events regardless of which one moved the job.
+    """
+    from molq.status import JobState
+
+    new_state = transition.new_state
+    payload = EventPayload(
+        event=EventType.STATUS_CHANGE,
+        job_id=record.job_id,
+        transition=transition,
+        record=record,
+    )
+    bus.emit(EventType.STATUS_CHANGE, payload)
+
+    if new_state == JobState.TIMED_OUT:
+        timed_out = EventPayload(
+            event=EventType.JOB_TIMED_OUT,
+            job_id=record.job_id,
+            transition=transition,
+            record=record,
+        )
+        bus.emit(EventType.JOB_TIMED_OUT, timed_out)
+        bus.emit(EventType.JOB_TIMEOUT, timed_out)
+        return
+
+    event = _state_events().get(new_state)
+    if event is None:
+        return
+    bus.emit(
+        event,
+        EventPayload(
+            event=event,
+            job_id=record.job_id,
+            transition=transition,
+            record=record,
+        ),
+    )

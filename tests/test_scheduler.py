@@ -711,3 +711,59 @@ class TestLSFTerminalParsing:
             "Mon Jan  1 10:00:06: Starting (Pid 4242);\n"
         )
         assert LSFScheduler().resolve_terminal("99") is None
+
+
+class TestDependencyFormatting:
+    """Each backend owns its own dependency syntax."""
+
+    def _edges(self, *pairs):
+        from molq.scheduler import DependencyEdge
+
+        return [DependencyEdge(condition=c, scheduler_job_id=i) for c, i in pairs]
+
+    def test_slurm_comma_joins_keyword_id_pairs(self):
+        edges = self._edges(("after_success", "1"), ("after_failure", "2"))
+        assert SlurmScheduler().format_dependencies(edges) == "afterok:1,afternotok:2"
+
+    def test_slurm_single_edge(self):
+        (edge,) = self._edges(("after", "42"))
+        assert SlurmScheduler().format_dependency(edge) == "afterany:42"
+
+    def test_pbs_groups_ids_sharing_a_keyword(self):
+        edges = self._edges(
+            ("after_success", "1"), ("after_success", "2"), ("after_failure", "3")
+        )
+        assert PBSScheduler().format_dependencies(edges) == "afterok:1:2,afternotok:3"
+
+    def test_lsf_builds_a_boolean_expression(self):
+        edges = self._edges(("after_success", "1"), ("after_failure", "2"))
+        assert LSFScheduler().format_dependencies(edges) == "done(1) && exit(2)"
+
+    def test_lsf_single_edge(self):
+        (edge,) = self._edges(("after_started", "7"))
+        assert LSFScheduler().format_dependency(edge) == "started(7)"
+
+    @pytest.mark.parametrize(
+        "scheduler", [SlurmScheduler(), PBSScheduler(), LSFScheduler()]
+    )
+    def test_unknown_condition_is_rejected(self, scheduler):
+        from molq.errors import ConfigError
+
+        (edge,) = self._edges(("after_lunch", "1"))
+        with pytest.raises(ConfigError, match="Unsupported dependency condition"):
+            scheduler.format_dependency(edge)
+
+    def test_shell_scheduler_refuses_dependencies(self):
+        from molq.errors import ConfigError
+
+        (edge,) = self._edges(("after_success", "1"))
+        with pytest.raises(ConfigError, match="does not support job dependencies"):
+            ShellScheduler().format_dependency(edge)
+
+    def test_shell_scheduler_declares_no_dependency_support(self):
+        assert ShellScheduler().capabilities().supports_dependency is False
+
+    def test_empty_edge_set_is_empty_string(self):
+        assert SlurmScheduler().format_dependencies([]) == ""
+        assert PBSScheduler().format_dependencies([]) == ""
+        assert LSFScheduler().format_dependencies([]) == ""

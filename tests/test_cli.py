@@ -27,7 +27,7 @@ def mock_submitor():
 
 
 class TestSubmitCommand:
-    @patch("molq.cli.main._open_submitor")
+    @patch("molq.cli._helpers.open_submitor")
     def test_submit_basic(self, mock_create):
         handle = MagicMock()
         handle.job_id = "test-id"
@@ -47,7 +47,7 @@ class TestSubmitCommand:
 
 
 class TestListCommand:
-    @patch("molq.cli.main._open_submitor")
+    @patch("molq.cli._helpers.open_submitor")
     def test_list_empty(self, mock_create):
         mock_submitor = MagicMock()
         mock_submitor.list_jobs.return_value = []
@@ -57,7 +57,7 @@ class TestListCommand:
         assert result.exit_code == 0
         assert "No jobs" in result.output
 
-    @patch("molq.cli.main._open_submitor")
+    @patch("molq.cli._helpers.open_submitor")
     def test_list_with_jobs(self, mock_create):
         record = JobRecord(
             job_id="abc-123",
@@ -77,7 +77,7 @@ class TestListCommand:
 
 
 class TestStatusCommand:
-    @patch("molq.cli.main._open_submitor")
+    @patch("molq.cli._helpers.open_submitor")
     def test_status_found(self, mock_create):
         record = JobRecord(
             job_id="abc-123",
@@ -95,7 +95,7 @@ class TestStatusCommand:
         assert result.exit_code == 0
         assert "running" in result.output
 
-    @patch("molq.cli.main._open_submitor")
+    @patch("molq.cli._helpers.open_submitor")
     def test_status_not_found(self, mock_create):
         from molq.errors import JobNotFoundError
 
@@ -109,7 +109,7 @@ class TestStatusCommand:
 
 
 class TestLogsCommand:
-    @patch("molq.cli.main._open_submitor")
+    @patch("molq.cli._helpers.open_submitor")
     def test_logs_stdout(self, mock_create, tmp_path):
         log_path = tmp_path / "stdout.log"
         log_path.write_text("line1\nline2\n")
@@ -133,7 +133,7 @@ class TestLogsCommand:
         assert result.exit_code == 0
         assert "line2" in result.output
 
-    @patch("molq.cli.main._open_submitor")
+    @patch("molq.cli._helpers.open_submitor")
     def test_logs_both(self, mock_create, tmp_path):
         stdout_path = tmp_path / "stdout.log"
         stderr_path = tmp_path / "stderr.log"
@@ -163,7 +163,7 @@ class TestLogsCommand:
         assert "[stdout] out" in result.output
         assert "[stderr] err" in result.output
 
-    @patch("molq.cli.main._open_submitor")
+    @patch("molq.cli._helpers.open_submitor")
     def test_logs_follow(self, mock_create, tmp_path):
         stdout_path = tmp_path / "stdout.log"
         stdout_path.write_text("line1\n")
@@ -189,7 +189,7 @@ class TestLogsCommand:
 
 
 class TestHistoryAndInspect:
-    @patch("molq.cli.main._open_submitor")
+    @patch("molq.cli._helpers.open_submitor")
     def test_history(self, mock_create):
         record = JobRecord(
             job_id="abc-123",
@@ -209,7 +209,7 @@ class TestHistoryAndInspect:
         assert "History" in result.output
         assert "failed" in result.output
 
-    @patch("molq.cli.main._open_submitor")
+    @patch("molq.cli._helpers.open_submitor")
     def test_inspect(self, mock_create):
         record = JobRecord(
             job_id="abc-123",
@@ -269,7 +269,7 @@ class TestHistoryAndInspect:
 
 
 class TestCancelCommand:
-    @patch("molq.cli.main._open_submitor")
+    @patch("molq.cli._helpers.open_submitor")
     def test_cancel_success(self, mock_create):
         mock_submitor = MagicMock()
         mock_create.return_value.__enter__.return_value = mock_submitor
@@ -278,7 +278,7 @@ class TestCancelCommand:
         assert result.exit_code == 0
         assert "cancelled" in result.output
 
-    @patch("molq.cli.main._open_submitor")
+    @patch("molq.cli._helpers.open_submitor")
     def test_cancel_not_found(self, mock_create):
         from molq.errors import JobNotFoundError
 
@@ -291,7 +291,7 @@ class TestCancelCommand:
 
 
 class TestMaintenanceCommands:
-    @patch("molq.cli.main._open_submitor")
+    @patch("molq.cli._helpers.open_submitor")
     def test_cleanup(self, mock_create):
         mock_submitor = MagicMock()
         mock_submitor.cleanup_jobs.return_value = {
@@ -305,7 +305,7 @@ class TestMaintenanceCommands:
         assert "Job dirs: 1" in result.output
         assert "record: job-1" in result.output
 
-    @patch("molq.cli.main._open_submitor")
+    @patch("molq.cli._helpers.open_submitor")
     def test_daemon_once(self, mock_create):
         mock_submitor = MagicMock()
         mock_create.return_value.__enter__.return_value = mock_submitor
@@ -317,7 +317,7 @@ class TestMaintenanceCommands:
 
 @pytest.mark.skip(reason="allocations CLI not wired on master yet")
 class TestAllocationsCommand:
-    @patch("molq.cli.main._open_submitor")
+    @patch("molq.cli._helpers.open_submitor")
     def test_allocations_empty(self, mock_create):
         mock_submitor = MagicMock()
         mock_submitor.remembered_allocations.return_value = []
@@ -327,7 +327,7 @@ class TestAllocationsCommand:
         assert result.exit_code == 0
         assert "No remembered allocations" in result.output
 
-    @patch("molq.cli.main._open_submitor")
+    @patch("molq.cli._helpers.open_submitor")
     def test_allocations_with_rows(self, mock_create):
         alloc = RememberedAllocation(
             partition="gpu",
@@ -373,18 +373,20 @@ class TestDestinationResolution:
         return home
 
     def test_default_namespace_stays_local(self, isolated_home):
-        from molq.cli.main import SchedulerType, _open_submitor
+        from molq.cli._app import SchedulerType
+        from molq.cli._helpers import open_submitor
         from molq.transport import LocalTransport
 
-        with _open_submitor(SchedulerType.local) as submitor:
+        with open_submitor(SchedulerType.local) as submitor:
             assert isinstance(submitor.target.transport, LocalTransport)
             assert submitor.cluster_name == "cli_local"
 
     def test_unknown_cluster_name_stays_local(self, isolated_home):
-        from molq.cli.main import SchedulerType, _open_submitor
+        from molq.cli._app import SchedulerType
+        from molq.cli._helpers import open_submitor
         from molq.transport import LocalTransport
 
-        with _open_submitor(SchedulerType.slurm, cluster="not-an-ssh-host") as submitor:
+        with open_submitor(SchedulerType.slurm, cluster="not-an-ssh-host") as submitor:
             assert isinstance(submitor.target.transport, LocalTransport)
             assert submitor.cluster_name == "not-an-ssh-host"
 
@@ -395,10 +397,11 @@ class TestDestinationResolution:
         (isolated_home / ".ssh" / "config").write_text(
             "Host testbox\n  HostName testbox.example.org\n  User alice\n"
         )
-        from molq.cli.main import SchedulerType, _open_submitor
+        from molq.cli._app import SchedulerType
+        from molq.cli._helpers import open_submitor
         from molq.transport import SshTransport
 
-        with _open_submitor(SchedulerType.slurm, cluster="testbox") as submitor:
+        with open_submitor(SchedulerType.slurm, cluster="testbox") as submitor:
             assert isinstance(submitor.target.transport, SshTransport)
             assert submitor.cluster_name == "testbox"
 
@@ -445,7 +448,7 @@ class TestLogsOverRemoteTransport:
             metadata={"molq.stdout_path": str(stdout_path)},
         )
 
-    @patch("molq.cli.main._open_submitor")
+    @patch("molq.cli._helpers.open_submitor")
     def test_reads_log_through_transport(
         self, mock_create, loopback_transport, tmp_path
     ):
@@ -461,7 +464,7 @@ class TestLogsOverRemoteTransport:
         assert result.exit_code == 0, result.output
         assert "epoch 2" in result.output
 
-    @patch("molq.cli.main._open_submitor")
+    @patch("molq.cli._helpers.open_submitor")
     def test_tail_is_evaluated_remotely(
         self, mock_create, loopback_transport, tmp_path
     ):
@@ -478,7 +481,7 @@ class TestLogsOverRemoteTransport:
         assert "line99" in result.output
         assert "line0\n" not in result.output
 
-    @patch("molq.cli.main._open_submitor")
+    @patch("molq.cli._helpers.open_submitor")
     def test_missing_remote_log_reports_cleanly(
         self, mock_create, loopback_transport, tmp_path
     ):

@@ -195,3 +195,30 @@ class PluginManager:
                 logger.exception(
                     f"Plugin {getattr(plugin, 'name', plugin)!r} detach failed"
                 )
+
+
+def store_context_factory(
+    event_bus: EventBus,
+    cluster_name: str,
+    store: Any,
+) -> Callable[[str, Mapping[str, Any]], PluginContext]:
+    """Build the ``ctx_factory`` :meth:`PluginManager.load` expects.
+
+    Binds a plugin's read-only view to one cluster's slice of the store. The
+    accessors are closures rather than the store itself so a plugin cannot
+    reach a write method or another cluster's records.
+    """
+
+    def make(name: str, config: Mapping[str, Any]) -> PluginContext:
+        return PluginContext(
+            event_bus=event_bus,
+            cluster_name=cluster_name,
+            config=config,
+            get_record=store.get_record,
+            list_active_records=lambda: store.get_active_records(cluster_name),
+            list_records=lambda: store.list_records(
+                cluster_name, include_terminal=True
+            ),
+        )
+
+    return make

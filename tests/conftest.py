@@ -149,11 +149,19 @@ def mock_scheduler(mocker):
     poll_many() returns {} (no active jobs) by default.
     resolve_terminal() returns None by default.
     """
+    from molq.scheduler import SlurmScheduler
+
     m = mocker.MagicMock()
     _counter = iter(range(10000, 99999))
     m.submit.side_effect = lambda spec, job_dir: str(next(_counter))
     m.poll_many.return_value = {}
     m.resolve_terminal.return_value = None
+    # Dependency syntax belongs to the backend, so delegate to a real one
+    # rather than letting the mock return a MagicMock the Submitor would
+    # happily persist as a dependency string.
+    _slurm = SlurmScheduler()
+    m.format_dependency.side_effect = _slurm.format_dependency
+    m.format_dependencies.side_effect = _slurm.format_dependencies
     m.capabilities.return_value = SchedulerCapabilities(
         supports_cwd=True,
         supports_env=True,
