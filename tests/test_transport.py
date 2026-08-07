@@ -615,3 +615,123 @@ class TestSshReadPortability:
         target = tmp_path / "written.txt"
         t.write_text(str(target), "round trip\n")
         assert t.read_text(str(target)) == "round trip\n"
+
+
+class TestControlPathInteroperability:
+    """molq and your own `ssh` should share one master connection.
+
+    The socket is identified purely by the resolved ControlPath string, so
+    sharing works exactly when both sides resolve to the same path. molq
+    therefore must not override a ControlPath the user already configured.
+    """
+
+    @pytest.fixture(autouse=True)
+    def _clear_probe_cache(self):
+        from molq.transport import _host_configures_control_path
+
+        _host_configures_control_path.cache_clear()
+        yield
+        _host_configures_control_path.cache_clear()
+
+    @pytest.fixture
+    def fake_ssh_g(self, tmp_path):
+        """Factory: a stub `ssh` whose -G output we control."""
+
+        def make(control_path: str | None) -> str:
+            line = f"controlpath {control_path}" if control_path else ""
+            stub = tmp_path / f"ssh_g_{abs(hash(control_path))}"
+            stub.write_text(
+                "#!/bin/sh\n"
+                'if [ "$1" = "-G" ]; then\n'
+                "  echo 'hostname example.org'\n"
+                f"  {'echo ' + repr(line) if line else 'true'}\n"
+                "  exit 0\n"
+                "fi\n"
+                "exit 0\n"
+            )
+            stub.chmod(0o755)
+            return str(stub)
+
+        return make
+
+    def test_configured_control_path_is_inherited_not_overridden(self, fake_ssh_g):
+        ssh_bin = fake_ssh_g("~/.ssh/cm-%r@%h:%p")
+        t = SshTransport(options=SshTransportOptions(host="h"), _ssh_bin=ssh_bin)
+
+        argv = t._ssh_argv()
+
+        # No ControlPath of our own: the user's config decides where the
+        # socket lives, so plain `ssh h` lands on the same one.
+        assert not any(a.startswith("ControlPath=") for a in argv)
+        # But we still ask to become master if none is running yet.
+        assert "ControlMaster=auto" in argv
+
+    def test_configured_persistence_is_left_alone(self, fake_ssh_g):
+        ssh_bin = fake_ssh_g("~/.ssh/cm-%r@%h:%p")
+        t = SshTransport(options=SshTransportOptions(host="h"), _ssh_bin=ssh_bin)
+
+        # Their ControlPersist governs a socket they also use; overriding it
+        # would shorten the lifetime of someone else's connection.
+        assert not any(a.startswith("ControlPersist=") for a in t._ssh_argv())
+
+    def test_molq_supplies_its_own_when_nothing_is_configured(self, fake_ssh_g):
+        ssh_bin = fake_ssh_g(None)
+        t = SshTransport(options=SshTransportOptions(host="h"), _ssh_bin=ssh_bin)
+
+        argv = t._ssh_argv()
+        assert any(a.startswith("ControlPath=") and "molq-" in a for a in argv)
+        assert "ControlPersist=60s" in argv
+
+    def test_control_path_none_counts_as_unconfigured(self, fake_ssh_g):
+        # `ControlPath none` is how a user disables an inherited setting.
+        ssh_bin = fake_ssh_g("none")
+        t = SshTransport(options=SshTransportOptions(host="h"), _ssh_bin=ssh_bin)
+        assert any(a.startswith("ControlPath=") and "molq-" in a for a in t._ssh_argv())
+
+    def test_explicit_control_path_wins_over_config(self, fake_ssh_g):
+        ssh_bin = fake_ssh_g("~/.ssh/cm-%r@%h:%p")
+        t = SshTransport(
+            options=SshTransportOptions(host="h", control_path="/tmp/mine-%C"),
+            _ssh_bin=ssh_bin,
+        )
+        assert "ControlPath=/tmp/mine-%C" in t._ssh_argv()
+
+    def test_opting_out_beats_everything(self, fake_ssh_g):
+        ssh_bin = fake_ssh_g("~/.ssh/cm-%r@%h:%p")
+        t = SshTransport(
+            options=SshTransportOptions(
+                host="h", control_master=False, control_path="/tmp/mine"
+            ),
+            _ssh_bin=ssh_bin,
+        )
+        argv = t._ssh_argv()
+        assert not any("Control" in a for a in argv)
+
+    def test_inheritance_also_applies_to_rsync(self, fake_ssh_g):
+        ssh_bin = fake_ssh_g("~/.ssh/cm-%r@%h:%p")
+        t = SshTransport(options=SshTransportOptions(host="h"), _ssh_bin=ssh_bin)
+
+        # rsync shells out to ssh too, so it must inherit the same socket.
+        e_arg = t._ssh_e_arg()
+        assert "ControlMaster=auto" in e_arg
+        assert "ControlPath=" not in e_arg
+
+    def test_probe_is_cached_per_host(self, fake_ssh_g):
+        from molq.transport import _host_configures_control_path
+
+        ssh_bin = fake_ssh_g("~/.ssh/cm-%r@%h:%p")
+        t = SshTransport(options=SshTransportOptions(host="h"), _ssh_bin=ssh_bin)
+        for _ in range(5):
+            t._ssh_argv()
+
+        # `ssh -G` runs once per host, not once per remote operation.
+        assert _host_configures_control_path.cache_info().currsize == 1
+        assert _host_configures_control_path.cache_info().hits >= 4
+
+    def test_unusable_ssh_falls_back_to_molq_socket(self, tmp_path):
+        from molq.transport import _host_configures_control_path
+
+        assert (
+            _host_configures_control_path("h", str(tmp_path / "does-not-exist"))
+            is False
+        )

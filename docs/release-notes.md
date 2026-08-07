@@ -59,8 +59,11 @@ Supersedes the unreleased 0.6.1, whose fixes are all included here.
 
 - **SSH connection multiplexing is on by default.** molq performs many small
   remote operations per job, each previously paying a full TCP and
-  authentication handshake. The socket lives at `~/.ssh/molq-<hash>`. Opt out
-  with `SshTransportOptions(control_master=False)`.
+  authentication handshake. When `~/.ssh/config` already defines a
+  `ControlPath` for the host, molq inherits it, so molq and your own `ssh`
+  share one master connection in both directions; otherwise molq supplies
+  `~/.ssh/molq-%C`. Set `control_path` to pin a socket explicitly, or
+  `control_master=False` to opt out.
 - **`import molq` went from ~293 ms to ~75 ms.** mollog (and through it
   logfire), rich, and termios now load on first use rather than at import, so
   `molq status` no longer pays for a dashboard it will not draw. As a side

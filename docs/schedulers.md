@@ -70,11 +70,51 @@ dominates wall-clock time and is painful on sites with Kerberos or hardware
 tokens.
 
 molq therefore enables OpenSSH connection multiplexing by default: the first
-operation opens a master connection, and the rest reuse it for
-`control_persist` (60 seconds by default). The control socket lives in
-`~/.ssh/molq/`.
+operation opens a master connection and the rest ride along on it.
 
-Turn it off for hosts that refuse multiplexed sessions:
+#### Sharing a socket with your own `ssh`
+
+A control socket is identified purely by its `ControlPath`. Two clients share
+one master connection exactly when both resolve to the same path — so molq
+does not impose its own if you already have one.
+
+**If `~/.ssh/config` sets a `ControlPath` for the host**, molq inherits it:
+
+```sshconfig
+Host dardel
+    HostName dardel.pdc.kth.se
+    User alice
+    ControlMaster auto
+    ControlPath ~/.ssh/cm-%r@%h:%p
+    ControlPersist 10m
+```
+
+Now `ssh dardel` and molq use the same connection in both directions.
+Whichever runs first becomes the master; the other attaches to it. Your
+`ControlPersist` is left alone, since it governs a socket you also use.
+
+**If nothing is configured**, molq supplies its own socket at
+`~/.ssh/molq-%C`. To let plain `ssh` attach to *that* one, point your config
+at the same path:
+
+```sshconfig
+Host dardel
+    ControlPath ~/.ssh/molq-%C
+```
+
+`%C` is a hash of the resolved user, host, and port, so it matches whether
+you write `ssh dardel` or `ssh alice@dardel.pdc.kth.se` — unlike
+`%r@%h:%p`, which only expands inside a matching `Host` block.
+
+Check what a host resolves to with:
+
+```bash
+ssh -G dardel | grep -i control
+```
+
+#### Options
+
+Turn multiplexing off for hosts that refuse it:
 
 ```python
 from molq.options import SshTransportOptions
@@ -85,7 +125,8 @@ opts = SshTransportOptions(host="dardel", control_master=False)
 | Option | Default | Purpose |
 |---|---|---|
 | `control_master` | `True` | Reuse one SSH connection across operations |
-| `control_persist` | `"60s"` | How long an idle master connection lingers |
+| `control_path` | `None` | Explicit socket path; `None` inherits from ssh_config, else `~/.ssh/molq-%C` |
+| `control_persist` | `"60s"` | Idle master lifetime — ignored when inheriting |
 | `connect_timeout` | `15` | Seconds before an unreachable host fails |
 
 ## Local

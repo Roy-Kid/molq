@@ -26,6 +26,7 @@ import subprocess
 import tempfile
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass, field
+from functools import lru_cache
 from pathlib import Path
 from typing import Protocol, runtime_checkable
 
@@ -349,6 +350,38 @@ _CONTROL_TOKEN_GROWTH = 38  # len("%C") -> 40
 _ENOENT_EXIT = 44
 
 
+@lru_cache(maxsize=128)
+def _host_configures_control_path(host: str, ssh_bin: str = "ssh") -> bool:
+    """True when ``~/.ssh/config`` already sets a ControlPath for *host*.
+
+    Asks OpenSSH itself (``ssh -G``) rather than parsing the config, so
+    ``Match`` blocks, ``Include``, and the system-wide config are all honoured.
+    Cached: this runs once per host, not once per remote operation.
+
+    A failure to ask (no ssh binary, bad flags) is reported as "not
+    configured" — molq then falls back to its own socket, which is the same
+    behaviour as before the check existed.
+    """
+    try:
+        proc = subprocess.run(
+            [ssh_bin, "-G", host],
+            capture_output=True,
+            text=True,
+            check=False,
+            timeout=10,
+        )
+    except (OSError, subprocess.SubprocessError):
+        return False
+    if proc.returncode != 0:
+        return False
+    for line in proc.stdout.splitlines():
+        key, _, value = line.partition(" ")
+        if key.lower() == "controlpath":
+            configured = value.strip()
+            return bool(configured) and configured.lower() != "none"
+    return False
+
+
 def _ssh_control_path() -> str | None:
     """Return a ControlPath template, or ``None`` if one can't be provided.
 
@@ -417,15 +450,41 @@ class SshTransport:
         master connection each one is a fresh TCP + auth handshake, which
         dominates wall-clock on any real cluster — and multiplies on hosts
         with Kerberos or hardware-token auth.
+
+        Three cases, in order:
+
+        1. ``control_path`` set explicitly — use it verbatim.
+        2. ``~/.ssh/config`` already defines a ``ControlPath`` for this host —
+           inherit it by passing no path at all.  molq then shares the very
+           same socket as your own ``ssh``: whichever runs first becomes the
+           master and the other rides along.
+        3. Nothing configured — supply molq's own ``~/.ssh/molq-%C``.
         """
         if not self.options.control_master:
             return []
+
+        # ControlMaster=auto in every case: reuse a live master, become one
+        # otherwise.  Without it a configured ControlPath alone would only
+        # *use* a master someone else started.
+        opts = ["-o", "ControlMaster=auto"]
+
+        if self.options.control_path:
+            return opts + [
+                "-o",
+                f"ControlPath={self.options.control_path}",
+                "-o",
+                f"ControlPersist={self.options.control_persist}",
+            ]
+
+        if _host_configures_control_path(self.options.host, self._ssh_bin):
+            # Inherit path *and* persistence from the user's config — their
+            # ControlPersist governs a socket they also use.
+            return opts
+
         control_path = _ssh_control_path()
         if control_path is None:
             return []
-        return [
-            "-o",
-            "ControlMaster=auto",
+        return opts + [
             "-o",
             f"ControlPath={control_path}",
             "-o",
