@@ -478,3 +478,110 @@ class TestSchemaVersionComparison:
 
         with pytest.raises(StoreError, match="Unknown schema version"):
             JobStore(db)
+
+
+class TestBoundedReads:
+    def test_list_records_honors_limit(self, memory_store):
+        for i in range(5):
+            memory_store.insert_job(_make_spec(job_id=f"lim-{i}"))
+        assert len(memory_store.list_records("dev", include_terminal=True)) == 5
+        assert (
+            len(memory_store.list_records("dev", include_terminal=True, limit=2)) == 2
+        )
+
+    def test_get_latest_attempt_unknown_job_is_none(self, memory_store):
+        assert memory_store.get_latest_attempt_record("no-such-job") is None
+
+    def test_get_latest_attempt_returns_highest_attempt(self, memory_store):
+        root = "root-1"
+        memory_store.insert_job(_make_spec(job_id=root))
+        second = JobSpec(
+            job_id="attempt-2",
+            cluster_name="dev",
+            scheduler="local",
+            command=Command.from_submit_args(argv=["echo", "hi"]),
+            root_job_id=root,
+            attempt=2,
+        )
+        memory_store.insert_job(second)
+
+        latest = memory_store.get_latest_attempt_record(root)
+        assert latest is not None
+        assert latest.job_id == "attempt-2"
+        assert latest.attempt == 2
+
+
+class TestCleanupCandidateFiltering:
+    """Cutoffs are applied in SQL; only expiring rows come back."""
+
+    def _finished(self, store, job_id, state, finished_at, cleaned_at=None):
+        store.insert_job(_make_spec(job_id=job_id))
+        store.update_job(
+            job_id, state=state, finished_at=finished_at, cleaned_at=cleaned_at
+        )
+
+    def test_only_rows_past_the_cutoff_are_returned(self, memory_store):
+        self._finished(memory_store, "old", JobState.SUCCEEDED, 100.0)
+        self._finished(memory_store, "new", JobState.SUCCEEDED, 5000.0)
+
+        artifacts, records = memory_store.list_cleanup_candidates(
+            "dev",
+            job_dir_cutoff=1000.0,
+            record_cutoff=1000.0,
+            include_failed_job_dirs=True,
+        )
+        assert [r.job_id for r in artifacts] == ["old"]
+        assert [r.job_id for r in records] == ["old"]
+
+    def test_active_jobs_are_never_candidates(self, memory_store):
+        memory_store.insert_job(_make_spec(job_id="running"))
+        memory_store.update_job("running", state=JobState.RUNNING)
+
+        artifacts, records = memory_store.list_cleanup_candidates(
+            "dev", job_dir_cutoff=1e12, record_cutoff=1e12, include_failed_job_dirs=True
+        )
+        assert artifacts == [] and records == []
+
+    def test_already_cleaned_rows_are_not_artifact_candidates(self, memory_store):
+        self._finished(
+            memory_store, "done", JobState.SUCCEEDED, 100.0, cleaned_at=200.0
+        )
+
+        artifacts, records = memory_store.list_cleanup_candidates(
+            "dev",
+            job_dir_cutoff=1000.0,
+            record_cutoff=1000.0,
+            include_failed_job_dirs=True,
+        )
+        assert artifacts == []
+        # Still eligible for record deletion.
+        assert [r.job_id for r in records] == ["done"]
+
+    def test_failed_job_dirs_can_be_preserved(self, memory_store):
+        self._finished(memory_store, "ok", JobState.SUCCEEDED, 100.0)
+        self._finished(memory_store, "bad", JobState.FAILED, 100.0)
+
+        kept, _ = memory_store.list_cleanup_candidates(
+            "dev",
+            job_dir_cutoff=1000.0,
+            record_cutoff=1000.0,
+            include_failed_job_dirs=False,
+        )
+        assert [r.job_id for r in kept] == ["ok"]
+
+        both, _ = memory_store.list_cleanup_candidates(
+            "dev",
+            job_dir_cutoff=1000.0,
+            record_cutoff=1000.0,
+            include_failed_job_dirs=True,
+        )
+        assert {r.job_id for r in both} == {"ok", "bad"}
+
+    def test_jobs_without_finish_time_are_skipped(self, memory_store):
+        memory_store.insert_job(_make_spec(job_id="no-finish"))
+        memory_store.update_job("no-finish", state=JobState.SUCCEEDED)
+
+        artifacts, records = memory_store.list_cleanup_candidates(
+            "dev", job_dir_cutoff=1e12, record_cutoff=1e12, include_failed_job_dirs=True
+        )
+        assert artifacts == [] and records == []

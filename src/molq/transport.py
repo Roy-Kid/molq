@@ -19,7 +19,6 @@ methods should be added as concrete schedulers need them, not speculatively.
 from __future__ import annotations
 
 import base64
-import json
 import os
 import shlex
 import shutil
@@ -346,39 +345,34 @@ def _merge_copy(src: Path, dst: Path, *, exclude: set[str]) -> None:
 _SOCKET_PATH_BUDGET = 100
 _CONTROL_TOKEN_GROWTH = 38  # len("%C") -> 40
 
+# Exit status a remote helper script uses to report "path does not exist",
+# chosen to not collide with the shell's own conventional codes (1, 2, 126-165).
+_ENOENT_EXIT = 44
+
 
 def _ssh_control_path() -> str | None:
     """Return a ControlPath template, or ``None`` if one can't be provided.
 
-    Prefers ``~/.ssh/molq/`` — the conventional home for OpenSSH state, owned
-    by the user by construction.  Falls back to a per-user directory under
-    the system temp dir, which on macOS is often long enough to blow the
-    socket-path limit; in that case multiplexing is skipped rather than
-    letting ssh complain on every call.
+    Sockets live directly in ``~/.ssh`` as ``molq-<hash>``, the same flat
+    layout other OpenSSH tooling uses — one well-known private directory per
+    user rather than a molq-specific subdirectory.  ``%C`` is a hash of the
+    connection tuple, so distinct hosts never share a socket.
     """
     uid = getattr(os, "getuid", lambda: 0)()
-    candidates = [Path.home() / ".ssh" / "molq"]
-    tmp_base = Path(tempfile.gettempdir()) / f"molq-ssh-{uid}"
-    if tmp_base not in candidates:
-        candidates.append(tmp_base)
-
-    for base in candidates:
-        template = str(base / "%C")
-        if len(template) + _CONTROL_TOKEN_GROWTH > _SOCKET_PATH_BUDGET:
-            continue
-        try:
-            base.mkdir(mode=0o700, parents=True, exist_ok=True)
-            # Refuse a directory we do not own: a pre-created socket dir in a
-            # shared location would otherwise let another user observe or
-            # hijack the multiplexed session.
-            if base.stat().st_uid != uid:
-                continue
-        except OSError:
-            continue
-        return template
-
-    logger.debug("no usable ssh ControlPath; connection multiplexing disabled")
-    return None
+    ssh_dir = Path.home() / ".ssh"
+    template = str(ssh_dir / "molq-%C")
+    if len(template) + _CONTROL_TOKEN_GROWTH > _SOCKET_PATH_BUDGET:
+        logger.debug(f"ssh ControlPath would exceed socket limit: {template}")
+        return None
+    try:
+        ssh_dir.mkdir(mode=0o700, parents=True, exist_ok=True)
+        # Refuse a directory we do not own — a socket somewhere another user
+        # controls would let them observe or hijack the multiplexed session.
+        if ssh_dir.stat().st_uid != uid:
+            return None
+    except OSError:
+        return None
+    return template
 
 
 @dataclass(frozen=True)
@@ -546,7 +540,9 @@ class SshTransport:
 
     def read_bytes(self, path: str) -> bytes:
         # Use base64 so we don't have to worry about embedded NULs / non-UTF8.
-        result = self._shell(f"base64 -- {self._quote_remote_path(path)}")
+        # Feed it on stdin rather than as an argument: BSD/macOS base64 takes
+        # only -i/stdin, so `base64 -- <file>` fails against a macOS host.
+        result = self._shell(f"base64 < {self._quote_remote_path(path)}")
         if result.returncode != 0:
             if (
                 "No such file" in result.stderr
@@ -696,27 +692,62 @@ class SshTransport:
         return [line for line in result.stdout.strip().split("\n") if line]
 
     def stat(self, path: str) -> dict[str, object]:
-        code = (
-            "import os,json; s=os.stat(%r); "
-            "print(json.dumps([s.st_size,s.st_mtime,os.path.isdir(%r),os.path.isfile(%r)]))"
+        q = self._quote_remote_path(path)
+        # GNU coreutils first, BSD/macOS second.  Deliberately not python3:
+        # HPC login nodes routinely keep Python behind `module load`, so it is
+        # not on the default PATH of a non-interactive ssh session.
+        remote_cmd = (
+            f"test -e {q} || exit {_ENOENT_EXIT}; "
+            f"sz=$(stat -c %s {q} 2>/dev/null || stat -f %z {q}); "
+            f"mt=$(stat -c %Y {q} 2>/dev/null || stat -f %m {q}); "
+            f"d=0; f=0; "
+            f"if [ -d {q} ]; then d=1; fi; "
+            f"if [ -f {q} ]; then f=1; fi; "
+            f'printf "%s %s %s %s\\n" "$sz" "$mt" "$d" "$f"'
         )
-        result = self._shell(f"python3 -c {shlex.quote(code % (path, path, path))}")
+        result = self._shell(remote_cmd)
+        if result.returncode == _ENOENT_EXIT:
+            raise FileNotFoundError(path)
         if result.returncode != 0:
-            raise TransportError(f"remote stat failed: {path}")
-        size, mtime, is_dir, is_file = json.loads(result.stdout.strip())
-        return {
-            "size": int(size),
-            "mtime": float(mtime),
-            "is_dir": bool(is_dir),
-            "is_file": bool(is_file),
-        }
+            raise TransportError(
+                f"remote stat failed: {path}",
+                returncode=result.returncode,
+                stderr=result.stderr,
+            )
+        try:
+            size, mtime, is_dir, is_file = result.stdout.split()
+            return {
+                "size": int(size),
+                "mtime": float(mtime),
+                "is_dir": is_dir == "1",
+                "is_file": is_file == "1",
+            }
+        except ValueError as exc:
+            raise TransportError(
+                f"unparseable remote stat output for {path}: {result.stdout!r}"
+            ) from exc
 
     def getsize(self, path: str) -> int:
-        code = "import os; print(os.path.getsize(%r))"
-        result = self._shell(f"python3 -c {shlex.quote(code % path)}")
+        q = self._quote_remote_path(path)
+        remote_cmd = (
+            f"test -e {q} || exit {_ENOENT_EXIT}; "
+            f"stat -c %s {q} 2>/dev/null || stat -f %z {q}"
+        )
+        result = self._shell(remote_cmd)
+        if result.returncode == _ENOENT_EXIT:
+            raise FileNotFoundError(path)
         if result.returncode != 0:
-            raise TransportError(f"remote getsize failed: {path}")
-        return int(result.stdout.strip())
+            raise TransportError(
+                f"remote getsize failed: {path}",
+                returncode=result.returncode,
+                stderr=result.stderr,
+            )
+        try:
+            return int(result.stdout.strip())
+        except ValueError as exc:
+            raise TransportError(
+                f"unparseable remote size for {path}: {result.stdout!r}"
+            ) from exc
 
     def _rsync(
         self, src: str, dst: str, *, recursive: bool, exclude: Sequence[str]

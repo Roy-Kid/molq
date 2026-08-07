@@ -42,6 +42,9 @@ class MolqProfile:
     retry: RetryPolicy | None = None
     retention: RetentionPolicy = field(default_factory=RetentionPolicy)
     jobs_dir: str | None = None
+    #: SSH destination for this profile — anything ``ssh`` accepts, including a
+    #: ``~/.ssh/config`` alias.  ``None`` runs on the current host.
+    host: str | None = None
 
 
 @dataclass(frozen=True)
@@ -58,6 +61,7 @@ class _ProfileSchema:
     scheduler: str
     cluster_name: str
     jobs_dir: str | None = None
+    host: str | None = None
     __constraints__: dict = {"scheduler": [OneOf(*OPTIONS_TYPE_MAP.keys())]}
 
 
@@ -175,6 +179,7 @@ def _parse_profile(name: str, data: dict[str, Any]) -> MolqProfile:
         retry=deserialize_retry_policy(data.get("retry")),
         retention=deserialize_retention_policy(data.get("retention")),
         jobs_dir=data.get("jobs_dir"),
+        host=data.get("host"),
     )
 
 

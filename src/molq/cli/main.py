@@ -1,13 +1,13 @@
 #!/usr/bin/env python3
 """Molq CLI — submit, track, and manage jobs on local and HPC schedulers."""
 
+import shlex
 import sys
 import time
 from collections.abc import Iterator
 from contextlib import contextmanager
 from datetime import datetime
 from enum import StrEnum
-from pathlib import Path
 from typing import TYPE_CHECKING, Annotated
 
 if TYPE_CHECKING:
@@ -133,6 +133,7 @@ def _open_submitor(
         target = Cluster(
             cluster_name,
             scheduler.value,
+            host=loaded.host,
             scheduler_options=loaded.scheduler_options,
         )
         submitor = Submitor(
@@ -180,21 +181,29 @@ def _state_style(state: str) -> str:
     }.get(state, "")
 
 
-def _log_paths(record: "JobRecord", stream_name: str) -> dict[str, Path]:
+def _log_paths(
+    submitor: "Submitor", record: "JobRecord", stream_name: str
+) -> dict[str, str]:
+    """Resolve stream name -> log path *on the cluster's filesystem*.
+
+    Log paths recorded in job metadata live wherever the job ran, so
+    existence is checked through the transport rather than with a local
+    ``Path.exists()`` — otherwise every remote job reports a missing log.
+    """
     stream_keys = {
         "stdout": "molq.stdout_path",
         "stderr": "molq.stderr_path",
     }
     wanted = ("stdout", "stderr") if stream_name == "both" else (stream_name,)
-    result: dict[str, Path] = {}
+    transport = submitor.target.transport
+    result: dict[str, str] = {}
     for key in wanted:
         value = record.metadata.get(stream_keys[key])
         if not value:
             raise FileNotFoundError(f"No {key} log is recorded for job {record.job_id}")
-        path = Path(value)
-        if not path.exists():
-            raise FileNotFoundError(f"{key} log does not exist: {path}")
-        result[key] = path
+        if not transport.exists(value):
+            raise FileNotFoundError(f"{key} log does not exist: {value}")
+        result[key] = value
     return result
 
 
@@ -210,45 +219,65 @@ def _emit_log_text(stream_name: str, text: str, *, labeled: bool) -> None:
     sys.stdout.flush()
 
 
-def _read_text(path: Path) -> str:
-    return path.read_text(errors="replace")
+def _read_log(submitor: "Submitor", path: str, tail: int | None) -> str:
+    """Read a log through the transport, optionally only its last *tail* lines."""
+    transport = submitor.target.transport
+    if tail is None:
+        return transport.read_bytes(path).decode("utf-8", errors="replace")
+    # Let the far side do the tailing so a multi-gigabyte log does not cross
+    # the network just to show 50 lines.
+    result = transport.run(
+        ["sh", "-c", f"tail -n {int(tail)} {shlex.quote(path)} 2>/dev/null || true"]
+    )
+    return result.stdout
+
+
+def _read_log_from(submitor: "Submitor", path: str, offset: int) -> str:
+    """Return log bytes past *offset* (1-based for ``tail -c``)."""
+    result = submitor.target.transport.run(
+        ["sh", "-c", f"tail -c +{offset + 1} {shlex.quote(path)} 2>/dev/null || true"]
+    )
+    return result.stdout
+
+
+def _follow_poll_interval(submitor: "Submitor") -> float:
+    """Poll faster locally than over the network."""
+    from molq.transport import LocalTransport
+
+    return 0.2 if isinstance(submitor.target.transport, LocalTransport) else 1.0
 
 
 def _follow_logs(
     submitor: "Submitor", job_id: str, stream_name: str, tail: int | None
 ) -> None:
     record = submitor.get_job(job_id)
-    paths = _log_paths(record, stream_name)
+    paths = _log_paths(submitor, record, stream_name)
     labeled = stream_name == "both"
-    handles = {
-        name: path.open("r", encoding="utf-8", errors="replace")
-        for name, path in paths.items()
-    }
-    try:
-        for name, handle in handles.items():
-            initial = handle.read()
-            if tail is not None:
-                initial = "".join(initial.splitlines(keepends=True)[-tail:])
-            _emit_log_text(name, initial, labeled=labeled)
-            handle.seek(0, 2)
+    interval = _follow_poll_interval(submitor)
 
-        while True:
-            emitted = False
-            for name, handle in handles.items():
-                chunk = handle.read()
-                if chunk:
-                    emitted = True
-                    _emit_log_text(name, chunk, labeled=labeled)
+    # Byte offsets rather than open file handles: a remote log has no local
+    # descriptor to seek, and `tail -c +N` transfers only the new bytes.
+    offsets: dict[str, int] = {}
+    for name, path in paths.items():
+        initial = _read_log(submitor, path, tail)
+        _emit_log_text(name, initial, labeled=labeled)
+        offsets[name] = submitor.target.transport.getsize(path)
 
-            record = submitor.get_job(job_id)
-            if record.state.is_terminal and not emitted:
-                break
+    while True:
+        emitted = False
+        for name, path in paths.items():
+            chunk = _read_log_from(submitor, path, offsets[name])
+            if chunk:
+                emitted = True
+                offsets[name] += len(chunk.encode("utf-8"))
+                _emit_log_text(name, chunk, labeled=labeled)
 
-            submitor.refresh_jobs()
-            time.sleep(0.2)
-    finally:
-        for handle in handles.values():
-            handle.close()
+        record = submitor.get_job(job_id)
+        if record.state.is_terminal and not emitted:
+            break
+
+        submitor.refresh_jobs()
+        time.sleep(interval)
 
 
 def _dependency_relation_state(dependency_type: str, record: "JobRecord") -> str:
@@ -572,13 +601,11 @@ def logs(
             if follow:
                 _follow_logs(submitor, job_id, stream_name, tail)
             else:
-                paths = _log_paths(record, stream_name)
+                paths = _log_paths(submitor, record, stream_name)
                 labeled = stream_name == "both"
                 emitted = False
                 for name, path in paths.items():
-                    content = _read_text(path)
-                    if tail is not None:
-                        content = "".join(content.splitlines(keepends=True)[-tail:])
+                    content = _read_log(submitor, path, tail)
                     if content:
                         emitted = True
                         _emit_log_text(name, content, labeled=labeled)
@@ -1027,7 +1054,7 @@ def _profile_destinations(config_path: str | None) -> list[dict[str, str]]:
                 "name": profile.cluster_name,
                 "source": f"profile:{profile.name}",
                 "scheduler": profile.scheduler,
-                "target": "(profile)",
+                "target": profile.host or "(local)",
             }
         )
     return rows
@@ -1103,6 +1130,7 @@ def clusters_show(
         rprint(f"[bold]Profile:[/] {profile.name}")
         rprint(f"  Cluster:   {profile.cluster_name}")
         rprint(f"  Scheduler: {profile.scheduler}")
+        rprint(f"  Host:      {profile.host or '(local)'}")
         if profile.scheduler_options is not None:
             rprint(f"  Options:   {profile.scheduler_options}")
         if profile.jobs_dir:
@@ -1153,6 +1181,7 @@ def _resolve_cluster(
         return Cluster(
             loaded.cluster_name,
             loaded.scheduler,
+            host=loaded.host,
             scheduler_options=loaded.scheduler_options,
         )
     if cluster:

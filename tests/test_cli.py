@@ -14,6 +14,7 @@ from molq.models import (
     StatusTransition,
 )
 from molq.status import JobState
+from molq.transport import LocalTransport
 
 runner = CliRunner()
 
@@ -123,6 +124,9 @@ class TestLogsCommand:
         )
         mock_submitor = MagicMock()
         mock_submitor.get_job.return_value = record
+        # Real transport: log paths live on the cluster filesystem, so the
+        # command resolves and reads them through it.
+        mock_submitor.target.transport = LocalTransport()
         mock_create.return_value.__enter__.return_value = mock_submitor
 
         result = runner.invoke(app, ["logs", "abc-123", "local", "--tail", "1"])
@@ -149,6 +153,9 @@ class TestLogsCommand:
         )
         mock_submitor = MagicMock()
         mock_submitor.get_job.return_value = record
+        # Real transport: log paths live on the cluster filesystem, so the
+        # command resolves and reads them through it.
+        mock_submitor.target.transport = LocalTransport()
         mock_create.return_value.__enter__.return_value = mock_submitor
 
         result = runner.invoke(app, ["logs", "abc-123", "local", "--stream", "both"])
@@ -171,6 +178,9 @@ class TestLogsCommand:
         )
         mock_submitor = MagicMock()
         mock_submitor.get_job.return_value = record
+        # Real transport: log paths live on the cluster filesystem, so the
+        # command resolves and reads them through it.
+        mock_submitor.target.transport = LocalTransport()
         mock_create.return_value.__enter__.return_value = mock_submitor
 
         result = runner.invoke(app, ["logs", "abc-123", "local", "--follow"])
@@ -402,3 +412,81 @@ class TestDestinationResolution:
         )
         assert result.exit_code == 0, result.output
         assert "Job submitted" in result.output
+
+
+class TestLogsOverRemoteTransport:
+    """Log paths live on the cluster's filesystem, not the driver's.
+
+    Before 0.7.0 the logs command called Path.exists()/open() on those paths
+    locally, so every remote job reported a missing log.
+    """
+
+    @pytest.fixture
+    def loopback_transport(self, tmp_path):
+        """SshTransport whose ssh binary runs the command on this machine."""
+        from molq.options import SshTransportOptions
+        from molq.transport import SshTransport
+
+        stub = tmp_path / "fake_ssh"
+        stub.write_text(
+            '#!/bin/sh\nfor a in "$@"; do cmd="$a"; done\nexec sh -c "$cmd"\n'
+        )
+        stub.chmod(0o755)
+        return SshTransport(options=SshTransportOptions(host="h"), _ssh_bin=str(stub))
+
+    def _record(self, stdout_path):
+        return JobRecord(
+            job_id="abc-123",
+            cluster_name="dardel",
+            scheduler="slurm",
+            state=JobState.SUCCEEDED,
+            command_type="argv",
+            command_display="python train.py",
+            metadata={"molq.stdout_path": str(stdout_path)},
+        )
+
+    @patch("molq.cli.main._open_submitor")
+    def test_reads_log_through_transport(
+        self, mock_create, loopback_transport, tmp_path
+    ):
+        log_path = tmp_path / "stdout.log"
+        log_path.write_text("epoch 1\nepoch 2\n")
+
+        mock_submitor = MagicMock()
+        mock_submitor.get_job.return_value = self._record(log_path)
+        mock_submitor.target.transport = loopback_transport
+        mock_create.return_value.__enter__.return_value = mock_submitor
+
+        result = runner.invoke(app, ["logs", "abc-123", "slurm"])
+        assert result.exit_code == 0, result.output
+        assert "epoch 2" in result.output
+
+    @patch("molq.cli.main._open_submitor")
+    def test_tail_is_evaluated_remotely(
+        self, mock_create, loopback_transport, tmp_path
+    ):
+        log_path = tmp_path / "stdout.log"
+        log_path.write_text("".join(f"line{i}\n" for i in range(100)))
+
+        mock_submitor = MagicMock()
+        mock_submitor.get_job.return_value = self._record(log_path)
+        mock_submitor.target.transport = loopback_transport
+        mock_create.return_value.__enter__.return_value = mock_submitor
+
+        result = runner.invoke(app, ["logs", "abc-123", "slurm", "--tail", "2"])
+        assert result.exit_code == 0, result.output
+        assert "line99" in result.output
+        assert "line0\n" not in result.output
+
+    @patch("molq.cli.main._open_submitor")
+    def test_missing_remote_log_reports_cleanly(
+        self, mock_create, loopback_transport, tmp_path
+    ):
+        mock_submitor = MagicMock()
+        mock_submitor.get_job.return_value = self._record(tmp_path / "absent.log")
+        mock_submitor.target.transport = loopback_transport
+        mock_create.return_value.__enter__.return_value = mock_submitor
+
+        result = runner.invoke(app, ["logs", "abc-123", "slurm"])
+        assert result.exit_code == 1
+        assert "does not exist" in result.output

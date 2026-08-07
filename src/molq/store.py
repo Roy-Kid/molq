@@ -700,23 +700,34 @@ class JobStore:
         self,
         cluster_name: str,
         include_terminal: bool = False,
+        limit: int | None = None,
     ) -> list[JobRecord]:
-        """List job records for a cluster."""
+        """List job records for a cluster, newest first.
+
+        Args:
+            cluster_name: Scope records to this cluster.
+            include_terminal: Include finished jobs.  With ``True`` this spans
+                the cluster's whole history, so pass *limit* for interactive
+                callers.
+            limit: Cap the result set.  ``None`` returns every matching row.
+        """
+        params: list[object] = [cluster_name]
         if include_terminal:
-            rows = self._conn.execute(
-                "SELECT * FROM jobs WHERE cluster_name = ? ORDER BY submitted_at DESC",
-                (cluster_name,),
-            ).fetchall()
+            sql = "SELECT * FROM jobs WHERE cluster_name = ?"
         else:
             terminal = tuple(s.value for s in JobState if s.is_terminal)
             placeholders = ",".join("?" for _ in terminal)
-            rows = self._conn.execute(
+            sql = (
                 f"SELECT * FROM jobs WHERE cluster_name = ? "
-                f"AND state NOT IN ({placeholders}) "
-                f"ORDER BY submitted_at DESC",
-                (cluster_name, *terminal),
-            ).fetchall()
+                f"AND state NOT IN ({placeholders})"
+            )
+            params.extend(terminal)
+        sql += " ORDER BY submitted_at DESC"
+        if limit is not None:
+            sql += " LIMIT ?"
+            params.append(int(limit))
 
+        rows = self._conn.execute(sql, tuple(params)).fetchall()
         return [self._row_to_record(row) for row in rows]
 
     def get_active_records(self, cluster_name: str) -> list[JobRecord]:
@@ -923,13 +934,17 @@ class JobStore:
         return [self._row_to_record(row) for row in rows]
 
     def get_latest_attempt_record(self, job_id: str) -> JobRecord | None:
-        record = self.get_record(job_id)
-        if record is None:
-            return None
+        """Return the newest attempt in *job_id*'s retry family.
+
+        Resolves the family root in a subquery rather than a separate
+        round trip — the monitor calls this on every poll.
+        """
         row = self._conn.execute(
-            "SELECT * FROM jobs WHERE root_job_id = ? "
-            "ORDER BY attempt DESC, submitted_at DESC LIMIT 1",
-            (record.root_job_id or record.job_id,),
+            "SELECT * FROM jobs WHERE root_job_id = ("
+            "  SELECT COALESCE(NULLIF(root_job_id, ''), job_id)"
+            "  FROM jobs WHERE job_id = ?"
+            ") ORDER BY attempt DESC, submitted_at DESC LIMIT 1",
+            (job_id,),
         ).fetchone()
         if row is None:
             return None
@@ -952,33 +967,42 @@ class JobStore:
         record_cutoff: float,
         include_failed_job_dirs: bool,
     ) -> tuple[list[JobRecord], list[JobRecord]]:
+        # Both cutoffs are expressed in SQL: loading every terminal record for
+        # the cluster just to filter it in Python made cleanup cost scale with
+        # total history rather than with the number of expiring rows.
         terminal = tuple(s.value for s in JobState if s.is_terminal)
         placeholders = ",".join("?" for _ in terminal)
-        rows = self._conn.execute(
+        base = (
             f"SELECT * FROM jobs WHERE cluster_name = ? "
-            f"AND state IN ({placeholders}) ORDER BY finished_at ASC",
-            (cluster_name, *terminal),
+            f"AND state IN ({placeholders}) "
+            f"AND finished_at IS NOT NULL AND finished_at > 0"
+        )
+
+        artifact_sql = f"{base} AND cleaned_at IS NULL AND finished_at <= ?"
+        artifact_params: list[object] = [cluster_name, *terminal, job_dir_cutoff]
+        if not include_failed_job_dirs:
+            keep = (
+                JobState.FAILED.value,
+                JobState.TIMED_OUT.value,
+                JobState.LOST.value,
+            )
+            keep_placeholders = ",".join("?" for _ in keep)
+            artifact_sql += f" AND state NOT IN ({keep_placeholders})"
+            artifact_params.extend(keep)
+        artifact_sql += " ORDER BY finished_at ASC"
+
+        artifact_rows = self._conn.execute(
+            artifact_sql, tuple(artifact_params)
         ).fetchall()
-        records = [self._row_to_record(row) for row in rows]
-        artifact_candidates: list[JobRecord] = []
-        record_candidates: list[JobRecord] = []
-        for record in records:
-            finished_at = record.finished_at or 0.0
-            if finished_at <= 0:
-                continue
-            if (
-                record.cleaned_at is None
-                and finished_at <= job_dir_cutoff
-                and (
-                    include_failed_job_dirs
-                    or record.state
-                    not in {JobState.FAILED, JobState.TIMED_OUT, JobState.LOST}
-                )
-            ):
-                artifact_candidates.append(record)
-            if finished_at <= record_cutoff:
-                record_candidates.append(record)
-        return artifact_candidates, record_candidates
+        record_rows = self._conn.execute(
+            f"{base} AND finished_at <= ? ORDER BY finished_at ASC",
+            (cluster_name, *terminal, record_cutoff),
+        ).fetchall()
+
+        return (
+            [self._row_to_record(row) for row in artifact_rows],
+            [self._row_to_record(row) for row in record_rows],
+        )
 
     def delete_terminal_records(self, job_ids: list[str]) -> None:
         if not job_ids:

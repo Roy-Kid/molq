@@ -9,6 +9,7 @@ import time
 
 # Use a broad type hint since we accept any Scheduler-like object
 from collections.abc import Callable
+from dataclasses import replace
 from typing import Any, Protocol
 
 from molq.callbacks import EventBus, EventPayload, EventType
@@ -93,52 +94,45 @@ class JobReconciler:
                 continue
 
             sid = record.scheduler_job_id
-
-            # Re-read the latest state to avoid trampling concurrent
-            # writes (e.g., a parallel cancel()).
-            current = self._store.get_record(record.job_id)
-            if current is None or current.state.is_terminal:
-                continue
-            old_state = current.state
+            old_state = record.state
 
             if sid in scheduler_states:
                 new_state = scheduler_states[sid]
                 terminal = (
-                    self._infer_terminal(sid, record.job_id, fallback_state=new_state)
+                    self._infer_terminal(sid, record, fallback_state=new_state)
                     if new_state.is_terminal
                     else None
                 )
             else:
-                terminal = self._infer_terminal(sid, record.job_id)
+                terminal = self._infer_terminal(sid, record)
                 new_state = terminal.state
 
-            if new_state != old_state:
-                if self._apply_transition(
-                    record.job_id,
-                    old_state,
-                    new_state,
-                    now,
-                    terminal=terminal,
-                ):
-                    updated = self._store.get_record(record.job_id)
-                    transition = StatusTransition(
-                        job_id=record.job_id,
-                        old_state=old_state,
-                        new_state=new_state,
-                        timestamp=now,
-                        reason=_describe_transition(old_state, new_state),
-                    )
-                    if updated is not None:
-                        self._emit_transition_events(
-                            transition=transition, record=updated
-                        )
-                        if new_state.is_terminal and self._on_terminal is not None:
-                            self._on_terminal(updated)
-                    changes.append(
-                        StatusChange(record.job_id, old_state, new_state, now)
-                    )
-
             polled.append(record.job_id)
+            if new_state == old_state:
+                continue
+
+            # No pre-read of the row here: compare_and_update_state is itself a
+            # compare-and-swap on the expected state, so a concurrent cancel()
+            # makes it return None and we simply skip the transition.
+            updated = self._apply_transition(
+                record, old_state, new_state, now, terminal=terminal
+            )
+            if updated is None:
+                continue
+
+            self._emit_transition_events(
+                transition=StatusTransition(
+                    job_id=record.job_id,
+                    old_state=old_state,
+                    new_state=new_state,
+                    timestamp=now,
+                    reason=_describe_transition(old_state, new_state),
+                ),
+                record=updated,
+            )
+            if new_state.is_terminal and self._on_terminal is not None:
+                self._on_terminal(updated)
+            changes.append(StatusChange(record.job_id, old_state, new_state, now))
 
         # One write for the whole cycle instead of one per job.
         self._store.mark_polled(polled, now)
@@ -164,39 +158,36 @@ class JobReconciler:
         if sid in result:
             new_state = result[sid]
             terminal = (
-                self._infer_terminal(sid, job_id, fallback_state=new_state)
+                self._infer_terminal(sid, record, fallback_state=new_state)
                 if new_state.is_terminal
                 else None
             )
         else:
-            terminal = self._infer_terminal(sid, job_id)
+            terminal = self._infer_terminal(sid, record)
             new_state = terminal.state
 
         if new_state != record.state:
-            if not self._apply_transition(
-                job_id,
-                record.state,
-                new_state,
-                now,
-                terminal=terminal,
-            ):
+            updated = self._apply_transition(
+                record, record.state, new_state, now, terminal=terminal
+            )
+            if updated is None:
                 # State changed under us — return the latest authoritative value.
                 latest = self._store.get_record(job_id)
                 if latest is not None:
                     new_state = latest.state
             else:
-                updated = self._store.get_record(job_id)
-                transition = StatusTransition(
-                    job_id=job_id,
-                    old_state=record.state,
-                    new_state=new_state,
-                    timestamp=now,
-                    reason=_describe_transition(record.state, new_state),
+                self._emit_transition_events(
+                    transition=StatusTransition(
+                        job_id=job_id,
+                        old_state=record.state,
+                        new_state=new_state,
+                        timestamp=now,
+                        reason=_describe_transition(record.state, new_state),
+                    ),
+                    record=updated,
                 )
-                if updated is not None:
-                    self._emit_transition_events(transition=transition, record=updated)
-                    if new_state.is_terminal and self._on_terminal is not None:
-                        self._on_terminal(updated)
+                if new_state.is_terminal and self._on_terminal is not None:
+                    self._on_terminal(updated)
 
         self._store.update_job(job_id, last_polled=now)
         return new_state
@@ -204,10 +195,15 @@ class JobReconciler:
     def _infer_terminal(
         self,
         scheduler_job_id: str,
-        job_id: str,
+        record: JobRecord,
         fallback_state: JobState | None = None,
     ) -> TerminalStatus:
-        """Determine terminal state for a disappeared job."""
+        """Determine terminal state for a disappeared job.
+
+        Takes the caller's *record* rather than re-reading it: this runs once
+        per disappeared job per cycle.
+        """
+        job_id = record.job_id
         # ShellScheduler resolves terminal status from job_dir/.exit_code; the
         # batch backends don't need job_dir.  Duck-type the optional method.
         resolve_with_dir = getattr(
@@ -216,8 +212,7 @@ class JobReconciler:
         if callable(resolve_with_dir):
             from pathlib import Path
 
-            record = self._store.get_record(job_id)
-            job_dir_value = record.metadata.get("molq.job_dir") if record else None
+            job_dir_value = record.metadata.get("molq.job_dir")
             if job_dir_value:
                 result = _normalize_terminal_status(
                     resolve_with_dir(
@@ -251,50 +246,65 @@ class JobReconciler:
 
     def _apply_transition(
         self,
-        job_id: str,
+        record: JobRecord,
         old_state: JobState,
         new_state: JobState,
         timestamp: float,
         *,
         terminal: TerminalStatus | None = None,
-    ) -> bool:
+    ) -> JobRecord | None:
         """Update store with a state transition, atomically.
 
-        Returns True if the transition was applied, False if the row's state
+        Returns the post-transition record, or ``None`` if the row's state
         changed under us (e.g. a concurrent cancel()) and the transition was
         skipped to preserve the authoritative value.
+
+        The returned record is derived from *record* rather than re-read: we
+        know exactly which columns the update touched, and this runs for every
+        job that changes state on every cycle.
         """
         is_terminal = new_state.is_terminal
+        started_at = (
+            timestamp
+            if new_state == JobState.RUNNING and old_state != JobState.RUNNING
+            else None
+        )
+        finished_at = timestamp if is_terminal else None
+        exit_code = terminal.exit_code if is_terminal and terminal is not None else None
+        failure_reason = (
+            terminal.failure_reason if is_terminal and terminal is not None else None
+        )
+
         applied = self._store.compare_and_update_state(
-            job_id,
+            record.job_id,
             expected_state=old_state,
             new_state=new_state,
-            started_at=(
-                timestamp
-                if new_state == JobState.RUNNING and old_state != JobState.RUNNING
-                else None
-            ),
-            finished_at=timestamp if is_terminal else None,
-            exit_code=terminal.exit_code
-            if is_terminal and terminal is not None
-            else None,
-            failure_reason=(
-                terminal.failure_reason
-                if is_terminal and terminal is not None
-                else None
-            ),
+            started_at=started_at,
+            finished_at=finished_at,
+            exit_code=exit_code,
+            failure_reason=failure_reason,
         )
         if not applied:
-            return False
+            return None
 
         self._store.record_transition(
-            job_id,
+            record.job_id,
             old_state=old_state,
             new_state=new_state,
             timestamp=timestamp,
             reason=_describe_transition(old_state, new_state),
         )
-        return True
+        # Mirror compare_and_update_state, which only writes non-None fields.
+        return replace(
+            record,
+            state=new_state,
+            started_at=started_at if started_at is not None else record.started_at,
+            finished_at=finished_at if finished_at is not None else record.finished_at,
+            exit_code=exit_code if exit_code is not None else record.exit_code,
+            failure_reason=(
+                failure_reason if failure_reason is not None else record.failure_reason
+            ),
+        )
 
     def _emit_transition_events(
         self,

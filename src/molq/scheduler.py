@@ -824,6 +824,13 @@ class PBSScheduler:
 # LSF Scheduler
 # ---------------------------------------------------------------------------
 
+# Phrases `bhist -l` emits for a finished job.  Anchored to LSF's own wording
+# so the job's echoed command line cannot be mistaken for an outcome.
+_LSF_DONE_RE = re.compile(r"done successfully|completed\s*<done>")
+_LSF_EXIT_CODE_RE = re.compile(r"exited with exit code\s+(\d+)")
+_LSF_EXITED_RE = re.compile(r"\bexited\b|completed\s*<exit>")
+_LSF_KILLED_RE = re.compile(r"term_owner|term_force_owner|signal\s*<kill>")
+
 _LSF_STATE_MAP: dict[str, JobState] = {
     "RUN": JobState.RUNNING,
     "PEND": JobState.QUEUED,
@@ -946,11 +953,26 @@ class LSFScheduler:
             return None
 
         lower = result.stdout.lower()
-        if "done" in lower:
-            return TerminalStatus(state=JobState.SUCCEEDED, raw_state="done")
-        match = re.search(r"exit code\s+(\d+)", lower)
-        if "exit" in lower:
-            code = int(match.group(1)) if match else None
+
+        # `bhist -l` is prose, and it echoes the job's own command line back.
+        # Match the phrases LSF actually emits rather than bare substrings —
+        # a job named "rundone" or a path containing "exit" used to decide the
+        # outcome.
+        if _LSF_KILLED_RE.search(lower):
+            return TerminalStatus(
+                state=JobState.CANCELLED,
+                failure_reason=_default_failure_reason(
+                    JobState.CANCELLED, None, "killed"
+                ),
+                raw_state="killed",
+            )
+        if _LSF_DONE_RE.search(lower):
+            return TerminalStatus(
+                state=JobState.SUCCEEDED, exit_code=0, raw_state="done"
+            )
+        match = _LSF_EXIT_CODE_RE.search(lower)
+        if match is not None or _LSF_EXITED_RE.search(lower):
+            code = int(match.group(1)) if match is not None else None
             return TerminalStatus(
                 state=JobState.FAILED,
                 exit_code=code,

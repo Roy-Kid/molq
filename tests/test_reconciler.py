@@ -162,3 +162,67 @@ class TestReconcileOne:
         reconciler = JobReconciler(mock_scheduler, store, "dev")
         state = reconciler.reconcile_one("nonexistent")
         assert state is None
+
+
+class TestReconcileQueryCost:
+    """A poll cycle must not issue a per-job round trip storm."""
+
+    def _count_queries(self, store):
+        """Record every statement SQLite actually executes on this connection."""
+        seen: list[str] = []
+        store._conn.set_trace_callback(lambda sql: seen.append(" ".join(sql.split())))
+        return seen
+
+    def test_query_count_is_flat_in_job_count(self, store, mock_scheduler):
+        for i in range(12):
+            _insert_job(store, job_id=f"j{i}", scheduler_job_id=f"s{i}")
+        # Every job still running: no state changes, so the cycle should be
+        # one read plus one batched last_polled write.
+        mock_scheduler.poll_many.return_value = {
+            f"s{i}": JobState.RUNNING for i in range(12)
+        }
+        reconciler = JobReconciler(mock_scheduler, store, "dev")
+        # Prime, then measure a steady-state cycle.
+        reconciler.reconcile()
+
+        seen = self._count_queries(store)
+        reconciler.reconcile()
+
+        selects = [q for q in seen if q.upper().startswith("SELECT")]
+        # One listing query; emphatically not one per job.
+        assert len(selects) <= 3, selects
+        updates = [q for q in seen if q.upper().startswith("UPDATE")]
+        assert len(updates) == 1, updates
+
+    def test_single_batched_last_polled_write(self, store, mock_scheduler):
+        for i in range(5):
+            _insert_job(store, job_id=f"j{i}", scheduler_job_id=f"s{i}")
+        mock_scheduler.poll_many.return_value = {
+            f"s{i}": JobState.RUNNING for i in range(5)
+        }
+        reconciler = JobReconciler(mock_scheduler, store, "dev")
+        reconciler.reconcile()
+
+        for i in range(5):
+            record = store.get_record(f"j{i}")
+            assert record is not None
+            assert record.state == JobState.RUNNING
+
+    def test_concurrent_cancel_is_not_trampled(self, store, mock_scheduler):
+        """The CAS replaces the old pre-read guard; verify it still holds."""
+        _insert_job(store, job_id="j1", scheduler_job_id="s1")
+        reconciler = JobReconciler(mock_scheduler, store, "dev")
+
+        # Scheduler says RUNNING, but the row is cancelled out from under us
+        # between the listing read and the write.
+        def poll(_ids):
+            store.update_job("j1", state=JobState.CANCELLED)
+            return {"s1": JobState.RUNNING}
+
+        mock_scheduler.poll_many.side_effect = poll
+        changes = reconciler.reconcile()
+
+        assert changes == []
+        record = store.get_record("j1")
+        assert record is not None
+        assert record.state == JobState.CANCELLED

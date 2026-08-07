@@ -647,3 +647,67 @@ class TestGeneratedScriptQuoting:
         # The interpreter line must be a single quoted argument, not a bare
         # path that the shell would split on the spaces.
         assert f"bash '{job_dir / 'user_script.sh'}'" in script
+
+
+class TestLSFTerminalParsing:
+    """`bhist -l` is prose that echoes the job's own command line back."""
+
+    def _bhist(self, body: str):
+        return MagicMock(stdout=body, stderr="", returncode=0)
+
+    @patch("molq.transport.subprocess.run")
+    def test_done_successfully(self, mock_run):
+        mock_run.return_value = self._bhist(
+            "Job <99>, User <alice>, Command <sleep 5>\n"
+            "Mon Jan  1 10:01:45: Done successfully. The CPU time used is 5.0 seconds.\n"
+        )
+        result = LSFScheduler().resolve_terminal("99")
+        assert result.state == JobState.SUCCEEDED
+        assert result.exit_code == 0
+
+    @patch("molq.transport.subprocess.run")
+    def test_exited_with_code(self, mock_run):
+        mock_run.return_value = self._bhist(
+            "Job <99>, User <alice>, Command <false>\n"
+            "Mon Jan  1 10:01:45: Exited with exit code 3. The CPU time used is 0.1s.\n"
+        )
+        result = LSFScheduler().resolve_terminal("99")
+        assert result.state == JobState.FAILED
+        assert result.exit_code == 3
+
+    @patch("molq.transport.subprocess.run")
+    def test_killed_by_owner_is_cancelled(self, mock_run):
+        mock_run.return_value = self._bhist(
+            "Job <99>, User <alice>, Command <sleep 500>\n"
+            "Mon Jan  1 10:01:45: Signal <KILL> requested by user <alice>;\n"
+            "Mon Jan  1 10:01:46: Exited by signal 15. TERM_OWNER: job killed by owner.\n"
+        )
+        result = LSFScheduler().resolve_terminal("99")
+        assert result.state == JobState.CANCELLED
+
+    @patch("molq.transport.subprocess.run")
+    def test_command_name_containing_done_does_not_decide(self, mock_run):
+        # Regression: a bare `"done" in output` check called this job a success
+        # purely because of its command name.
+        mock_run.return_value = self._bhist(
+            "Job <99>, User <alice>, Command </work/rundone.sh>\n"
+            "Mon Jan  1 10:00:05: Dispatched to <node1>;\n"
+        )
+        assert LSFScheduler().resolve_terminal("99") is None
+
+    @patch("molq.transport.subprocess.run")
+    def test_path_containing_exit_does_not_decide(self, mock_run):
+        mock_run.return_value = self._bhist(
+            "Job <99>, User <alice>, Command </work/exitpoll/run.sh>\n"
+            "Mon Jan  1 10:00:05: Dispatched to <node1>;\n"
+        )
+        assert LSFScheduler().resolve_terminal("99") is None
+
+    @patch("molq.transport.subprocess.run")
+    def test_still_running_returns_none(self, mock_run):
+        mock_run.return_value = self._bhist(
+            "Job <99>, User <alice>, Command <sleep 500>\n"
+            "Mon Jan  1 10:00:05: Dispatched to <node1>;\n"
+            "Mon Jan  1 10:00:06: Starting (Pid 4242);\n"
+        )
+        assert LSFScheduler().resolve_terminal("99") is None

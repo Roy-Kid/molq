@@ -121,6 +121,7 @@ The Python API and CLI accept friendlier constructors and strings:
 |---|---|---|
 | `scheduler` | yes | `local`, `slurm`, `pbs`, or `lsf` |
 | `cluster_name` | yes | persisted record namespace |
+| `host` | no | SSH destination; omit to run on this machine |
 | `jobs_dir` | no | base directory for scripts and captured logs |
 | `scheduler_options` | no | backend command paths and extra submit flags |
 | `defaults.resources` | no | resource defaults |
@@ -164,23 +165,46 @@ Using options for the wrong scheduler raises an error.
 
 ## Remote profiles
 
-Profiles currently do not include a host or transport. This is the safest
-Python pattern for applying a profile to an SSH destination:
+Set `host` to make the profile describe a remote destination. It accepts
+anything `ssh` accepts, including a `~/.ssh/config` alias:
+
+```toml
+[profiles.gpu]
+scheduler = "slurm"
+cluster_name = "dardel"
+host = "dardel"
+
+[profiles.gpu.defaults.resources]
+cpu_count = 8
+memory = "32G"
+```
+
+Both halves of the profile then load together — destination and lifecycle:
 
 ```python
 import molq as mq
 
-cluster = mq.Cluster("dardel", "slurm", host="dardel")
-
-with mq.Submitor.from_profile(
-    "gpu",
-    target=cluster,
-) as queue:
+with mq.Submitor.from_profile("gpu") as queue:
     job = queue.submit_job(argv=["python", "train.py"])
 ```
 
-For CLI-only remote submission, use an SSH alias through `--cluster` and pass
-resource flags explicitly. See [Command line](cli.md#use-a-profile).
+Omit `host` and the profile runs on the current machine.
+
+To apply a profile's resource defaults to a destination you build yourself,
+pass an explicit target — it wins over the profile's `host`:
+
+```python
+cluster = mq.Cluster("dardel", "slurm", host="dardel-backup")
+
+with mq.Submitor.from_profile("gpu", target=cluster) as queue:
+    job = queue.submit_job(argv=["python", "train.py"])
+```
+
+The CLI picks the host up automatically:
+
+```bash
+molq submit slurm --profile gpu python train.py
+```
 
 ## Use an isolated database
 

@@ -172,13 +172,19 @@ class Cluster:
         *,
         config_path: str | Path | None = None,
     ) -> Cluster:
-        """Load destination half of a profile (scheduler, host, scheduler_options)."""
+        """Load destination half of a profile (scheduler, host, scheduler_options).
+
+        A profile carrying ``host`` builds an
+        :class:`~molq.transport.SshTransport`; without one the cluster runs on
+        the current machine.
+        """
         from molq.config import load_profile
 
         profile = load_profile(profile_name, config_path)
         return cls(
             profile.cluster_name,
             profile.scheduler,
+            host=profile.host,
             scheduler_options=profile.scheduler_options,
         )
 
