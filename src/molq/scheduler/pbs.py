@@ -2,9 +2,10 @@
 
 from __future__ import annotations
 
-import os
 from collections.abc import Sequence
 from pathlib import Path
+
+from molcfg import declare_env_var, get_env_var
 
 from molq._log import get_logger
 from molq.errors import SchedulerError
@@ -22,6 +23,13 @@ from molq.status import JobState
 from molq.transport import LocalTransport, Transport, TransportError
 
 logger = get_logger(__name__)
+
+_USER_ENV = declare_env_var(
+    "USER",
+    purpose="Whose jobs `list_queue` reports when no user is named "
+    "(PBS has no `squeue --me` equivalent)",
+    project="molq",
+).name
 
 _PBS_STATE_MAP: dict[str, JobState] = {
     "R": JobState.RUNNING,
@@ -161,10 +169,24 @@ class PBSScheduler:
         return None
 
     def list_queue(self, *, user: str | None = None) -> list[QueueEntry]:
-        target_user = user or os.environ.get("USER") or ""
-        cmd: list[str] = [self._opts.qstat_path]
-        if target_user:
-            cmd += ["-u", target_user]
+        # PBS has no ``squeue --me``, so "my jobs" needs a name and only the OS
+        # can supply one. Read through molcfg, the ecosystem's single door to
+        # the environment, so ``USER`` stays listable alongside every other
+        # variable molcrafts depends on — molq never touches os.environ itself.
+        #
+        # Its limit: this is the *local* login name. Against a remote PBS over
+        # SSH, pass ``user=`` explicitly when the cluster account differs.
+        target_user = user or get_env_var(_USER_ENV, default="") or ""
+        if not target_user:
+            # The contract is "your jobs". Bare qstat answers a different
+            # question — the whole cluster's — so with no name to filter by
+            # there is nothing honest to return.
+            logger.warning(
+                "cannot list your PBS jobs: no user given and $USER is unset; "
+                "pass user= explicitly"
+            )
+            return []
+        cmd: list[str] = [self._opts.qstat_path, "-u", target_user]
         try:
             result = self._transport.run(cmd, timeout=30)
         except TransportError as exc:

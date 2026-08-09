@@ -625,6 +625,123 @@ class TestListQueue:
         assert entries[0].name == "train_job"
 
 
+class TestListQueueResolvesTheCallingUser:
+    """``user=None`` means "my jobs" — and each backend answers it its own way.
+
+    Slurm delegates to ``squeue --me``; bare ``bjobs`` already lists only the
+    invoking user. Neither needs to know a name, so neither may read the
+    environment. PBS has no such form, so ``$USER`` is the single sanctioned
+    environment read in molq — identity, never configuration.
+    """
+
+    @patch("molq.transport.subprocess.run")
+    def test_lsf_omits_the_filter_so_bjobs_defaults_to_the_caller(self, mock_run):
+        mock_run.return_value = MagicMock(stdout="", stderr="", returncode=0)
+        LSFScheduler().list_queue()
+        argv = mock_run.call_args[0][0]
+        assert "-u" not in argv, (
+            "bare `bjobs` already lists only the invoking user's jobs; passing "
+            f"-u re-answers a question LSF answers correctly. argv={argv}"
+        )
+
+    @patch("molq.transport.subprocess.run")
+    def test_lsf_never_reads_the_environment(self, mock_run, monkeypatch):
+        monkeypatch.setenv("USER", "laptop-bob")
+        mock_run.return_value = MagicMock(stdout="", stderr="", returncode=0)
+        LSFScheduler().list_queue()
+        assert "laptop-bob" not in mock_run.call_args[0][0]
+
+    @patch("molq.transport.subprocess.run")
+    def test_lsf_still_filters_when_a_user_is_named(self, mock_run):
+        mock_run.return_value = MagicMock(stdout="", stderr="", returncode=0)
+        LSFScheduler().list_queue(user="alice")
+        argv = mock_run.call_args[0][0]
+        assert argv[argv.index("-u") + 1] == "alice"
+
+    @patch("molq.transport.subprocess.run")
+    def test_pbs_falls_back_to_user_because_qstat_has_no_me_form(
+        self, mock_run, monkeypatch
+    ):
+        monkeypatch.setenv("USER", "alice")
+        mock_run.return_value = MagicMock(stdout="", stderr="", returncode=0)
+        PBSScheduler().list_queue()
+        argv = mock_run.call_args[0][0]
+        assert argv[argv.index("-u") + 1] == "alice"
+
+    @patch("molq.transport.subprocess.run")
+    def test_pbs_prefers_an_explicit_user_over_the_environment(
+        self, mock_run, monkeypatch
+    ):
+        monkeypatch.setenv("USER", "laptop-bob")
+        mock_run.return_value = MagicMock(stdout="", stderr="", returncode=0)
+        PBSScheduler().list_queue(user="cluster-alice")
+        argv = mock_run.call_args[0][0]
+        assert argv[argv.index("-u") + 1] == "cluster-alice"
+        assert "laptop-bob" not in argv
+
+    @patch("molq.transport.subprocess.run")
+    def test_pbs_never_answers_with_the_whole_cluster(self, mock_run, monkeypatch):
+        """No name to filter by is not a licence to return everyone's jobs."""
+        monkeypatch.delenv("USER", raising=False)
+        mock_run.return_value = MagicMock(
+            stdout=(
+                "Job id            User      Queue    Jobname\n"
+                "----------------  --------- -------- ---------\n"
+                "12345.pbs01       carol     normal   other_job  1 1 8 16gb 1:00 R 0:30\n"
+            ),
+            stderr="",
+            returncode=0,
+        )
+        assert PBSScheduler().list_queue() == []
+        assert not mock_run.called, (
+            "bare qstat asks for the whole cluster — a different question "
+            "than the one list_queue() was given"
+        )
+
+
+class TestMolcfgOwnsTheEnvironment:
+    """molq never touches :data:`os.environ`; molcfg is the only door.
+
+    Reading through ``molcfg.environment`` forces a declaration, which is what
+    makes every variable the ecosystem depends on listable. A direct read is
+    invisible to any command that reports configuration — and a setting that
+    lives in one shell cannot be reported at all, so two processes launched
+    differently would silently disagree about it.
+    """
+
+    def test_src_never_reads_the_environment_directly(self):
+        import ast
+
+        src = Path(__file__).resolve().parent.parent / "src" / "molq"
+        offenders: list[str] = []
+        for path in sorted(src.rglob("*.py")):
+            tree = ast.parse(path.read_text(encoding="utf-8"))
+            for node in ast.walk(tree):
+                # os.environ[...] / os.environ.get(...) / os.getenv(...)
+                if isinstance(node, ast.Attribute) and node.attr == "environ":
+                    offenders.append(f"{path.name}:{node.lineno} touches os.environ")
+                elif (
+                    isinstance(node, ast.Call)
+                    and isinstance(node.func, ast.Attribute)
+                    and node.func.attr == "getenv"
+                ):
+                    offenders.append(f"{path.name}:{node.lineno} calls os.getenv")
+        assert offenders == [], (
+            "read through molcfg (`get_env_var`, after `declare_env_var`) so "
+            "the variable stays listable: " + "; ".join(offenders)
+        )
+
+    def test_user_is_declared_so_it_can_be_listed(self):
+        from molcfg import describe_env
+
+        import molq.scheduler.pbs  # noqa: F401  (registers the declaration)
+
+        row = next((r for r in describe_env() if r["name"] == "USER"), None)
+        assert row is not None, "molq reads $USER but never declared it"
+        assert row["project"] == "molq"
+        assert row["purpose"].strip()
+
+
 class TestGeneratedScriptQuoting:
     """Generated job scripts must survive paths with shell metacharacters."""
 

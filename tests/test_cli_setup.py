@@ -30,13 +30,14 @@ def ssh_config(tmp_path, monkeypatch):
 
 @pytest.fixture
 def profile_config(tmp_path):
-    cfg = tmp_path / "config.toml"
+    cfg = tmp_path / "config.yaml"
     cfg.write_text(
-        "[profiles.gpu]\n"
-        'scheduler = "slurm"\n'
-        'cluster_name = "dardel"\n'
-        'host = "dardel"\n'
-        'jobs_dir = "/scratch/alice/jobs"\n'
+        "profiles:\n"
+        "  gpu:\n"
+        "    scheduler: slurm\n"
+        "    cluster_name: dardel\n"
+        "    host: dardel\n"
+        "    jobs_dir: /scratch/alice/jobs\n"
     )
     return cfg
 
@@ -173,27 +174,27 @@ class TestWorkspaceCommands:
 
 class TestPluginsList:
     def test_lists_builtin_plugins(self, ssh_config, tmp_path):
-        missing = tmp_path / "nope.toml"
+        missing = tmp_path / "nope.yaml"
         result = runner.invoke(app, ["plugins", "list", "--config", str(missing)])
         assert result.exit_code == 0
         assert "nerve" in result.output
 
     def test_notes_daemon_default_when_no_plugin_table(self, ssh_config, tmp_path):
-        missing = tmp_path / "nope.toml"
+        missing = tmp_path / "nope.yaml"
         result = runner.invoke(app, ["plugins", "list", "--config", str(missing)])
         assert result.exit_code == 0
         assert "default" in result.output
 
     def test_disabled_plugin_shows_as_disabled(self, ssh_config, tmp_path):
-        cfg = tmp_path / "config.toml"
-        cfg.write_text("[plugins.nerve]\nenabled = false\n")
+        cfg = tmp_path / "config.yaml"
+        cfg.write_text("plugins:\n  nerve:\n    enabled: false\n")
         result = runner.invoke(app, ["plugins", "list", "--config", str(cfg)])
         assert result.exit_code == 0
         assert "disabled" in result.output
 
     def test_enabled_plugin_shows_as_enabled(self, ssh_config, tmp_path):
-        cfg = tmp_path / "config.toml"
-        cfg.write_text("[plugins.nerve]\nenabled = true\n")
+        cfg = tmp_path / "config.yaml"
+        cfg.write_text("plugins:\n  nerve:\n    enabled: true\n")
         result = runner.invoke(app, ["plugins", "list", "--config", str(cfg)])
         assert result.exit_code == 0
         assert "enabled" in result.output
@@ -201,7 +202,7 @@ class TestPluginsList:
     def test_reports_when_no_plugins_available(self, ssh_config, tmp_path):
         with patch("molq.plugin.available_plugins", return_value={}):
             result = runner.invoke(
-                app, ["plugins", "list", "--config", str(tmp_path / "none.toml")]
+                app, ["plugins", "list", "--config", str(tmp_path / "none.yaml")]
             )
         assert result.exit_code == 0
         assert "No plugins discovered" in result.output
@@ -234,9 +235,9 @@ class TestProfileDestinations:
     def test_local_profile_is_labelled_local(self, tmp_path):
         from molq.cli.setup import _profile_destinations
 
-        cfg = tmp_path / "config.toml"
+        cfg = tmp_path / "config.yaml"
         cfg.write_text(
-            '[profiles.laptop]\nscheduler = "local"\ncluster_name = "laptop"\n'
+            "profiles:\n  laptop:\n    scheduler: local\n    cluster_name: laptop\n"
         )
         rows = _profile_destinations(str(cfg))
         assert rows[0]["target"] == "(local)"
@@ -268,9 +269,9 @@ class TestClustersShowErrors:
 
 class TestWorkspaceSyncWithProfile:
     def test_profile_drives_the_destination(self, ssh_config, tmp_path):
-        cfg = tmp_path / "config.toml"
+        cfg = tmp_path / "config.yaml"
         cfg.write_text(
-            '[profiles.local]\nscheduler = "local"\ncluster_name = "laptop"\n'
+            "profiles:\n  local:\n    scheduler: local\n    cluster_name: laptop\n"
         )
         source = tmp_path / "src"
         source.mkdir()

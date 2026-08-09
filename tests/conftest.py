@@ -108,10 +108,9 @@ def mock_job_environment(tmp_path, monkeypatch):
     # Save current directory
     original_cwd = os.getcwd()
 
-    # Set up environment variables
+    # HOME is redirected because config discovery resolves against it.
+    # No MOLQ_* switches: nothing in molq reads the environment for config.
     monkeypatch.setenv("HOME", str(home_dir))
-    monkeypatch.setenv("MOLQ_WORKDIR", str(workdir))
-    monkeypatch.setenv("MOLQ_LOGDIR", str(logdir))
 
     # Change to work directory
     os.chdir(workdir)

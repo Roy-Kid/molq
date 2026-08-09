@@ -14,8 +14,8 @@ from rich.console import Console
 _H_SCHEDULER = "Scheduler backend: local | slurm | pbs | lsf"
 _H_JOB_ID = "Molq job ID (UUID)"
 _H_CLUSTER = "Cluster namespace (default: profile cluster_name or cli_<scheduler>)"
-_H_PROFILE = "Named profile from config.toml"
-_H_CONFIG = "Path to config.toml (default via molcfg / ~/.molcrafts/molq/…)"
+_H_PROFILE = "Named profile from config.yaml"
+_H_CONFIG = "Path to config.yaml (default via molcfg / ~/.molcrafts/molq/…)"
 _H_ALL_TERMINAL = "Include finished jobs (succeeded / failed / cancelled / …)"
 
 _APP_HELP = """\
