@@ -99,10 +99,14 @@ class TestPluginManager:
 
 class TestConfigPlugins:
     def test_parse_plugins_section(self, tmp_path: Path):
-        p = tmp_path / "config.toml"
+        p = tmp_path / "config.yaml"
         p.write_text(
-            "[plugins.nerve]\nenabled = true\nexpand_threshold = 4\n"
-            "[plugins.other]\nenabled = false\n"
+            "plugins:\n"
+            "  nerve:\n"
+            "    enabled: true\n"
+            "    expand_threshold: 4\n"
+            "  other:\n"
+            "    enabled: false\n"
         )
         cfg = load_config(p)
         assert cfg.plugins["nerve"]["expand_threshold"] == 4
@@ -112,7 +116,7 @@ class TestConfigPlugins:
         assert enabled_plugin_names({}, default_official=["nerve"]) == ["nerve"]
 
     def test_empty_config_plugins_default(self, tmp_path: Path):
-        p = tmp_path / "config.toml"
+        p = tmp_path / "config.yaml"
         p.write_text("")
         cfg = load_config(p)
         assert cfg == MolqConfig(profiles={}, plugins={})

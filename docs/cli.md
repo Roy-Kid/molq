@@ -192,16 +192,17 @@ See [Remote files](remote-files.md) for the corresponding Python API.
 ```bash
 molq submit slurm \
   --profile gpu \
-  --config ./config.toml \
+  --config ./config.yaml \
   python train.py
 ```
 
 Profiles provide scheduler options, defaults, retry, retention, and job
-directory settings. Top-level plugin tables apply to CLI sessions separately.
+directory settings. The top-level `plugins` mapping applies to CLI sessions
+separately.
 The default config file is:
 
 ```text
-~/.molcrafts/molq/config/config.toml
+~/.molcrafts/molq/config/config.yaml
 ```
 
 Profiles currently do not encode SSH transport settings. For remote CLI
@@ -213,7 +214,7 @@ cluster = mq.Cluster("dardel", "slurm", host="dardel")
 queue = mq.Submitor.from_profile("gpu", target=cluster)
 ```
 
-See [Configuration](configuration.md) for the complete TOML shape and
+See [Configuration](configuration.md) for the complete config shape and
 precedence rules.
 
 ## List plugins

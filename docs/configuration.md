@@ -9,7 +9,7 @@ molq uses the MolCrafts configuration root:
 
 | File | Default path |
 |---|---|
-| Profiles | `~/.molcrafts/molq/config/config.toml` |
+| Profiles | `~/.molcrafts/molq/config/config.yaml` |
 | Job database | `~/.molcrafts/molq/config/jobs.db` |
 
 Set `MOLCRAFTS_HOME` to relocate both:
@@ -28,10 +28,11 @@ The project path is then derived below that root. CLI commands accept
 
 ## Minimal profile
 
-```toml
-[profiles.gpu]
-scheduler = "slurm"
-cluster_name = "dardel"
+```yaml
+profiles:
+  gpu:
+    scheduler: slurm
+    cluster_name: dardel
 ```
 
 Load it in Python:
@@ -51,59 +52,59 @@ molq submit slurm --profile gpu python train.py
 
 ## Full profile
 
-```toml
-[profiles.gpu]
-scheduler = "slurm"
-cluster_name = "dardel"
-jobs_dir = "/scratch/alice/.molq/jobs"
+```yaml
+profiles:
+  gpu:
+    scheduler: slurm
+    cluster_name: dardel
+    jobs_dir: /scratch/alice/.molq/jobs
 
-[profiles.gpu.scheduler_options]
-sbatch_path = "sbatch"
-squeue_path = "squeue"
-scancel_path = "scancel"
-sacct_path = "sacct"
-extra_sbatch_flags = ["--clusters=gpu"]
+    scheduler_options:
+      sbatch_path: sbatch
+      squeue_path: squeue
+      scancel_path: scancel
+      sacct_path: sacct
+      extra_sbatch_flags: ["--clusters=gpu"]
 
-[profiles.gpu.defaults.resources]
-cpu_count = 8
-memory = "34359738368"
-gpu_count = 1
-time_limit = 14400
+    defaults:
+      resources:
+        cpu_count: 8
+        memory: "34359738368"
+        gpu_count: 1
+        time_limit: 14400
+      scheduling:
+        partition: gpu
+        account: project123
+        qos: normal
+      execution:
+        cwd: /scratch/alice/project
+        job_name: molq-job
 
-[profiles.gpu.defaults.scheduling]
-partition = "gpu"
-account = "project123"
-qos = "normal"
+    retry:
+      max_attempts: 3
+      retry_on_states: [failed, timed_out]
+      retry_on_exit_codes: [1, 137]
+      backoff:
+        mode: exponential
+        initial_seconds: 10
+        maximum_seconds: 120
+        factor: 2
 
-[profiles.gpu.defaults.execution]
-cwd = "/scratch/alice/project"
-job_name = "molq-job"
+    retention:
+      keep_job_dirs_for_days: 14
+      keep_terminal_records_for_days: 90
+      keep_failed_job_dirs: true
 
-[profiles.gpu.retry]
-max_attempts = 3
-retry_on_states = ["failed", "timed_out"]
-retry_on_exit_codes = [1, 137]
-
-[profiles.gpu.retry.backoff]
-mode = "exponential"
-initial_seconds = 10
-maximum_seconds = 120
-factor = 2
-
-[profiles.gpu.retention]
-keep_job_dirs_for_days = 14
-keep_terminal_records_for_days = 90
-keep_failed_job_dirs = true
-
-[plugins.nerve]
-enabled = true
-expand_threshold = 8
-debounce_seconds = 0.3
-ingest_url = "http://127.0.0.1:17890"
-show_members = "attention"
+plugins:
+  nerve:
+    enabled: true
+    expand_threshold: 8
+    debounce_seconds: 0.3
+    ingest_url: "http://127.0.0.1:17890"
+    show_members: attention
 ```
 
-### Units in TOML
+### Units in the config file
 
 Profile values use the serialized storage representation:
 
@@ -130,7 +131,7 @@ The Python API and CLI accept friendlier constructors and strings:
 | `retry` | no | default retry policy |
 | `retention` | no | artifact and terminal-record retention |
 
-Plugin tables are top-level rather than nested below a profile. They apply to
+The `plugins` mapping is top-level rather than nested below a profile. They apply to
 CLI sessions opened from the same config file. `molq daemon` defaults to the
 official Nerve plugin only when no plugin table exists; see
 [Plugins and Nerve](plugins.md).
@@ -168,15 +169,16 @@ Using options for the wrong scheduler raises an error.
 Set `host` to make the profile describe a remote destination. It accepts
 anything `ssh` accepts, including a `~/.ssh/config` alias:
 
-```toml
-[profiles.gpu]
-scheduler = "slurm"
-cluster_name = "dardel"
-host = "dardel"
-
-[profiles.gpu.defaults.resources]
-cpu_count = 8
-memory = "32G"
+```yaml
+profiles:
+  gpu:
+    scheduler: slurm
+    cluster_name: dardel
+    host: dardel
+    defaults:
+      resources:
+        cpu_count: 8
+        memory: "32G"
 ```
 
 Both halves of the profile then load together — destination and lifecycle:

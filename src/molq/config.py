@@ -7,7 +7,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
-from molcfg import ConfigLoader, OneOf, TomlFileSource
+from molcfg import ConfigLoader, OneOf, YamlFileSource
 from molcfg import ValidationError as CfgValidationError
 from molcfg import validate as cfg_validate
 
@@ -66,7 +66,7 @@ class _ProfileSchema:
 
 
 def default_config_path() -> Path:
-    """Return the canonical molq config.toml path, bootstrapping the dir.
+    """Return the canonical molq config.yaml path, bootstrapping the dir.
 
     Delegates to :func:`molcfg.paths.project_config_dir` so the dir is
     created idempotently on first call and ``MOLCRAFTS_HOME`` is
@@ -74,15 +74,34 @@ def default_config_path() -> Path:
     """
     from molcfg.paths import project_config_dir
 
-    return project_config_dir("molq") / "config.toml"
+    return project_config_dir("molq") / "config.yaml"
+
+
+def _reject_superseded_toml(config_path: Path) -> None:
+    """Fail loudly when only the retired ``config.toml`` is present.
+
+    molq reads YAML. A leftover TOML file would otherwise be skipped in
+    silence and molq would start with no profiles at all — every cluster
+    the user configured simply gone, with no error to explain it.
+    """
+    legacy = config_path.with_suffix(".toml")
+    if not legacy.exists():
+        return
+    raise ConfigError(
+        f"{legacy} is a TOML config; molq reads YAML. "
+        f"Rewrite it as {config_path.name} — the keys are unchanged, only "
+        f"the syntax differs.",
+        path=str(legacy),
+    )
 
 
 def load_config(path: str | Path | None = None) -> MolqConfig:
     config_path = Path(path).expanduser() if path is not None else default_config_path()
     if not config_path.exists():
+        _reject_superseded_toml(config_path)
         return MolqConfig(profiles={}, plugins={})
 
-    cfg = ConfigLoader([TomlFileSource(config_path)]).load()
+    cfg = ConfigLoader([YamlFileSource(config_path)]).load()
     raw_profiles = cfg.get("profiles")
     profiles: dict[str, MolqProfile] = {}
     if raw_profiles:

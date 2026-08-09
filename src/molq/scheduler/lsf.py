@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import os
 import re
 from collections.abc import Sequence
 from pathlib import Path
@@ -186,15 +185,17 @@ class LSFScheduler:
         return None
 
     def list_queue(self, *, user: str | None = None) -> list[QueueEntry]:
-        target_user = user or os.environ.get("USER") or ""
         cmd: list[str] = [
             self._opts.bjobs_path,
             "-noheader",
             "-o",
             "jobid stat job_name user queue submit_time start_time",
         ]
-        if target_user:
-            cmd += ["-u", target_user]
+        # Bare `bjobs` already lists only the invoking user's jobs, resolved
+        # wherever the transport runs it. Naming a user from this process
+        # would answer that question on the wrong machine.
+        if user is not None:
+            cmd += ["-u", user]
         try:
             result = self._transport.run(cmd, timeout=30)
         except TransportError as exc:

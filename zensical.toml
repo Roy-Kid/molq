@@ -32,7 +32,6 @@ nav = [
       { "Job types" = "reference/types.md" },
       { "Supporting APIs" = "reference/utilities.md" },
     ] },
-    { "Release notes" = "release-notes.md" },
   ] },
 ]
 

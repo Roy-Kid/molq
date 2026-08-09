@@ -47,23 +47,25 @@ block job submission.
 
 Put plugin settings at the top level of the molq config file:
 
-```toml
-[plugins.nerve]
-enabled = true
-expand_threshold = 8
-debounce_seconds = 0.3
-ingest_url = "http://127.0.0.1:17890"
-show_members = "attention"
+```yaml
+plugins:
+  nerve:
+    enabled: true
+    expand_threshold: 8
+    debounce_seconds: 0.3
+    ingest_url: "http://127.0.0.1:17890"
+    show_members: attention
 ```
 
 `show_members` accepts `never`, `attention`, or `all`.
 
-Explicit `[plugins]` entries control which plugins the CLI loads. Set
-`enabled = false` to disable one:
+Explicit `plugins` entries control which plugins the CLI loads. Set
+`enabled: false` to disable one:
 
-```toml
-[plugins.nerve]
-enabled = false
+```yaml
+plugins:
+  nerve:
+    enabled: false
 ```
 
 ## Nerve integration
