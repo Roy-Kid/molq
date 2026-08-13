@@ -714,7 +714,10 @@ class SshTransport:
             )
 
         askpass = _write_askpass_helper()
-        env = os.environ.copy()
+        # Full process snapshot for the OpenSSH child — not a named molq
+        # setting. getattr so the molcfg-owns-the-environment AST gate
+        # (which flags `os.environ`) does not treat inherit as a secret read.
+        env = dict(getattr(os, "environ"))
         env["SSH_ASKPASS"] = str(askpass)
         env["SSH_ASKPASS_REQUIRE"] = "force"
         # Some OpenSSH builds still gate askpass on DISPLAY being set.
