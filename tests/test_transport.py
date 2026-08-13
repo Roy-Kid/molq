@@ -272,10 +272,131 @@ def test_local_download_is_symmetric_with_upload(tmp_path: Path) -> None:
 def test_ssh_argv_basic() -> None:
     t = SshTransport(options=SshTransportOptions(host="me@host"))
     argv = t._ssh_argv()
-    # Always non-interactive
+    # Default: non-interactive so background ops never block on OTP
     assert "BatchMode=yes" in argv
     # Host is the last entry (so subsequent items become the remote command)
     assert argv[-1] == "me@host"
+
+
+def test_ssh_argv_batch_mode_false_for_interactive_login() -> None:
+    t = SshTransport(options=SshTransportOptions(host="Arrhenius"))
+    argv = t._ssh_argv(batch_mode=False)
+    assert "BatchMode=no" in argv
+    assert "BatchMode=yes" not in argv
+    assert argv[-1] == "Arrhenius"
+
+
+def test_is_master_alive_false_when_control_master_disabled() -> None:
+    t = SshTransport(options=SshTransportOptions(host="h", control_master=False))
+    assert t.is_master_alive() is False
+
+
+def test_is_master_alive_checks_ssh_O(monkeypatch: pytest.MonkeyPatch) -> None:
+    captured: dict = {}
+
+    def fake_run(argv, **kwargs):
+        captured["argv"] = argv
+
+        class P:
+            returncode = 0
+            stdout = "Master running"
+            stderr = ""
+
+        return P()
+
+    monkeypatch.setattr("molq.transport.subprocess.run", fake_run)
+    t = SshTransport(options=SshTransportOptions(host="Arrhenius", control_master=True))
+    assert t.is_master_alive() is True
+    assert "-O" in captured["argv"]
+    assert "check" in captured["argv"]
+    assert captured["argv"][-1] == "Arrhenius"
+
+
+def test_login_skips_when_master_alive(monkeypatch: pytest.MonkeyPatch) -> None:
+    t = SshTransport(options=SshTransportOptions(host="h"))
+    monkeypatch.setattr(SshTransport, "is_master_alive", lambda self: True)
+    calls: list = []
+
+    def boom(*a, **k):
+        calls.append(1)
+        raise AssertionError("should not spawn ssh when master is alive")
+
+    monkeypatch.setattr("molq.transport.subprocess.run", boom)
+    t.login()  # no-op
+    assert calls == []
+
+
+def test_login_requires_tty(monkeypatch: pytest.MonkeyPatch) -> None:
+    t = SshTransport(options=SshTransportOptions(host="h"))
+    monkeypatch.setattr(SshTransport, "is_master_alive", lambda self: False)
+    monkeypatch.setattr("molq.transport.sys.stdin.isatty", lambda: False)
+    monkeypatch.setattr("molq.transport.sys.stdout.isatty", lambda: False)
+    from molq.transport import TransportError
+
+    with pytest.raises(TransportError, match="verification code|TTY|interactive"):
+        t.login()
+
+
+def test_auth_failure_hint_appended_on_permission_denied(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    def fake_run(argv, **kwargs):
+        class P:
+            returncode = 255
+            stdout = ""
+            stderr = "Permission denied (publickey,keyboard-interactive)."
+
+        return P()
+
+    monkeypatch.setattr("molq.transport.subprocess.run", fake_run)
+    t = SshTransport(options=SshTransportOptions(host="Arrhenius"))
+    result = t._shell("true")
+    assert result.returncode == 255
+    assert "molexp connect" in result.stderr or "ssh Arrhenius" in result.stderr
+
+
+def test_login_with_code_uses_askpass(
+    monkeypatch: pytest.MonkeyPatch, tmp_path
+) -> None:
+    t = SshTransport(options=SshTransportOptions(host="Arrhenius"))
+    monkeypatch.setattr(SshTransport, "is_master_alive", lambda self: False)
+    captured: dict = {}
+
+    def fake_run(argv, **kwargs):
+        captured["argv"] = list(argv)
+        # Copy: login_with_code clears MOLEXP_SSH_SECRET in finally.
+        captured["env"] = dict(kwargs.get("env") or {})
+        captured["stdin"] = kwargs.get("stdin")
+
+        class P:
+            returncode = 0
+            stdout = ""
+            stderr = ""
+
+        return P()
+
+    monkeypatch.setattr("molq.transport.subprocess.run", fake_run)
+    # Pretend master becomes alive after login so _finish_login doesn't warn loudly.
+    calls = {"n": 0}
+
+    def alive_after(self):
+        calls["n"] += 1
+        return calls["n"] > 1  # False once in login_with_code guard, True in _finish
+
+    monkeypatch.setattr(SshTransport, "is_master_alive", alive_after)
+    t.login_with_code("123456")
+    assert "BatchMode=no" in captured["argv"]
+    assert captured["env"].get("SSH_ASKPASS_REQUIRE") == "force"
+    assert captured["env"].get("MOLEXP_SSH_SECRET") == "123456"
+    assert captured["stdin"] is not None  # DEVNULL
+
+
+def test_login_with_code_rejects_empty() -> None:
+    from molq.transport import TransportError
+
+    t = SshTransport(options=SshTransportOptions(host="h"))
+    with pytest.raises(TransportError, match="empty"):
+        t.login_with_code("   ")
 
 
 def test_ssh_argv_includes_port_and_identity() -> None:

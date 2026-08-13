@@ -19,10 +19,13 @@ methods should be added as concrete schedulers need them, not speculatively.
 from __future__ import annotations
 
 import base64
+import contextlib
 import os
 import shlex
 import shutil
+import stat
 import subprocess
+import sys
 import tempfile
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass, field
@@ -382,6 +385,55 @@ def _host_configures_control_path(host: str, ssh_bin: str = "ssh") -> bool:
     return False
 
 
+def _auth_failure_hint(stderr: str, host: str) -> str | None:
+    """Return a user-facing hint when *stderr* looks like SSH auth failure."""
+    text = (stderr or "").lower()
+    needles = (
+        "permission denied",
+        "authentication failed",
+        "too many authentication",
+        "no more authentication methods",
+        "connection closed by",
+        "kex_exchange_identification",
+        "not allowed at this time",
+        "cannot authenticate",
+    )
+    if not any(n in text for n in needles):
+        return None
+    return (
+        f"SSH to {host!r} needs an interactive login (verification code / 2FA). "
+        f"From a terminal run:  ssh {host}   or   molexp connect -ws {host}:/path  "
+        f"— or enter the code in the molexp web UI connect dialog. "
+        f"ControlMaster reuses the session afterward."
+    )
+
+
+def _write_askpass_helper() -> Path:
+    """Create a short-lived executable that prints ``$MOLEXP_SSH_SECRET``.
+
+    OpenSSH invokes ``SSH_ASKPASS`` with the prompt as argv[1] when no TTY
+    is available (and ``SSH_ASKPASS_REQUIRE=force``).  The secret is never
+    written into the script itself — only read from the environment at
+    askpass time, then discarded with the parent process env.
+    """
+    fd, name = tempfile.mkstemp(prefix="molexp-askpass-", suffix=".sh")
+    path = Path(name)
+    try:
+        os.close(fd)
+        path.write_text(
+            "#!/bin/sh\n"
+            "# molexp ephemeral SSH_ASKPASS helper — do not reuse\n"
+            'printf %s "${MOLEXP_SSH_SECRET-}"\n',
+            encoding="utf-8",
+        )
+        path.chmod(stat.S_IRWXU)  # 0o700
+    except Exception:
+        with contextlib.suppress(OSError):
+            path.unlink(missing_ok=True)
+        raise
+    return path
+
+
 def _ssh_control_path() -> str | None:
     """Return a ControlPath template, or ``None`` if one can't be provided.
 
@@ -413,9 +465,16 @@ class SshTransport:
 
     Builds standard ``ssh`` and ``rsync`` argv from
     :class:`~molq.options.SshTransportOptions` and shells out via
-    :mod:`subprocess`.  ``BatchMode=yes`` is forced so molq never blocks on a
-    password prompt — authentication must succeed via key, agent, or
-    GSSAPI/Kerberos.
+    :mod:`subprocess`.  Routine ops force ``BatchMode=yes`` so a background
+    job never blocks on a password / OTP prompt — authentication must
+    already succeed via key, agent, GSSAPI/Kerberos, **or a live ControlMaster
+    multiplex socket**.
+
+    HPC sites that require a one-time verification code (keyboard-interactive
+    2FA / TOTP) cannot authenticate under BatchMode.  Call :meth:`login`
+    once from a TTY (or run interactive ``ssh <host>`` with the same
+    ``ControlPath``) to open the master; subsequent BatchMode calls ride
+    that socket for the duration of ``ControlPersist``.
 
     Shell-level operations (``cat``, ``test``, ``mkdir``, ``chmod``) are used
     for small file operations to avoid spawning ``rsync`` round-trips for
@@ -491,11 +550,19 @@ class SshTransport:
             f"ControlPersist={self.options.control_persist}",
         ]
 
-    def _ssh_argv(self) -> list[str]:
+    def _ssh_argv(self, *, batch_mode: bool = True) -> list[str]:
+        """Build the OpenSSH client argv for this transport.
+
+        Args:
+            batch_mode: When True (default), force ``BatchMode=yes`` so ops
+                never block on password/OTP prompts.  When False, allow
+                keyboard-interactive / password so :meth:`login` can collect
+                a verification code on a TTY.
+        """
         argv: list[str] = [
             self._ssh_bin,
             "-o",
-            "BatchMode=yes",
+            "BatchMode=yes" if batch_mode else "BatchMode=no",
             "-o",
             "StrictHostKeyChecking=accept-new",
             "-o",
@@ -535,6 +602,173 @@ class SshTransport:
         parts += list(self.options.ssh_opts)
         return " ".join(shlex.quote(p) for p in parts)
 
+    def is_master_alive(self) -> bool:
+        """True when an OpenSSH ControlMaster for this host is accepting clients.
+
+        Uses ``ssh -O check``.  When multiplexing is disabled, always returns
+        False (there is no reusable master).
+        """
+        if not self.options.control_master:
+            return False
+        argv: list[str] = [self._ssh_bin]
+        argv += self._mux_opts()
+        if self.options.port is not None:
+            argv += ["-p", str(self.options.port)]
+        if self.options.identity_file:
+            argv += ["-i", self.options.identity_file]
+        argv += list(self.options.ssh_opts)
+        argv += ["-O", "check", self.options.host]
+        try:
+            proc = subprocess.run(
+                argv,
+                capture_output=True,
+                text=True,
+                check=False,
+                timeout=max(5, self.options.connect_timeout),
+            )
+        except (OSError, subprocess.SubprocessError):
+            return False
+        return proc.returncode == 0
+
+    def login(self, *, force: bool = False, timeout: float | None = None) -> None:
+        """Interactively authenticate and open a ControlMaster multiplex socket.
+
+        For hosts that demand a one-time verification code (keyboard-interactive
+        2FA / TOTP), this is the TTY path: runs ``ssh`` with ``BatchMode=no``
+        on the caller's terminal so the user can type the code.  The master
+        stays alive for ``ControlPersist``; subsequent BatchMode ops attach
+        without re-prompting.
+
+        When no TTY is available (server / agent), use
+        :meth:`login_with_code` instead and supply the code from a UI form.
+
+        No-op when a master is already alive and *force* is False.
+        """
+        if not force and self.is_master_alive():
+            logger.debug(f"ssh master already alive for {self.options.host}")
+            return
+
+        if not self.options.control_master:
+            raise TransportError(
+                f"cannot login with control_master=False for {self.options.host!r}; "
+                "enable multiplexing so the interactive session can be reused"
+            )
+
+        if not sys.stdin.isatty() or not sys.stdout.isatty():
+            raise TransportError(
+                f"SSH host {self.options.host!r} needs an interactive login "
+                f"(verification code / 2FA) but no TTY is available. "
+                f"Use login_with_code(code=…) from the web UI, or run from a "
+                f"terminal:  ssh {self.options.host}   "
+                f"or  molexp connect -ws {self.options.host}:/path"
+            )
+
+        argv = self._ssh_argv(batch_mode=False) + ["--", "true"]
+        logger.info(
+            f"interactive ssh login to {self.options.host} "
+            f"(enter verification code if prompted)"
+        )
+        try:
+            proc = subprocess.run(argv, check=False, timeout=timeout)
+        except subprocess.TimeoutExpired as exc:
+            raise TransportError(
+                f"ssh login timed out on {self.options.host}",
+                timeout=timeout,
+            ) from exc
+        except FileNotFoundError as exc:
+            raise TransportError(
+                "ssh binary not found — install OpenSSH client",
+                ssh_bin=self._ssh_bin,
+            ) from exc
+        self._finish_login(proc.returncode, stderr="")
+
+    def login_with_code(
+        self,
+        code: str,
+        *,
+        force: bool = False,
+        timeout: float | None = 90.0,
+    ) -> None:
+        """Non-TTY login: feed *code* to OpenSSH via ``SSH_ASKPASS``.
+
+        Used by the molexp web UI (and any headless caller) when the host
+        requires a keyboard-interactive verification code.  Opens a
+        ControlMaster the same way :meth:`login` does, without inheriting a
+        terminal.
+
+        *code* is passed only through a short-lived env var read by a private
+        askpass helper; it is never written to disk or argv.
+        """
+        secret = (code or "").strip()
+        if not secret:
+            raise TransportError("verification code is empty")
+
+        if not force and self.is_master_alive():
+            logger.debug(f"ssh master already alive for {self.options.host}")
+            return
+
+        if not self.options.control_master:
+            raise TransportError(
+                f"cannot login with control_master=False for {self.options.host!r}; "
+                "enable multiplexing so the interactive session can be reused"
+            )
+
+        askpass = _write_askpass_helper()
+        env = os.environ.copy()
+        env["SSH_ASKPASS"] = str(askpass)
+        env["SSH_ASKPASS_REQUIRE"] = "force"
+        # Some OpenSSH builds still gate askpass on DISPLAY being set.
+        env.setdefault("DISPLAY", env.get("DISPLAY") or ":0")
+        env["MOLEXP_SSH_SECRET"] = secret
+
+        argv = self._ssh_argv(batch_mode=False) + ["--", "true"]
+        logger.info(f"ssh login_with_code to {self.options.host} via SSH_ASKPASS")
+        try:
+            proc = subprocess.run(
+                argv,
+                check=False,
+                timeout=timeout,
+                # Force askpass: do not attach a controlling terminal.
+                stdin=subprocess.DEVNULL,
+                capture_output=True,
+                text=True,
+                env=env,
+                start_new_session=True,
+            )
+        except subprocess.TimeoutExpired as exc:
+            raise TransportError(
+                f"ssh login timed out on {self.options.host}",
+                timeout=timeout,
+            ) from exc
+        except FileNotFoundError as exc:
+            raise TransportError(
+                "ssh binary not found — install OpenSSH client",
+                ssh_bin=self._ssh_bin,
+            ) from exc
+        finally:
+            env.pop("MOLEXP_SSH_SECRET", None)
+            with contextlib.suppress(OSError):
+                askpass.unlink(missing_ok=True)
+
+        self._finish_login(proc.returncode, stderr=proc.stderr or "")
+
+    def _finish_login(self, returncode: int, *, stderr: str) -> None:
+        if returncode != 0:
+            hint = _auth_failure_hint(stderr, self.options.host) or ""
+            detail = (stderr.strip() or f"exit {returncode}") + (
+                f"\n{hint}" if hint else ""
+            )
+            raise TransportError(
+                f"ssh login to {self.options.host!r} failed: {detail}",
+                returncode=returncode,
+                host=self.options.host,
+            )
+        if not self.is_master_alive():
+            logger.warning(
+                f"ssh login to {self.options.host} succeeded but no ControlMaster "
+                f"socket is live; subsequent BatchMode ops may re-prompt or fail"
+            )
+
     def _remote_target(self, path: str) -> str:
         return f"{self.options.host}:{path}"
 
@@ -563,11 +797,19 @@ class SshTransport:
                 "ssh binary not found — install OpenSSH client",
                 ssh_bin=self._ssh_bin,
             ) from exc
+        stderr = proc.stderr or ""
+        if proc.returncode != 0:
+            hint = _auth_failure_hint(stderr, self.options.host)
+            if hint:
+                # Surface the remediation on the result so callers that log
+                # stderr (and our own raise paths) can show it.
+                stderr = (stderr.rstrip() + "\n" + hint).lstrip("\n")
+                logger.warning(hint)
         return CommandResult(
             argv=tuple(argv),
             returncode=proc.returncode,
             stdout=proc.stdout or "",
-            stderr=proc.stderr or "",
+            stderr=stderr,
         )
 
     # ── Transport surface ───────────────────────────────────────────────────

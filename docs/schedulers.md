@@ -112,6 +112,30 @@ Check what a host resolves to with:
 ssh -G dardel | grep -i control
 ```
 
+#### Verification codes (2FA / keyboard-interactive OTP)
+
+Routine molq ops force `BatchMode=yes` so a background job never blocks
+waiting for a password.  HPC frontends that demand a one-time verification
+code cannot authenticate that way.  The supported flow:
+
+1. Open a master interactively once (TTY required):
+
+   ```bash
+   # either
+   ssh Arrhenius
+   # or (molexp)
+   molexp connect -ws Arrhenius:/home/you/work/ws
+   ```
+
+2. Type the verification code when prompted.  OpenSSH keeps a ControlMaster
+   socket for `ControlPersist` (raise it to `8h` if you serve the UI all day).
+
+3. All subsequent BatchMode ops (molexp serve, validate, molq submit) attach
+   to that socket and never re-prompt.
+
+`SshTransport.login()` / `is_master_alive()` are the programmatic API for the
+same flow.
+
 #### Options
 
 Turn multiplexing off for hosts that refuse it:
