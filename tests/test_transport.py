@@ -399,6 +399,157 @@ def test_login_with_code_rejects_empty() -> None:
         t.login_with_code("   ")
 
 
+def test_login_with_code_skips_when_master_alive(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    t = SshTransport(options=SshTransportOptions(host="h"))
+    monkeypatch.setattr(SshTransport, "is_master_alive", lambda self: True)
+
+    def boom(*a, **k):
+        raise AssertionError("should not spawn ssh")
+
+    monkeypatch.setattr("molq.transport.subprocess.run", boom)
+    t.login_with_code("999999")
+
+
+def test_login_with_code_requires_control_master() -> None:
+    from molq.transport import TransportError
+
+    t = SshTransport(options=SshTransportOptions(host="h", control_master=False))
+    with pytest.raises(TransportError, match="control_master"):
+        t.login_with_code("123")
+
+
+def test_login_requires_control_master() -> None:
+    from molq.transport import TransportError
+
+    t = SshTransport(options=SshTransportOptions(host="h", control_master=False))
+    with pytest.raises(TransportError, match="control_master"):
+        t.login()
+
+
+def test_login_tty_success(monkeypatch: pytest.MonkeyPatch) -> None:
+    t = SshTransport(options=SshTransportOptions(host="Arrhenius"))
+    monkeypatch.setattr("molq.transport.sys.stdin.isatty", lambda: True)
+    monkeypatch.setattr("molq.transport.sys.stdout.isatty", lambda: True)
+    captured: dict = {}
+
+    def fake_run(argv, **kwargs):
+        captured["argv"] = list(argv)
+
+        class P:
+            returncode = 0
+
+        return P()
+
+    monkeypatch.setattr("molq.transport.subprocess.run", fake_run)
+    n = {"i": 0}
+
+    def alive(self):
+        n["i"] += 1
+        return n["i"] > 1
+
+    monkeypatch.setattr(SshTransport, "is_master_alive", alive)
+    t.login()
+    assert "BatchMode=no" in captured["argv"]
+    assert captured["argv"][-1] == "true"
+
+
+def test_login_file_not_found(monkeypatch: pytest.MonkeyPatch) -> None:
+    from molq.transport import TransportError
+
+    t = SshTransport(options=SshTransportOptions(host="h"))
+    monkeypatch.setattr("molq.transport.sys.stdin.isatty", lambda: True)
+    monkeypatch.setattr("molq.transport.sys.stdout.isatty", lambda: True)
+    monkeypatch.setattr(SshTransport, "is_master_alive", lambda self: False)
+
+    def boom(*a, **k):
+        raise FileNotFoundError("ssh")
+
+    monkeypatch.setattr("molq.transport.subprocess.run", boom)
+    with pytest.raises(TransportError, match="ssh binary"):
+        t.login()
+
+
+def test_login_timeout(monkeypatch: pytest.MonkeyPatch) -> None:
+    import subprocess
+
+    from molq.transport import TransportError
+
+    t = SshTransport(options=SshTransportOptions(host="h"))
+    monkeypatch.setattr("molq.transport.sys.stdin.isatty", lambda: True)
+    monkeypatch.setattr("molq.transport.sys.stdout.isatty", lambda: True)
+    monkeypatch.setattr(SshTransport, "is_master_alive", lambda self: False)
+
+    def boom(*a, **k):
+        raise subprocess.TimeoutExpired(cmd="ssh", timeout=1)
+
+    monkeypatch.setattr("molq.transport.subprocess.run", boom)
+    with pytest.raises(TransportError, match="timed out"):
+        t.login()
+
+
+def test_write_askpass_helper_prints_secret(
+    monkeypatch: pytest.MonkeyPatch, tmp_path
+) -> None:
+    import os
+    import stat
+
+    from molq.transport import _write_askpass_helper
+
+    monkeypatch.setattr(
+        "molq.transport.tempfile.mkstemp",
+        lambda **k: (
+            os.open(tmp_path / "ask.sh", os.O_CREAT | os.O_RDWR),
+            str(tmp_path / "ask.sh"),
+        ),
+    )
+    path = _write_askpass_helper()
+    text = path.read_text(encoding="utf-8")
+    assert "MOLEXP_SSH_SECRET" in text
+    assert path.stat().st_mode & stat.S_IXUSR
+    path.unlink()
+
+
+def test_auth_failure_hint_ignores_unrelated_stderr() -> None:
+    from molq.transport import _auth_failure_hint
+
+    assert _auth_failure_hint("Host key verification failed", "h") is None
+    hint = _auth_failure_hint("Permission denied (publickey).", "Arrhenius")
+    assert hint is not None
+    assert "ssh Arrhenius" in hint
+
+
+def test_login_with_code_failed_login_includes_hint(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from molq.transport import TransportError
+
+    t = SshTransport(options=SshTransportOptions(host="Arrhenius"))
+    monkeypatch.setattr(SshTransport, "is_master_alive", lambda self: False)
+
+    def fake_run(argv, **kwargs):
+        class P:
+            returncode = 255
+            stdout = ""
+            stderr = "Permission denied (keyboard-interactive)."
+
+        return P()
+
+    monkeypatch.setattr("molq.transport.subprocess.run", fake_run)
+    with pytest.raises(TransportError, match="verification code"):
+        t.login_with_code("000000")
+
+
+def test_is_master_alive_false_on_ssh_error(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(
+        "molq.transport.subprocess.run",
+        lambda *a, **k: (_ for _ in ()).throw(OSError("no ssh")),
+    )
+    t = SshTransport(options=SshTransportOptions(host="h", control_master=True))
+    assert t.is_master_alive() is False
+
+
 def test_ssh_argv_includes_port_and_identity() -> None:
     t = SshTransport(
         options=SshTransportOptions(
