@@ -158,9 +158,10 @@ Three mutually exclusive command types:
 
 ## CI/CD
 
-- Tests run on Python 3.12, 3.13 on ubuntu-latest (`requires-python = ">=3.12"`)
-- Coverage uploaded to Codecov
-- Releases triggered by GitHub release → PyPI via trusted publishing
+- See "CI" in CONTRIBUTING.md: `lint.yml`, `test.yml` (fast tier on feature
+  branches; Linux + macOS × Python 3.12/3.13 on dev/master and PRs into them;
+  `test / package` checks the built wheel), `docs.yml`, `release.yml`
+- Releases: a `v*` tag → `release.yml` → PyPI via trusted publishing
 
 ## Skills & Agents
 

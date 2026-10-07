@@ -8,7 +8,7 @@
 <p><strong>Unified job queue — one submission API for local, SLURM, PBS, and LSF</strong></p>
 
 <p>
-  <a href="https://github.com/MolCrafts/molq/actions/workflows/ci.yml"><img src="https://img.shields.io/github/actions/workflow/status/MolCrafts/molq/ci.yml?style=flat-square&logo=githubactions&logoColor=white&label=CI" alt="CI"></a>
+  <a href="https://github.com/MolCrafts/molq/actions/workflows/test.yml"><img src="https://img.shields.io/github/actions/workflow/status/MolCrafts/molq/test.yml?style=flat-square&logo=githubactions&logoColor=white&label=CI" alt="CI"></a>
   <a href="https://pypi.org/project/molcrafts-molq/"><img src="https://img.shields.io/pypi/v/molcrafts-molq?style=flat-square&logo=pypi&logoColor=white&label=PyPI" alt="PyPI"></a>
   <a href="https://pypi.org/project/molcrafts-molq/"><img src="https://img.shields.io/pypi/pyversions/molcrafts-molq?style=flat-square&logo=python&logoColor=white" alt="Python"></a>
   <a href="LICENSE"><img src="https://img.shields.io/badge/license-MIT-18432B?style=flat-square" alt="License"></a>

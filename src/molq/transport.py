@@ -195,7 +195,7 @@ class LocalTransport:
         )
 
     def read_text(self, path: str) -> str:
-        return Path(path).read_text()
+        return Path(path).read_text(encoding="utf-8")
 
     def read_bytes(self, path: str) -> bytes:
         return Path(path).read_bytes()
