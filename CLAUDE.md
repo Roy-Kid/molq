@@ -158,8 +158,8 @@ Three mutually exclusive command types:
 
 ## CI/CD
 
-- See "CI" in CONTRIBUTING.md: `lint.yml`, `test.yml` (fast tier on feature
-  branches; Linux + macOS × Python 3.12/3.13 on dev/master and PRs into them;
+- See "CI" in CONTRIBUTING.md: `lint.yml`, `test.yml` (fast tier on MolCrafts
+  feature branches; Linux + macOS × Python 3.12/3.13 on fork pushes, dev/master and PRs;
   `test / package` checks the built wheel), `docs.yml`, `release.yml`
 - Releases: a `v*` tag → `release.yml` → PyPI via trusted publishing
 
