@@ -36,7 +36,9 @@ echo "step 2"
     print(f"inline  → {h.wait().state}")
 
     # 4. Script.path — reference a pre-existing file
-    with tempfile.NamedTemporaryFile(suffix=".sh", delete=False, mode="w") as f:
+    with tempfile.NamedTemporaryFile(
+        suffix=".sh", delete=False, mode="w", encoding="utf-8"
+    ) as f:
         f.write("#!/bin/bash\necho 'path script'\n")
         script_path = Path(f.name)
     script_path.chmod(0o755)

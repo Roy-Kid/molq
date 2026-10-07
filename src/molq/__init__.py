@@ -22,6 +22,8 @@ Usage::
     cluster.get_queue()  # squeue --me / qstat -u $USER / bjobs (or [] for local)
 """
 
+from typing import TYPE_CHECKING
+
 from molq.callbacks import EventBus, EventPayload, EventType
 from molq.cluster import Cluster
 from molq.config import (
@@ -89,6 +91,10 @@ from molq.types import (
     Script,
 )
 from molq.workspace import Project, Workspace
+
+if TYPE_CHECKING:
+    # Resolved lazily by __getattr__ below; named here for static analysis.
+    from molq.dashboard import DashboardState, JobRow, MolqMonitor, RunDashboard
 
 __all__ = [
     # Dashboard

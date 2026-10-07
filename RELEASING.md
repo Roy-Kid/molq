@@ -23,13 +23,13 @@ The GitHub repository must also have an environment named `pypi`.
 2. Optionally refresh `docs/release-notes.md` for user-facing highlights.
    Full history is git log / tags — no `CHANGELOG.md`. Keep README /
    CLAUDE.md / docs paths current.
-3. Local CI parity (must match `.github/workflows/ci.yml`):
+3. Local CI parity (must match `.github/workflows/lint.yml` and `test.yml`):
 
    ```bash
    ruff format --check src tests
    ruff check src tests
    pre-commit run --all-files
-   pytest -q --cov=molq --cov-report=xml
+   pytest -q
    ```
 
    Install hooks once with `pre-commit install` so commit/push gate the same
@@ -42,14 +42,16 @@ The GitHub repository must also have an environment named `pypi`.
    git push origin v0.7.0
    ```
 
-5. Wait for the `Release` workflow. It re-runs lint and the test suite,
-   verifies the tag matches `pyproject.toml`, then builds and publishes.
+5. Wait for the `release` workflow. It re-runs lint and the tests (including
+   `test / package`) on the tag, verifies the tag matches `pyproject.toml`,
+   then builds and publishes. Run it by hand (`workflow_dispatch`) for a dry
+   run that builds without uploading.
 6. Publish a GitHub release for the tag; draft notes from `git log` since the
    previous tag (or from `docs/release-notes.md` if you keep highlights there).
 
 > **Do not build or upload by hand.** Trusted publishing means the artifact
 > that reaches PyPI is the one CI builds from the tag. `python -m build`
-> locally is only ever a debugging aid — the `Package` job in `ci.yml` already
+> locally is only ever a debugging aid — the `test / package` job in `test.yml` already
 > builds the wheel, runs `twine check --strict`, installs it into a clean
 > environment, imports every subpackage, and runs a job through the console
 > script on every push and pull request.

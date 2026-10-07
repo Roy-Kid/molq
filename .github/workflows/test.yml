@@ -1,0 +1,100 @@
+name: test
+
+# pytest in two tiers. A feature branch (fork or MolCrafts) runs the fast tier:
+# Linux, Python 3.12. dev, master, main and pull requests into them run the
+# full tier: Linux and macOS (molq is POSIX-only) on the oldest and newest
+# Python. `test / package` checks the built wheel in every context.
+on:
+  push:
+    branches: ["**"]
+  pull_request:
+    branches: [dev, master, main]
+  workflow_dispatch:
+  workflow_call:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: test-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: ${{ !contains(fromJSON('["dev","master","main"]'), github.base_ref || github.ref_name) }}
+
+jobs:
+  pytest:
+    name: test / py${{ matrix.python }} (${{ matrix.os }})
+    # A pull request from a branch of this same repository runs only when its
+    # push ran the fast tier, i.e. when the head is a feature branch.
+    if: github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name != github.repository || !contains(fromJSON('["dev","master","main"]'), github.head_ref)
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: ${{ fromJSON(contains(fromJSON('["dev","master","main"]'), github.base_ref || github.ref_name) && '["ubuntu-latest","macos-latest"]' || '["ubuntu-latest"]') }}
+        python: ${{ fromJSON(contains(fromJSON('["dev","master","main"]'), github.base_ref || github.ref_name) && '["3.12","3.13"]' || '["3.12"]') }}
+    env:
+      UV_PYTHON: ${{ matrix.python }}
+    steps:
+      - uses: actions/checkout@v7
+      - uses: ./.github/actions/setup-python
+        with:
+          python-version: ${{ matrix.python }}
+      - run: uv sync --extra dev
+      - run: uv run pytest -q
+
+  # pytest imports from src/, so a packaging config that silently drops a
+  # module would still go green and ship a broken wheel. This job only ever
+  # touches the built artifact.
+  package:
+    name: test / package
+    if: github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name != github.repository
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: ./.github/actions/setup-python
+      - run: uv build
+      - run: uvx twine check --strict dist/*
+      - name: Install the wheel into a clean environment
+        run: |
+          uv venv /tmp/wheelcheck
+          uv pip install --python /tmp/wheelcheck dist/*.whl
+      - name: Import every subpackage from the wheel
+        # Run outside the checkout so src/ cannot satisfy these imports.
+        working-directory: /tmp
+        run: |
+          /tmp/wheelcheck/bin/python - <<'PY'
+          import importlib
+
+          # One entry per module that must survive packaging. A subpackage
+          # missing from the wheel fails here rather than on a user's machine.
+          modules = [
+              "molq",
+              "molq.cli._app", "molq.cli._helpers", "molq.cli.jobs",
+              "molq.cli.main", "molq.cli.maintenance", "molq.cli.setup",
+              "molq.scheduler", "molq.scheduler.base", "molq.scheduler.script",
+              "molq.scheduler.shell", "molq.scheduler.slurm",
+              "molq.scheduler.pbs", "molq.scheduler.lsf",
+              "molq.store", "molq.store.jobstore", "molq.store.records",
+              "molq.store.schema",
+              "molq.plugins.nerve",
+              "molq.artifacts", "molq.dependencies", "molq.handle",
+              "molq.jobpaths", "molq.retention", "molq.retry",
+              "molq.validation", "molq.workspace", "molq.dashboard",
+          ]
+          for name in modules:
+              importlib.import_module(name)
+
+          import molq
+          assert molq.__all__, "public surface is empty"
+          for name in molq.__all__:
+              getattr(molq, name)  # includes the lazily-exported dashboard names
+          print(f"{len(modules)} modules, {len(molq.__all__)} public names OK")
+          PY
+      - name: Run a real job through the installed console script
+        working-directory: /tmp
+        env:
+          MOLCRAFTS_HOME: /tmp/wheelcheck-home
+        run: |
+          /tmp/wheelcheck/bin/molq --version
+          /tmp/wheelcheck/bin/molq --help > /dev/null
+          /tmp/wheelcheck/bin/molq submit local --block echo packaged
+          /tmp/wheelcheck/bin/molq list local --all
