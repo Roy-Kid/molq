@@ -1,45 +1,11 @@
 # Contributing
 
-## Setup
+Read AGENTS.md and docs/spec/molq-1-0-runtime-spec.md before changing architecture. There is one Runtime implementation and one public RPC contract; clients are peers. Do not restore old JobStore, Submitor, capability negotiation or direct client Scheduler access.
 
-```bash
-python -m venv .venv
-source .venv/bin/activate
-pip install -e ".[dev]"
-```
+Install with uv sync --extra dev. Use Ruff formatting/lint and ty type checks. Run pytest with coverage (80% floor, including Runtime subprocesses). Build and smoke-test the installed wheel outside the source checkout.
 
-If you want to work on the documentation site:
+Schema changes start in tools/build_contract.py. Python façade changes start in client/objects.py. Regenerate via tools/generate_clients.py, build/test sdk/typescript and run tools/check_generated.py. All affected client projections and documentation must agree.
 
-```bash
-pip install -e ".[docs]"
-```
+Native Scheduler tests use bounded transport fixtures for exact directives/state/accounting/error behavior. Real POSIX Shell integration verifies accepted jobs survive session exit, execution plan semantics and identity-checked cancellation. Windows CI covers the remote control plane. Fixtures cannot establish live HPC resource/configuration support.
 
-## Local Checks
-
-Run the standard checks before opening a pull request:
-
-```bash
-black --check src tests
-isort --check-only src tests
-pytest -q
-```
-
-If docs dependencies are installed, you can preview the site locally:
-
-```bash
-zensical serve
-```
-
-## Change Expectations
-
-- Keep public API changes intentional and documented.
-- Add or update tests for behavior changes and bug fixes.
-- Update `README.md` and `docs/` when public behavior changes.
-  Release history lives in git tags / GitHub Releases (no `CHANGELOG.md`).
-- Keep scheduler-specific changes explicit about which backend they affect.
-
-## Pull Requests
-
-- Keep each PR scoped to one logical change.
-- Describe user-visible impact clearly.
-- Include migration notes if existing user code needs to change.
+Use typed structured errors, explicit uncertain mutation outcomes, finite deadlines and bounded memory. No permanent coroutine/session/timer per Job. No SQLite transactions surrounding SSH or native scheduler operations.

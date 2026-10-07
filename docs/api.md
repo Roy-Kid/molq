@@ -1,54 +1,27 @@
-# Python API
+# Python and TypeScript API
 
-The public API is intentionally small. Most applications import from the
-package root:
-
-```python
-import molq as mq
-```
-
-## Start with these
-
-| Need | API |
-|---|---|
-| Describe a destination | `mq.Cluster` |
-| Submit and track jobs | `mq.Submitor` |
-| Follow one submission | `mq.JobHandle` |
-| Describe a request | `mq.JobResources`, `mq.JobScheduling`, `mq.JobExecution` |
-| Read durable state | `mq.JobRecord`, `mq.JobState` |
-
-The reference is split by responsibility so individual pages stay navigable:
-
-- [Core API](reference/core.md) — `Cluster`, `Submitor`, and `JobHandle`.
-- [Job types](reference/types.md) — commands, resources, records, retry,
-  retention, and queue entries.
-- [Supporting APIs](reference/utilities.md) — workspaces, configuration, SSH
-  discovery, callbacks, plugins, and errors.
-
-## Stability boundary
-
-Symbols exported by `molq.__all__` are the supported package-level surface.
-Scheduler and transport protocols are useful for advanced integrations but are
-implementation-facing; ordinary users should construct them through
-`Cluster`.
-
-## Typical flow
+Python exports Molq, AsyncMolq, Cluster, Job and JobCollection, plus immutable value constructors. Runtime validation/default merging/Scheduler mapping are accessed through RPC.
 
 ```python
-import molq as mq
+from molq import AsyncMolq
 
-cluster = mq.Cluster("laptop", "local")
-
-with mq.Submitor(target=cluster) as queue:
-    job = queue.submit_job(
-        argv=["python", "analyse.py"],
-        execution=mq.JobExecution(job_name="analysis"),
-    )
-    record = job.wait()
-
-if record.state is mq.JobState.SUCCEEDED:
-    print("done")
+async def example():
+    async with AsyncMolq(endpoint="http://127.0.0.1:17891", token="your-long-token") as mq:
+        job = await mq.cluster("hpc").submit(argv=["hostname"])
+        result = await job.wait(timeout=60)
+        return result
 ```
 
-For task-oriented explanations, start with [Submit jobs](jobs.md) or
-[Monitor jobs](monitoring.md).
+TypeScript provides the same Molq/Cluster/Job/JobCollection projections and generated JobSpec/JobRef/result types. Node can use StdioWire; browsers use HttpWire and WebSocket subscription. The SDK source/package is sdk/typescript.
+
+```typescript
+import {Molq} from "@molcrafts/molq";
+const mq = Molq.http("http://127.0.0.1:17891", "your-long-token");
+const job = await mq.cluster("hpc").submitArgv(["hostname"]);
+console.log(await job.wait(60000));
+await mq.close();
+```
+
+All clients expose generic rpc for the full method catalog. Python durations for wait are seconds; TypeScript wait arguments are milliseconds. Request/result field names are the canonical snake_case wire names.
+
+See [core API](reference/core.md), [values](reference/types.md) and [RPC contract](reference/utilities.md).

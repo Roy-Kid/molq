@@ -1,133 +1,93 @@
-<div align="center">
+# molq 0.9.0
 
-<h1>
-  <img src=".github/assets/moko.svg" alt="" height="48" align="absmiddle">
-  &nbsp;molq
-</h1>
+molq controls local executions and HPC allocations through one language-independent RPC contract. CLI, Python SDK, TypeScript SDK, Web UI and the optional Observer are peer clients. Runtime owns the business implementation; Scheduler owns native resource, submission, dependency and state semantics.
 
-<p><strong>Unified job queue — one submission API for local, SLURM, PBS, and LSF</strong></p>
+**0.9.0 is a breaking replacement of 0.8.x.** Submitor, JobStore, implicit local destinations, Rich output, retry, workspace and the old daemon/plugin API are removed. Re-register destinations explicitly. Old jobs.db files are neither read nor migrated nor deleted.
 
-<p>
-  <a href="https://github.com/MolCrafts/molq/actions/workflows/ci.yml"><img src="https://img.shields.io/github/actions/workflow/status/MolCrafts/molq/ci.yml?style=flat-square&logo=githubactions&logoColor=white&label=CI" alt="CI"></a>
-  <a href="https://pypi.org/project/molcrafts-molq/"><img src="https://img.shields.io/pypi/v/molcrafts-molq?style=flat-square&logo=pypi&logoColor=white&label=PyPI" alt="PyPI"></a>
-  <a href="https://pypi.org/project/molcrafts-molq/"><img src="https://img.shields.io/pypi/pyversions/molcrafts-molq?style=flat-square&logo=python&logoColor=white" alt="Python"></a>
-  <a href="LICENSE"><img src="https://img.shields.io/badge/license-MIT-18432B?style=flat-square" alt="License"></a>
-  <a href="https://github.com/astral-sh/ruff"><img src="https://img.shields.io/endpoint?url=https://raw.githubusercontent.com/astral-sh/ruff/main/assets/badge/v2.json&style=flat-square" alt="Ruff"></a>
-</p>
+## Quickstart
 
-<p>
-  <a href="https://docs.molcrafts.org/molq/"><b>Documentation</b></a> &nbsp;&middot;&nbsp;
-  <a href="#quick-start"><b>Quick start</b></a> &nbsp;&middot;&nbsp;
-  <a href="#molcrafts-ecosystem"><b>Ecosystem</b></a>
-</p>
+Install Python 3.12 or later:
 
-</div>
-
-molq is a unified job queue for Python workloads that need the same submission API on a laptop, a workstation, or an HPC cluster. A `Cluster` says *where* jobs run, a `Submitor` tracks *how* they progress — and the same code runs against local subprocesses or remote schedulers over SSH.
-
-> **Under active development.** Public APIs may change between minor releases.
-
-## Capabilities
-
-| Module | Capability |
-|--------|------------|
-| `cluster` | `Cluster` — destination spec: scheduler kind × transport × scheduler options, plus live queue snapshots |
-| `submitor` | `Submitor` + `JobHandle` — single entry point for submitting, tracking, and waiting on jobs |
-| `scheduler` | `Scheduler` protocol plus one module per backend (`shell`, `slurm`, `pbs`, `lsf`), each routing shell calls through a transport and owning its own directive and dependency syntax |
-| `transport` | `LocalTransport` / `SshTransport` — runs shell and file ops here or on a remote host via OpenSSH, sharing one multiplexed connection |
-| `store` | `JobStore` — SQLite persistence with WAL mode, UUID job identity, schema versioning, and v1 auto-migration |
-| `validation` | Checks a request against the backend's declared capability matrix before submitting |
-| `jobpaths` | Job directory layout, log path resolution, script staging, and manifests |
-| `dependencies` | Resolves molq job ids + conditions into the backend's submit syntax |
-| `retry` / `retention` | Retry eligibility and backoff; expiry of job directories and old records |
-| `artifacts` | Pulls logs and job directories back from the cluster |
-| `reconciler` | `JobReconciler` — batch-queries schedulers, diffs against the store, syncs job state |
-| `monitor` | Blocking waits and polling engine driven by pluggable strategies |
-| `strategies` | Pluggable polling strategies; exponential backoff by default |
-| `callbacks` | `EventBus` — synchronous pub/sub for job lifecycle events with handler isolation |
-| `models` | Job data models — `JobRecord`, `RetryPolicy`, `RetentionPolicy`, `JobDependency`, `SubmitorDefaults` |
-| `types` | Frozen value types — `Memory`, `Duration`, `Script`, `JobResources`, `JobScheduling`, `JobExecution` |
-| `options` | Per-scheduler frozen option dataclasses (`Local`, `Slurm`, `PBS`, `LSF`) — no untyped dicts |
-| `config` | Profile and config loading from molcfg (`~/.molcrafts/molq/config/config.toml`, or `MOLCRAFTS_HOME`) |
-| `plugin` | `MolqPlugin` host — official builtins + third-party entry points (`molq.plugins`) |
-| `plugins` | Official plugins (e.g. `nerve` → local Nerve menu-bar status; fail-open) |
-| `workspace` | `Workspace` / `Project` — directory handles over a cluster's filesystem (local or remote) |
-| `ssh_config` | Surfaces `~/.ssh/config` hosts as cluster candidates |
-| `serde` | Serialization helpers for stored requests and config-driven values |
-| `errors` | Unified `MolqError` exception hierarchy with typed context |
-| `status` | `JobState` enum with terminal-state semantics |
-| `merge` | Pure function that merges per-submit parameters with `Submitor` defaults |
-| `dashboard` | Full-screen terminal dashboard for monitoring runs and jobs |
-| `testing` | `FakeScheduler` and `make_submitor` for tests and runnable examples without a real cluster |
-| `cli` | Typer + Rich CLI: jobs (`submit`/`list`/`status`/`logs`/`cancel`/…), live (`watch`/`monitor`/`daemon`), setup (`clusters`/`workspace`/`plugins`) |
-
-## Install
-
-```bash
+```sh
 pip install molcrafts-molq
+molq --registry ./registry.db clusters register --definition '{"name":"local","scheduler":"shell","target_root":"/tmp/molq-target"}'
+molq --registry ./registry.db submit local -- echo hello
 ```
 
-Requires Python 3.12+. Depends on `typer`, `rich`, `molcrafts-mollog`, and `molcrafts-molcfg`.
+The submit response contains a stable registry-qualified JobRef. Save it and pass it to status, logs, cancel or wait:
 
-## Quick start
+```sh
+molq --registry ./registry.db status --ref @job-ref.json
+molq --registry ./registry.db wait --ref @job-ref.json --timeout 60
+molq discover
+```
+
+Use the OOP Python client without starting a service:
 
 ```python
-import molq as mq
+from molq import Molq
 
-# Cluster = destination (where to run). Submitor = lifecycle (how jobs are tracked).
-cluster = mq.Cluster("devbox", "local")
-
-with mq.Submitor(target=cluster) as queue:
-    handle = queue.submit_job(
-        argv=["python", "-c", "print('hello from molq')"]
+with Molq(registry="registry.db") as mq:
+    mq.clusters.register(
+        name="local", scheduler="shell", target_root="/tmp/molq-python"
     )
-    record = handle.wait()
-
-print(record.state)
+    job = mq.cluster("local").submit(argv=["echo", "hello"])
+    print(job.wait(timeout=60)["completion"])
+    print(job.logs()["text"])
 ```
 
-Swap to a cluster by changing one line — `mq.Cluster("hpc", "slurm", host="user@hpc.example.com")` — and the rest of the code is unchanged. See the [documentation](https://docs.molcrafts.org/molq/) for retries, dependencies, profiles, and the CLI.
+When no endpoint is configured, native clients start a temporary stdio Runtime. Accepted Shell jobs detach from the client and retain original target launch/exit receipts; scheduler jobs already belong to the scheduler. Restarting a client can query a saved JobRef.
 
-## Documentation
+## Shared Runtime and Web
 
-- [Quickstart](docs/getting-started.md) — install and complete a local job
-- [Mental model](docs/concepts.md) — understand destinations, tracking, and records
-- [Submit jobs](docs/jobs.md) — commands, resources, retries, and dependencies
-- [Clusters and schedulers](docs/schedulers.md) — local, SSH, SLURM, PBS, and LSF
-- [Monitor jobs](docs/monitoring.md) — status, logs, history, and dashboards
-- [Remote files](docs/remote-files.md) — stage inputs and collect results
-- [Command line](docs/cli.md) — task-oriented CLI workflows
-- [Plugins and Nerve](docs/plugins.md) — lifecycle observers and menu-bar status
-- [Configuration](docs/configuration.md) — profiles, defaults, and remote destinations
-- [Python API](docs/api.md) — generated, responsibility-based reference
+```sh
+export MOLQ_TOKEN='replace-with-your-own-long-secret'
+molq runtime serve --registry ./registry.db --host 127.0.0.1 --port 17891
+```
 
-## MolCrafts ecosystem
+Open http://127.0.0.1:17891/ and enter the token. Connect other clients to that same endpoint using MOLQ_ENDPOINT and MOLQ_TOKEN. HTTP and WebSocket use the same RPC implementation as stdio. A token is required even on loopback; deploy HTTPS/WSS through existing infrastructure.
 
-| Project | Role |
-|---------|------|
-| [molpy](https://github.com/MolCrafts/molpy)     | Python toolkit — the shared molecular data model & workflow layer |
-| [molrs](https://github.com/MolCrafts/molrs)     | Rust core — molecular data structures & compute kernels (native + WASM) |
-| [molpack](https://github.com/MolCrafts/molpack) | Packmol-grade molecular packing (Rust + Python) |
-| [molvis](https://github.com/MolCrafts/molvis)   | WebGL molecular visualization & editing |
-| [molexp](https://github.com/MolCrafts/molexp)   | Workflow & experiment-management platform |
-| [molnex](https://github.com/MolCrafts/molnex)   | Molecular machine-learning framework |
-| **molq**                                        | Unified job queue — local / SLURM / PBS / LSF — this repo |
-| [molcfg](https://github.com/MolCrafts/molcfg)   | Layered configuration library |
-| [mollog](https://github.com/MolCrafts/mollog)   | Structured logging, stdlib-compatible |
-| [molhub](https://github.com/MolCrafts/molhub)   | Molecular dataset hub |
-| [molmcp](https://github.com/MolCrafts/molmcp)   | MCP server for the ecosystem |
-| [molrec](https://github.com/MolCrafts/molrec)   | Atomistic record specification |
+One registry normally has one active Runtime. Configure an explicit endpoint for shared clients. Temporary stdio instances have separate cache, event rings and cursors; SQLite protects short accidental write overlap, without synchronizing their observations.
 
-## Contributing
+Runtime performs finite requested operations. Periodic observation is optional:
 
-Issues and pull requests are welcome — see [CONTRIBUTING.md](CONTRIBUTING.md) for development setup.
+```sh
+molq --endpoint http://127.0.0.1:17891 observer --cluster local --interval 5
+```
 
-## License
+Observer chooses cadence and notification delivery; Runtime computes snapshots, completion and changes. Subscriptions passively distribute already observed changes and do not poll a scheduler.
 
-MIT — see [LICENSE](LICENSE).
+## Persistence and execution
 
-<hr>
+SQLite persists only registry identity/schema, Cluster definitions, Runtime settings and presets. Job states, history, transitions, events, cursors, leases and retry queues are not persisted. Scheduler/accounting is task truth. Shell launch and exit receipts are original execution evidence on the target, not a mirrored job database.
 
-<div align="center">
-<sub>Crafted with 💚 by <a href="https://github.com/MolCrafts">MolCrafts</a></sub>
-</div>
+A Job is one allocation. Resources, Scheduling and Execution are independent sections. Execution holds units and explicit Unit/Sequence/Parallel plans. Memory is a decimal string of bytes **per node**; task and CPU budgets are explicit. MPI uses a configured launcher. nvidia_mps is a formal Scheduler resource request with no automatic GPU conversion or MPS server startup.
+
+Slurm, OpenPBS and LSF mappings reject fields they cannot express accurately. This is static request validation, not capability negotiation or a promise that actual resources exist. Native schedulers accept or reject real requests.
+
+OpenSSH owns host aliases, authentication, ProxyJump and multiplexing. molq invokes system ssh/rsync. A Cluster stores an alias and computing semantics, without copying SSH configuration.
+
+## Platform and validation scope
+
+The control plane uses stdio and HTTP/WebSocket on Linux, macOS and Windows. Targets use POSIX/Bash paths and tools. Windows clients can manage remote POSIX targets through OpenSSH or a shared Runtime; native Windows Shell execution is outside this release.
+
+Local Shell execution and all native scheduler mappings have regression tests. HPC tests use command fixtures; no live Slurm/PBS/LSF cluster was available during this reconstruction.
+
+The TypeScript package lives in sdk/typescript. Run npm ci and npm test there; the Node stdio transport starts Runtime directly. The browser client uses HTTP/WebSocket. All methods remain accessible through generic rpc calls.
+
+## Development
+
+```sh
+uv sync --extra dev
+uv run python tools/build_contract.py
+uv run python tools/generate_clients.py
+npm --prefix sdk/typescript ci
+npm --prefix sdk/typescript test
+uv run ruff check src tests tools examples
+uv run ruff format --check src tests tools examples
+uv run ty check src/
+uv run pytest --cov=molq --cov-report=xml
+uv run python -m build
+```
+
+See [the architecture spec](docs/spec/molq-1-0-runtime-spec.md), [implementation ledger](docs/spec/implementation-0-9-0.md) and [documentation](docs/getting-started.md).

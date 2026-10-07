@@ -1,23 +1,16 @@
-"""01_basic.py — Submit a single job and wait for it to finish.
+"""Submit and wait without a long-lived Runtime."""
 
-Demonstrates:
-  - Context-manager usage of Submitor
-  - submit(argv=...)
-  - handle.wait() blocking until terminal state
-  - Inspecting JobRecord fields
-"""
+import tempfile
+from pathlib import Path
 
-from molq.testing import make_submitor
+from molq import Molq
 
-with make_submitor("demo", job_duration=0) as s:
-    handle = s.submit_job(argv=["echo", "hello"])
-
-    print(f"job_id          : {handle.job_id}")
-    print(f"scheduler_job_id: {handle.scheduler_job_id}")
-    print(f"initial state   : {handle.status()}")
-
-    record = handle.wait()
-
-    print(f"final state     : {record.state}")
-    print(f"exit_code       : {record.exit_code}")
-    print(f"elapsed         : {record.finished_at - record.submitted_at:.3f}s")
+with tempfile.TemporaryDirectory() as directory:
+    root = Path(directory)
+    with Molq(registry=root / "registry.db") as mq:
+        mq.clusters.register(
+            name="local", scheduler="shell", target_root=str(root / "jobs")
+        )
+        job = mq.cluster("local").submit(argv=["echo", "molq 0.9.0"])
+        print(job.wait(timeout=10))
+        print(job.logs()["text"])

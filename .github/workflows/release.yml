@@ -12,43 +12,28 @@ permissions:
 
 jobs:
   verify:
-    # A tag push used to publish whatever was at that tag with no checks at
-    # all. Nothing stops a bad tag from reaching PyPI except this job.
-    name: Verify
+    uses: ./.github/workflows/ci.yml
+    secrets: inherit
+
+  version:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
         with:
           python-version: "3.12"
-      - uses: astral-sh/setup-uv@v6
-
-      - name: Tag matches the packaged version
+      - name: Tag matches version
         if: startsWith(github.ref, 'refs/tags/v')
         run: |
-          tag="${GITHUB_REF_NAME#v}"
-          version=$(python -c "import tomllib; print(tomllib.load(open('pyproject.toml','rb'))['project']['version'])")
-          if [ "$tag" != "$version" ]; then
-            echo "::error::tag ${GITHUB_REF_NAME} does not match pyproject version ${version}"
-            exit 1
-          fi
-          echo "publishing ${version}"
-
-      - name: Install
-        run: uv sync --extra dev
-
-      - name: Lint
-        run: |
-          uv run ruff check src tests
-          uv run ruff format --check src tests
-          uv run ty check src/
-
-      - name: Test
-        run: uv run pytest -q
+          python - <<'PYCODE'
+          import os, tomllib
+          version = tomllib.load(open("pyproject.toml", "rb"))["project"]["version"]
+          assert os.environ["GITHUB_REF_NAME"] == "v" + version
+          PYCODE
 
   publish-pypi:
     name: Publish to PyPI
-    needs: verify
+    needs: [verify, version]
     if: startsWith(github.ref, 'refs/tags/v')
     runs-on: ubuntu-latest
     environment:

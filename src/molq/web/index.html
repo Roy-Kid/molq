@@ -1,0 +1,8 @@
+<!doctype html>
+<html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>molq</title><link rel="stylesheet" href="/style.css"></head>
+<body><main><header><span class="brand">molq</span><p>Your compute destinations, one place.</p></header>
+<section id="connection"><h1>Connect</h1><label>Runtime token<input id="token" type="password" autocomplete="off"></label><button id="connect">Connect</button></section>
+<section id="workspace" hidden><div class="heading"><h1>Jobs</h1><button id="refresh">Refresh</button></div><label>Destination<select id="cluster"></select></label>
+<form id="submit"><label>Program<input id="program" value="echo" required></label><label>Arguments, one per line<textarea id="arguments">Hello from molq</textarea></label><button>Submit job</button></form>
+<div id="jobs" aria-live="polite"></div><h2>Job details</h2><pre id="details"></pre></section><p id="message" role="status"></p>
+<footer>0.9.0 · Scheduler facts, observed when you refresh.</footer></main><script type="module" src="/app.js"></script></body></html>

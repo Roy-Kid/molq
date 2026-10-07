@@ -1,293 +1,213 @@
-"""IBM Spectrum LSF backend (bsub / bjobs / bkill / bhist)."""
+"""LSF directives and native accounting; no raw flags in public Job schema."""
 
 from __future__ import annotations
 
+import builtins
+import json
 import re
-from collections.abc import Sequence
-from pathlib import Path
+import shlex
 
-from molq._log import get_logger
-from molq.errors import SchedulerError
-from molq.models import JobSpec
-from molq.options import LSFSchedulerOptions
-from molq.scheduler.base import (
-    DependencyEdge,
-    QueueEntry,
-    SchedulerCapabilities,
-    TerminalStatus,
-    _dependency_keyword,
-)
-from molq.scheduler.script import (
-    _default_failure_reason,
-    _parse_lsf_time,
-    _render_job_lines,
-)
-from molq.status import JobState
-from molq.transport import LocalTransport, Transport, TransportError
+from molq.errors import MolqError
+from molq.scheduler.base import TERMINAL, NativeJob, _SchedulerMethods
+from molq.scheduler.execution import render_execution
 
-logger = get_logger(__name__)
-
-# Phrases `bhist -l` emits for a finished job.  Anchored to LSF's own wording
-# so the job's echoed command line cannot be mistaken for an outcome.
-_LSF_DONE_RE = re.compile(r"done successfully|completed\s*<done>")
-_LSF_EXIT_CODE_RE = re.compile(r"exited with exit code\s+(\d+)")
-_LSF_EXITED_RE = re.compile(r"\bexited\b|completed\s*<exit>")
-_LSF_KILLED_RE = re.compile(r"term_owner|term_force_owner|signal\s*<kill>")
-
-_LSF_STATE_MAP: dict[str, JobState] = {
-    "RUN": JobState.RUNNING,
-    "PEND": JobState.QUEUED,
-    "DONE": JobState.SUCCEEDED,
-    "EXIT": JobState.FAILED,
-    "USUSP": JobState.QUEUED,
-    "SSUSP": JobState.QUEUED,
-    "PSUSP": JobState.QUEUED,
-    "WAIT": JobState.QUEUED,
-    "ZOMBI": JobState.FAILED,
+SUBMIT_ID = re.compile(r"Job <(\d+)>")
+DEPENDENCIES = {
+    "after": "ended",
+    "after_success": "done",
+    "after_failure": "exit",
+    "after_started": "started",
 }
 
 
-class LSFScheduler:
-    """Submit and manage jobs via IBM Spectrum LSF.
+class LSFScheduler(_SchedulerMethods):
+    """Finite bsub/bjobs/bkill operations through the configured Transport."""
 
-    All shell calls (``bsub``, ``bjobs``, ``bkill``, ``bhist``) go through the
-    injected :class:`~molq.transport.Transport`.
-    """
-
-    def __init__(
-        self,
-        options: LSFSchedulerOptions | None = None,
-        *,
-        transport: Transport | None = None,
-    ) -> None:
-        self._opts = options or LSFSchedulerOptions()
-        self._transport: Transport = transport or LocalTransport()
-
-    def capabilities(self) -> SchedulerCapabilities:
-        return SchedulerCapabilities(
-            supports_cwd=True,
-            supports_env=True,
-            supports_output_file=True,
-            supports_error_file=True,
-            supports_job_name=True,
-            supports_cpu_count=True,
-            supports_memory=True,
-            supports_gpu_count=True,
-            supports_gpu_type=True,
-            supports_time_limit=True,
-            supports_partition=True,
-            supports_account=True,
-            supports_dependency=True,
-        )
-
-    def submit(self, spec: JobSpec, job_dir: Path) -> str:
-        script_path = self._generate_script(spec, job_dir)
-        cmd = [self._opts.bsub_path]
-        cmd.extend(self._opts.extra_bsub_flags)
-
-        # bsub reads the job script from stdin.  Read it back via the same
-        # transport we just wrote it through so SSH-routed schedulers don't
-        # try to read a remote-only file from the local filesystem.
-        script_content = self._transport.read_text(str(script_path))
-        try:
-            result = self._transport.run(cmd, input=script_content, timeout=60)
-        except TransportError as e:
-            raise SchedulerError("LSF submission timed out", command=cmd) from e
-        if result.returncode != 0:
-            raise SchedulerError(
-                "LSF submission failed",
-                stderr=result.stderr,
-                command=cmd,
-            )
-        match = re.search(r"Job <(\d+)>", result.stdout)
-        if not match:
-            raise SchedulerError(
-                f"Could not parse job ID from bsub output: {result.stdout}",
-                command=cmd,
-            )
-        return match.group(1)
-
-    def poll_many(self, scheduler_job_ids: Sequence[str]) -> dict[str, JobState]:
-        if not scheduler_job_ids:
-            return {}
-
-        cmd = [self._opts.bjobs_path, "-noheader"] + list(scheduler_job_ids)
-
-        try:
-            result = self._transport.run(cmd, timeout=30)
-        except TransportError as e:
-            logger.warning(f"bjobs invocation failed: {e}")
-            return {}
-        if not result.stdout.strip():
-            return {}
-
-        wanted = set(scheduler_job_ids)
-        out: dict[str, JobState] = {}
-        for line in result.stdout.strip().split("\n"):
-            parts = line.split()
-            if len(parts) < 3:
-                continue
-            jid = parts[0]
-            if jid in wanted:
-                st = parts[2]
-                state = _LSF_STATE_MAP.get(st)
-                if state is not None:
-                    out[jid] = state
-        return out
-
-    def cancel(self, scheduler_job_id: str) -> None:
-        try:
-            self._transport.run(
-                [self._opts.bkill_path, scheduler_job_id],
-                timeout=30,
-            )
-        except TransportError:
-            pass
-
-    def resolve_terminal(self, scheduler_job_id: str) -> TerminalStatus | None:
-        try:
-            result = self._transport.run(
-                [self._opts.bhist_path, "-l", scheduler_job_id],
-                timeout=15,
-            )
-        except TransportError:
-            return None
-        if result.returncode != 0 or not result.stdout.strip():
-            return None
-
-        lower = result.stdout.lower()
-
-        # `bhist -l` is prose, and it echoes the job's own command line back.
-        # Match the phrases LSF actually emits rather than bare substrings —
-        # a job named "rundone" or a path containing "exit" used to decide the
-        # outcome.
-        if _LSF_KILLED_RE.search(lower):
-            return TerminalStatus(
-                state=JobState.CANCELLED,
-                failure_reason=_default_failure_reason(
-                    JobState.CANCELLED, None, "killed"
-                ),
-                raw_state="killed",
-            )
-        if _LSF_DONE_RE.search(lower):
-            return TerminalStatus(
-                state=JobState.SUCCEEDED, exit_code=0, raw_state="done"
-            )
-        match = _LSF_EXIT_CODE_RE.search(lower)
-        if match is not None or _LSF_EXITED_RE.search(lower):
-            code = int(match.group(1)) if match is not None else None
-            return TerminalStatus(
-                state=JobState.FAILED,
-                exit_code=code,
-                failure_reason=_default_failure_reason(JobState.FAILED, code, "exit"),
-                raw_state="exit",
-            )
-        return None
-
-    def list_queue(self, *, user: str | None = None) -> list[QueueEntry]:
-        cmd: list[str] = [
-            self._opts.bjobs_path,
-            "-noheader",
-            "-o",
-            "jobid stat job_name user queue submit_time start_time",
-        ]
-        # Bare `bjobs` already lists only the invoking user's jobs, resolved
-        # wherever the transport runs it. Naming a user from this process
-        # would answer that question on the wrong machine.
-        if user is not None:
-            cmd += ["-u", user]
-        try:
-            result = self._transport.run(cmd, timeout=30)
-        except TransportError as exc:
-            logger.warning(f"bjobs invocation failed: {exc}")
-            return []
-        if result.returncode != 0 or not result.stdout.strip():
-            return []
-        entries: list[QueueEntry] = []
-        for line in result.stdout.strip().split("\n"):
-            parts = line.split()
-            if len(parts) < 5:
-                continue
-            jid = parts[0]
-            raw_state = parts[1]
-            name = parts[2]
-            usr = parts[3]
-            partition = parts[4]
-            sub_t = " ".join(parts[5:8]) if len(parts) >= 8 else ""
-            start_t = " ".join(parts[8:11]) if len(parts) >= 11 else ""
-            entries.append(
-                QueueEntry(
-                    scheduler_job_id=jid,
-                    name=None if name in ("-", "") else name,
-                    user=usr or None,
-                    state=_LSF_STATE_MAP.get(raw_state, JobState.QUEUED),
-                    raw_state=raw_state,
-                    partition=partition or None,
-                    submit_time=_parse_lsf_time(sub_t),
-                    start_time=_parse_lsf_time(start_t),
+    def validate(self, spec: dict) -> None:
+        """Reject site-dependent layouts/resources without an exact configured map."""
+        super().validate(spec)
+        r, s = spec["resources"], spec["scheduling"]
+        for unit in spec["execution"]["units"]:
+            launch = unit.get("launch", {})
+            if (
+                launch.get("ranks", 1) > r.get("tasks", 1)
+                or launch.get("threads", 1) != 1
+            ):
+                raise MolqError(
+                    "EXECUTION_RESOURCE_CONFLICT",
+                    "MPI launch exceeds the LSF allocation layout",
                 )
+        if r.get("nodes", 1) != 1 or r.get("cpus_per_task", 1) != 1:
+            self.unsupported(
+                "LSF mapping currently requires a single-node single-thread task layout"
             )
-        return entries
+        if "memory_bytes" in r or r.get("accelerators"):
+            self.unsupported(
+                "LSF memory/GPU/MPS allocation semantics require an explicit site mapping"
+            )
+        if any(k in s for k in ("qos", "reservation")):
+            self.unsupported("No exact LSF mapping for these scheduling intents")
+        if len(spec["execution"]["units"]) > 1 and "tasks" not in r:
+            raise MolqError(
+                "RESOURCE_REQUEST_INVALID",
+                "Multi-unit batch execution requires explicit tasks",
+            )
 
-    # -w "<expr> [&& <expr2> ...]"
-    _DEP_KEYWORDS: dict[str, str] = {
-        "after_started": "started",
-        "after_success": "done",
-        "after_failure": "exit",
-        "after": "ended",
-    }
-
-    def format_dependency(self, edge: DependencyEdge) -> str:
-        keyword = _dependency_keyword(self._DEP_KEYWORDS, edge.condition, "lsf")
-        return f"{keyword}({edge.scheduler_job_id})"
-
-    def format_dependencies(self, edges: Sequence[DependencyEdge]) -> str:
-        return " && ".join(self.format_dependency(edge) for edge in edges)
-
-    def _generate_script(self, spec: JobSpec, job_dir: Path) -> Path:
-        script_path = job_dir / "run_lsf.sh"
-        lines = ["#!/bin/bash"]
-
-        directives = self._map_resources(spec)
-        for key, value in directives.items():
-            lines.append(f"#BSUB {key} {value}")
-
-        lines.extend(_render_job_lines(spec, job_dir))
-
-        self._transport.write_text(
-            str(script_path), "\n".join(lines) + "\n", mode=0o700
+    def render(self, spec: dict, directory: str) -> str:
+        """Render a formal LSF request without inventing unsupported resources."""
+        self.validate(spec)
+        r, s = spec["resources"], spec["scheduling"]
+        directives = [
+            f"-cwd {shlex.quote(directory)}",
+            f"-o {shlex.quote(directory + '/stdout')}",
+            f"-e {shlex.quote(directory + '/stderr')}",
+            f"-n {r.get('tasks', 1)}",
+            '-R "span[hosts=1]"',
+        ]
+        if seconds := r.get("time_limit_seconds"):
+            # LSF wall time is minute-granular; reserve at least requested time.
+            minutes = (seconds + 59) // 60
+            directives.append(f"-W {minutes // 60}:{minutes % 60:02}")
+        for field, flag in [
+            ("name", "J"),
+            ("partition", "q"),
+            ("account", "P"),
+            ("priority", "sp"),
+        ]:
+            if field in s:
+                directives.append(f"-{flag} {s[field]}")
+        if s.get("exclusive"):
+            directives.append("-x")
+        if edges := s.get("dependencies"):
+            expr = " && ".join(
+                f"{DEPENDENCIES[e['condition']]}({e['ref']['native_id']})"
+                for e in edges
+            )
+            directives.append("-w " + shlex.quote(expr))
+        return (
+            "#!/usr/bin/env bash\n"
+            + "\n".join("#BSUB " + d for d in directives)
+            + "\n"
+            + render_execution(spec, self.launch)
         )
-        return script_path
 
-    def _map_resources(self, spec: JobSpec) -> dict[str, str]:
-        mapped: dict[str, str] = {}
-        r, s, e = spec.resources, spec.scheduling, spec.execution
+    @staticmethod
+    def _parse(text: str) -> dict[str, NativeJob]:
+        try:
+            rows = json.loads(text)["RECORDS"]
+            jobs = {}
+            for row in rows:
+                if "ERROR" in row:
+                    raise ValueError("LSF reported a partial query failure")
+                identity = str(row["JOBID"])
+                raw = row["STAT"]
+                state = {
+                    "PEND": "queued",
+                    "WAIT": "queued",
+                    "RUN": "running",
+                    "PSUSP": "running",
+                    "USUSP": "running",
+                    "SSUSP": "running",
+                    "DONE": "succeeded",
+                    "EXIT": "failed",
+                    "ZOMBI": "unknown",
+                    "UNKWN": "unknown",
+                }.get(raw, "unknown")
+                code = row.get("EXIT_CODE")
+                output = row.get("OUTPUT_FILE")
+                error = row.get("ERROR_FILE")
+                workdir = row.get("EXEC_CWD")
+                if not workdir or workdir == "-":
+                    workdir = (
+                        output.rsplit("/", 1)[0]
+                        if output and output.startswith("/")
+                        else None
+                    )
+                submitted = str(row.get("SUBMIT_TIME", ""))
+                incarnation = (
+                    submitted + "|" + output
+                    if submitted and output and output != "-"
+                    else submitted
+                )
+                jobs[identity] = NativeJob(
+                    identity,
+                    incarnation,
+                    state,
+                    "accounting",
+                    raw,
+                    int(code) if str(code).isdigit() else None,
+                    workdir,
+                    row.get("JOB_NAME"),
+                    output if output and output != "-" else None,
+                    error if error and error != "-" else None,
+                )
+            return jobs
+        except (ValueError, KeyError, TypeError) as exc:
+            raise MolqError(
+                "SCHEDULER_UNAVAILABLE", "Invalid/partial LSF query response"
+            ) from exc
 
-        if s.partition:
-            mapped["-q"] = s.partition
-        if r.cpu_count:
-            mapped["-n"] = str(r.cpu_count)
-        if r.memory:
-            mapped["-M"] = str(r.memory.to_lsf_kb())
-        if r.time_limit:
-            mapped["-W"] = str(r.time_limit.to_lsf_minutes())
-        if e.job_name:
-            name = e.job_name
-            if s.array_spec:
-                name = f"{name}[{s.array_spec}]"
-            mapped["-J"] = name
-        if e.output_file:
-            mapped["-o"] = e.output_file
-        if e.error_file:
-            mapped["-e"] = e.error_file
-        if s.account:
-            mapped["-P"] = s.account
-        if r.gpu_count:
-            gpu_str = f"num={r.gpu_count}"
-            if r.gpu_type:
-                gpu_str += f":mode=exclusive_process:gmodel={r.gpu_type}"
-            mapped["-gpu"] = gpu_str
-        if s.dependency:
-            mapped["-w"] = f'"{s.dependency}"'
+    async def submit(self, spec: dict, directory: str) -> NativeJob:
+        """Submit script over native stdin and verify allocation identity."""
+        await self.stage(spec, directory)
+        text = await self.native(
+            ["bsub"], mutation=True, input=self.render(spec, directory).encode()
+        )
+        match = SUBMIT_ID.search(text)
+        if not match:
+            raise MolqError(
+                "OUTCOME_UNKNOWN",
+                "Unparseable accepted LSF identity",
+                outcome="unknown",
+            )
+        identity = match[1]
+        return await self.accepted_identity(identity)
 
-        return mapped
+    async def query_many(self, ids: builtins.list[str]) -> dict[str, NativeJob]:
+        """Query current and LSF-retained recent history in one batch."""
+        if not ids:
+            return {}
+        text = await self.native(
+            [
+                "bjobs",
+                "-a",
+                "-json",
+                "-o",
+                "jobid stat submit_time exec_cwd output_file error_file job_name exit_code",
+                *ids,
+            ]
+        )
+        return self._parse(text)
+
+    async def list(self) -> builtins.list[NativeJob]:
+        """Read native account queue facts."""
+        return list(
+            self._parse(
+                await self.native(
+                    [
+                        "bjobs",
+                        "-json",
+                        "-o",
+                        "jobid stat submit_time exec_cwd output_file error_file job_name exit_code",
+                    ]
+                )
+            ).values()
+        )
+
+    async def history(self, ids: builtins.list[str]) -> dict[str, NativeJob]:
+        """Read the native recent-history window, not a molq archive."""
+        return await self.query_many(ids)
+
+    async def cancel(self, job: NativeJob) -> dict:
+        """Return only bkill acceptance; later queries establish execution truth."""
+        if job.state in TERMINAL:
+            return {"outcome": "already_terminal"}
+        try:
+            await self.native(["bkill", job.native_id], mutation=True)
+        except MolqError as exc:
+            if exc.kind == "SUBMISSION_REJECTED":
+                raise MolqError(
+                    "CANCEL_REJECTED", "LSF cancellation rejected", **exc.context
+                ) from exc
+            raise
+        return {"outcome": "accepted"}

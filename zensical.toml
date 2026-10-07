@@ -1,6 +1,6 @@
 [project]
 site_name = "molq"
-site_description = "One Python interface for local commands and HPC schedulers."
+site_description = "Peer RPC clients for local commands and HPC allocations."
 site_url = "https://docs.molcrafts.org/molq/"
 site_author = "Roy Kid"
 copyright = "Copyright &copy; 2026 MolCrafts"
@@ -22,7 +22,7 @@ nav = [
     { "Monitor jobs" = "monitoring.md" },
     { "Remote files" = "remote-files.md" },
     { "Command line" = "cli.md" },
-    { "Plugins & Nerve" = "plugins.md" },
+    { "Observer & notifications" = "plugins.md" },
   ] },
   { "Reference" = [
     { "Configuration" = "configuration.md" },

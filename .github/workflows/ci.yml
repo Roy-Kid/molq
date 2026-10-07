@@ -4,118 +4,102 @@ on:
   push:
     branches: [master, dev]
   pull_request:
+  workflow_call:
 
 jobs:
   lint:
-    name: Lint
+    name: Contract, lint and types
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
         with:
           python-version: "3.12"
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
       - uses: astral-sh/setup-uv@v6
-      - name: Install
-        run: uv sync --extra dev
-      - name: Lint
-        run: |
-          uv run ruff check src tests
-          uv run ruff format --check src tests
+      - run: uv sync --extra dev
+      - run: npm --prefix sdk/typescript ci
+      - run: uv run python tools/check_generated.py
+      - run: |
+          uv run ruff check src tests tools examples
+          uv run ruff format --check src tests tools examples
           uv run ty check src/
 
   test:
-    name: Test on Python ${{ matrix.python-version }}
-    runs-on: ubuntu-latest
+    name: Python ${{ matrix.python }} on ${{ matrix.os }}
+    runs-on: ${{ matrix.os }}
     strategy:
       matrix:
-        python-version: ["3.12", "3.13"]
+        os: [ubuntu-latest, macos-latest]
+        python: ["3.12", "3.13"]
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
         with:
-          python-version: ${{ matrix.python-version }}
+          python-version: ${{ matrix.python }}
       - uses: astral-sh/setup-uv@v6
-      - name: Install
-        run: uv sync --extra dev
-      - name: Test
-        run: uv run pytest -q --cov=molq --cov-report=xml
-      - name: Upload coverage to Codecov
-        if: matrix.python-version == '3.12'
-        uses: codecov/codecov-action@v4
+      - run: uv sync --extra dev
+      - run: uv run pytest -q --cov=molq --cov-report=xml
+      - uses: codecov/codecov-action@v4
+        if: matrix.os == 'ubuntu-latest' && matrix.python == '3.12'
         with:
           token: ${{ secrets.CODECOV_TOKEN }}
           files: coverage.xml
           fail_ci_if_error: false
 
-  package:
-    # The test job installs the project editable and imports from src/, so a
-    # packaging config that silently drops a module would still go green and
-    # ship a broken wheel to PyPI. This job only ever touches the built
-    # artifact.
-    name: Package
+  windows:
+    name: Windows remote control plane
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - uses: astral-sh/setup-uv@v6
+      - run: uv sync --extra dev
+      - run: uv run pytest -q tests/v09/test_control_plane.py tests/v09/test_contract.py -k "not no_service"
+
+  typescript:
+    name: Native TypeScript peer
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
         with:
           python-version: "3.12"
-
-      - name: Build sdist and wheel
-        run: |
-          python -m pip install --upgrade build twine
-          python -m build
-
-      - name: Check the metadata PyPI will render
-        run: python -m twine check --strict dist/*
-
-      - name: Install the wheel into a clean environment
-        run: |
-          python -m venv /tmp/wheelcheck
-          /tmp/wheelcheck/bin/pip install --quiet dist/*.whl
-
-      - name: Import every subpackage from the wheel
-        # Run outside the checkout so src/ cannot satisfy these imports.
-        working-directory: /tmp
-        run: |
-          /tmp/wheelcheck/bin/python - <<'PY'
-          import importlib
-
-          # One entry per module that must survive packaging. A subpackage
-          # missing from the wheel fails here rather than on a user's machine.
-          modules = [
-              "molq",
-              "molq.cli._app", "molq.cli._helpers", "molq.cli.jobs",
-              "molq.cli.main", "molq.cli.maintenance", "molq.cli.setup",
-              "molq.scheduler", "molq.scheduler.base", "molq.scheduler.script",
-              "molq.scheduler.shell", "molq.scheduler.slurm",
-              "molq.scheduler.pbs", "molq.scheduler.lsf",
-              "molq.store", "molq.store.jobstore", "molq.store.records",
-              "molq.store.schema",
-              "molq.plugins.nerve",
-              "molq.artifacts", "molq.dependencies", "molq.handle",
-              "molq.jobpaths", "molq.retention", "molq.retry",
-              "molq.validation", "molq.workspace", "molq.dashboard",
-          ]
-          for name in modules:
-              importlib.import_module(name)
-
-          import molq
-          assert molq.__all__, "public surface is empty"
-          for name in molq.__all__:
-              getattr(molq, name)  # includes the lazily-exported dashboard names
-          print(f"{len(modules)} modules, {len(molq.__all__)} public names OK")
-          PY
-
-      - name: Smoke-test the console script
-        working-directory: /tmp
-        run: |
-          /tmp/wheelcheck/bin/molq --version
-          /tmp/wheelcheck/bin/molq --help > /dev/null
-
-      - name: Run a real job through the installed package
-        working-directory: /tmp
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+      - uses: astral-sh/setup-uv@v6
+      - run: uv sync --extra dev
+      - run: npm --prefix sdk/typescript ci
+      - run: npm --prefix sdk/typescript test
         env:
-          MOLCRAFTS_HOME: /tmp/wheelcheck-home
+          MOLQ_TEST_PYTHON: ${{ github.workspace }}/.venv/bin/python
+      - run: npm pack --dry-run
+        working-directory: sdk/typescript
+
+  package:
+    name: Installed artifact
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - run: python -m pip install build twine
+      - run: python -m build
+      - run: python -m twine check --strict dist/*
+      - run: |
+          python -m venv /tmp/molq-wheel
+          /tmp/molq-wheel/bin/pip install dist/*.whl
+      - name: Check wheel outside checkout
+        working-directory: /tmp
+        run: /tmp/molq-wheel/bin/python "${{ github.workspace }}/tools/check_wheel.py"
+      - name: Check installed console
+        working-directory: /tmp
         run: |
-          /tmp/wheelcheck/bin/molq submit local --block echo packaged
-          /tmp/wheelcheck/bin/molq list local --all
+          /tmp/molq-wheel/bin/molq --version
+          /tmp/molq-wheel/bin/molq --help

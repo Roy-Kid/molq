@@ -1,76 +1,11 @@
-# Supporting APIs
+# Public RPC contract
 
-Remote directories, configuration, SSH discovery, lifecycle callbacks, and the
-exception hierarchy.
+Canonical wire schema: src/molq/protocol/v1.json. Its declarative source is tools/build_contract.py. tools/generate_clients.py produces Python TypedDicts, TypeScript types and the async Python projection. Generated drift is checked before release.
 
-::: molq.workspace.Workspace
+Methods: molq.hello, schema.discover; clusters.list/get/register/update/remove; jobs.validate/preview/submit/get/get_many/list/history/cancel/cancel_many/observe; events.subscribe; logs.read; files.read/write/transfer; config.get/set; presets.list/get/set.
 
-::: molq.workspace.Project
+Protocol major is 1, release is 0.9.0. JSON-RPC 2.0 uses named params, batches up to 128, frames up to 1 MiB. Every mutation requires a request ID. The hello handshake exposes protocol/registry/Runtime identities and method names; it is not a feature negotiation API.
 
-::: molq.config.MolqProfile
-
-::: molq.config.MolqConfig
-
-::: molq.config.load_config
-
-::: molq.config.load_profile
-
-::: molq.ssh_config.SshHost
-
-::: molq.ssh_config.list_ssh_hosts
-
-::: molq.ssh_config.ssh_alias_names
-
-::: molq.ssh_config.resolve_ssh_host
-
-::: molq.options.SshTransportOptions
-
-::: molq.callbacks.EventType
-
-::: molq.callbacks.EventPayload
-
-::: molq.callbacks.EventBus
-
-::: molq.plugin.MolqPlugin
-
-::: molq.plugin.PluginContext
-
-::: molq.plugin.PluginManager
-
-::: molq.plugin.available_plugins
-
-`BUILTIN_PLUGIN_FACTORIES` maps each official plugin name to the factory
-that builds it. Official names win over third-party entry points of the
-same name.
-
-::: molq.plugin.create_plugin
-
-::: molq.config.enabled_plugin_names
-
-::: molq.store.dependency_relation_state
+Error data includes kind, message, outcome (not_applied/applied/unknown) and context. OUTCOME_UNKNOWN after dispatch is not permission to automatically retry a submit. Reconcile native truth first.
 
 ::: molq.errors
-    options:
-      members:
-        - MolqError
-        - ConfigError
-        - SubmitError
-        - CommandError
-        - ScriptError
-        - SchedulerError
-        - JobNotFoundError
-        - MolqTimeoutError
-        - StoreError
-
-## Dashboard
-
-The full-screen monitor behind `molq monitor`. These names are exported
-lazily — importing `molq` does not pull in the terminal UI.
-
-::: molq.dashboard.MolqMonitor
-
-::: molq.dashboard.RunDashboard
-
-::: molq.dashboard.DashboardState
-
-::: molq.dashboard.JobRow

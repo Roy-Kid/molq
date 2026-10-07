@@ -1,296 +1,275 @@
-"""SLURM backend (sbatch / squeue / scancel / sacct)."""
+"""All Slurm resource/directive/dependency/step/state semantics."""
 
 from __future__ import annotations
 
-from collections.abc import Sequence
-from pathlib import Path
+import builtins
+import shlex
 
-from molq._log import get_logger
-from molq.errors import SchedulerError
-from molq.models import JobSpec
-from molq.options import SlurmSchedulerOptions
-from molq.scheduler.base import (
-    DependencyEdge,
-    QueueEntry,
-    SchedulerCapabilities,
-    TerminalStatus,
-    _dependency_keyword,
-)
-from molq.scheduler.script import (
-    _default_failure_reason,
-    _parse_exit_code,
-    _parse_slurm_time,
-    _render_job_lines,
-)
-from molq.status import JobState
-from molq.transport import LocalTransport, Transport, TransportError
+from molq.errors import MolqError
+from molq.scheduler.base import TERMINAL, NativeJob, _SchedulerMethods
+from molq.scheduler.execution import render_execution
 
-logger = get_logger(__name__)
-
-_SLURM_STATE_MAP: dict[str, JobState] = {
-    "R": JobState.RUNNING,
-    "PD": JobState.QUEUED,
-    "CD": JobState.SUCCEEDED,
-    "CG": JobState.RUNNING,
-    "CA": JobState.CANCELLED,
-    "F": JobState.FAILED,
-    "TO": JobState.TIMED_OUT,
-    "NF": JobState.FAILED,
-    "OOM": JobState.FAILED,
+STATES = {
+    "PENDING": "queued",
+    "CONFIGURING": "queued",
+    "RUNNING": "running",
+    "COMPLETING": "running",
+    "SUSPENDED": "running",
+    "COMPLETED": "succeeded",
+    "FAILED": "failed",
+    "NODE_FAIL": "failed",
+    "OUT_OF_MEMORY": "failed",
+    "BOOT_FAIL": "failed",
+    "CANCELLED": "cancelled",
+    "PREEMPTED": "cancelled",
+    "TIMEOUT": "timed_out",
+    "DEADLINE": "timed_out",
 }
-
-_SLURM_SACCT_MAP: dict[str, JobState] = {
-    "COMPLETED": JobState.SUCCEEDED,
-    "FAILED": JobState.FAILED,
-    "CANCELLED": JobState.CANCELLED,
-    "TIMEOUT": JobState.TIMED_OUT,
-    "OUT_OF_MEMORY": JobState.FAILED,
-    "NODE_FAIL": JobState.FAILED,
-    "PREEMPTED": JobState.CANCELLED,
+DEPENDENCIES = {
+    "after": "afterany",
+    "after_success": "afterok",
+    "after_failure": "afternotok",
 }
 
 
-class SlurmScheduler:
-    """Submit and manage jobs via SLURM.
+class SlurmScheduler(_SchedulerMethods):
+    """Submit/query/cancel through the injected Transport, with no capabilities."""
 
-    All shell calls (``sbatch``, ``squeue``, ``scancel``, ``sacct``) go through
-    the injected :class:`~molq.transport.Transport` — defaulting to
-    :class:`~molq.transport.LocalTransport` for byte-identical behaviour to
-    pre-transport molq.  Pass an :class:`~molq.transport.SshTransport` to drive
-    a remote SLURM cluster from a laptop.
-    """
+    def launch(self, unit: dict, payload: str) -> str:
+        """Map native steps and explicit MPI launch, without probing tools."""
+        intent = unit.get("launch", {"kind": "direct"})
+        placement = unit.get("placement")
+        if intent["kind"] == "mpi" and self.cluster.get("launcher") == "srun":
+            return f"srun --exclusive --ntasks={intent['ranks']} --cpus-per-task={intent.get('threads', 1)} {payload}"
+        if intent["kind"] == "direct" and placement:
+            if placement.get("tasks", 1) != 1:
+                self.unsupported(
+                    "Direct placement is exactly one task; use MPI for multiple ranks"
+                )
+            return f"srun --exclusive --ntasks=1 --cpus-per-task={placement.get('cpus_per_task', 1)} {payload}"
+        return super().launch(unit, payload)
 
-    def __init__(
-        self,
-        options: SlurmSchedulerOptions | None = None,
-        *,
-        transport: Transport | None = None,
-    ) -> None:
-        self._opts = options or SlurmSchedulerOptions()
-        self._transport: Transport = transport or LocalTransport()
-
-    def capabilities(self) -> SchedulerCapabilities:
-        return SchedulerCapabilities(
-            supports_cwd=True,
-            supports_env=True,
-            supports_output_file=True,
-            supports_error_file=True,
-            supports_job_name=True,
-            supports_cpu_count=True,
-            supports_memory=True,
-            supports_gpu_count=True,
-            supports_gpu_type=True,
-            supports_time_limit=True,
-            supports_partition=True,
-            supports_account=True,
-            supports_dependency=True,
-            supports_node_count=True,
-            supports_exclusive_node=True,
-            supports_array_jobs=True,
-            supports_qos=True,
-            supports_reservation=True,
-        )
-
-    def submit(self, spec: JobSpec, job_dir: Path) -> str:
-        script_path = self._generate_script(spec, job_dir)
-        cmd = [self._opts.sbatch_path, "--parsable", str(script_path)]
-        cmd.extend(self._opts.extra_sbatch_flags)
-
-        try:
-            result = self._transport.run(cmd, timeout=60)
-        except TransportError as e:
-            raise SchedulerError(
-                "SLURM submission timed out",
-                command=cmd,
-            ) from e
-        if result.returncode != 0:
-            raise SchedulerError(
-                "SLURM submission failed",
-                stderr=result.stderr,
-                command=cmd,
+    def validate(self, spec: dict) -> None:
+        """Validate exact representability, never real cluster configuration."""
+        super().validate(spec)
+        resources = spec["resources"]
+        if (
+            resources.get("nodes", 1) > 1
+            and len(spec["execution"]["units"]) > 1
+            and any(
+                u.get("launch", {}).get("kind", "direct") == "direct"
+                and not u.get("placement")
+                for u in spec["execution"]["units"]
             )
-        return result.stdout.strip().split(";")[0]
+        ):
+            self.unsupported(
+                "Multi-node direct units require explicit native-step placement"
+            )
+        if len(spec["execution"]["units"]) > 1 and "tasks" not in resources:
+            raise MolqError(
+                "RESOURCE_REQUEST_INVALID",
+                "Multi-unit batch execution requires an explicit task budget",
+            )
+        for unit in spec["execution"]["units"]:
+            launch = unit.get("launch", {})
+            if launch.get("ranks", 1) > resources.get("tasks", 1) or launch.get(
+                "threads", 1
+            ) > resources.get("cpus_per_task", 1):
+                raise MolqError(
+                    "EXECUTION_RESOURCE_CONFLICT",
+                    "MPI launch exceeds the allocation layout",
+                )
+        accelerators = resources.get("accelerators", [])
+        if len(accelerators) > 1:
+            self.unsupported(
+                "Multiple accelerator requests require an unambiguous native resource mapping"
+            )
+        if (
+            accelerators
+            and accelerators[0]["kind"] == "nvidia_mps"
+            and accelerators[0]["scope"] != "per_node"
+        ):
+            self.unsupported("Slurm MPS is represented per node")
+        for edge in spec["scheduling"].get("dependencies", []):
+            if edge["condition"] not in DEPENDENCIES:
+                self.unsupported("This dependency condition has no exact Slurm mapping")
 
-    def poll_many(self, scheduler_job_ids: Sequence[str]) -> dict[str, JobState]:
-        if not scheduler_job_ids:
-            return {}
-
-        ids_str = ",".join(scheduler_job_ids)
-        cmd = [
-            self._opts.squeue_path,
-            "-j",
-            ids_str,
-            "-h",
-            "-o",
-            "%i %t",
+    def render(self, spec: dict, directory: str) -> str:
+        """Render allocation resources and plan in one Slurm job script."""
+        self.validate(spec)
+        r, s = spec["resources"], spec["scheduling"]
+        directives = [
+            f"--chdir={shlex.quote(directory)}",
+            f"--output={shlex.quote(directory + '/stdout')}",
+            f"--error={shlex.quote(directory + '/stderr')}",
         ]
-
-        try:
-            result = self._transport.run(cmd, timeout=30)
-        except TransportError as e:
-            logger.warning(f"squeue invocation failed: {e}")
-            return {}
-        if not result.stdout.strip():
-            return {}
-
-        out: dict[str, JobState] = {}
-        for line in result.stdout.strip().split("\n"):
-            parts = line.split()
-            if len(parts) >= 2:
-                jid, st = parts[0], parts[1]
-                state = _SLURM_STATE_MAP.get(st)
-                if state is not None:
-                    out[jid] = state
-        return out
-
-    def cancel(self, scheduler_job_id: str) -> None:
-        try:
-            self._transport.run(
-                [self._opts.scancel_path, scheduler_job_id],
-                timeout=30,
+        for field, flag in [
+            ("nodes", "nodes"),
+            ("tasks", "ntasks"),
+            ("cpus_per_task", "cpus-per-task"),
+        ]:
+            if field in r:
+                directives.append(f"--{flag}={r[field]}")
+        if "memory_bytes" in r:
+            directives.append(
+                f"--mem={((int(r['memory_bytes']) + 1048575) // 1048576)}M"
             )
-        except TransportError:
-            pass
-
-    def resolve_terminal(self, scheduler_job_id: str) -> TerminalStatus | None:
-        try:
-            result = self._transport.run(
-                [
-                    self._opts.sacct_path,
-                    "-j",
-                    scheduler_job_id,
-                    "-o",
-                    "State,ExitCode",
-                    "-n",
-                    "-P",
-                ],
-                timeout=15,
+        if seconds := r.get("time_limit_seconds"):
+            directives.append(
+                f"--time={seconds // 3600}:{seconds % 3600 // 60:02}:{seconds % 60:02}"
             )
-        except TransportError:
-            return None
-        if result.returncode != 0 or not result.stdout.strip():
-            return None
-        try:
-            first_line = result.stdout.strip().split("\n")[0]
-            parts = first_line.split("|")
-            raw_state = parts[0].strip()
-            state_str = raw_state.split()[0]
-        except IndexError:
-            return None
-        state = _SLURM_SACCT_MAP.get(state_str)
-        if state is None:
-            return None
-        exit_code = _parse_exit_code(parts[1]) if len(parts) > 1 else None
-        return TerminalStatus(
-            state=state,
-            exit_code=exit_code,
-            failure_reason=_default_failure_reason(state, exit_code, raw_state),
-            raw_state=raw_state,
-        )
-
-    def list_queue(self, *, user: str | None = None) -> list[QueueEntry]:
-        cmd: list[str] = [self._opts.squeue_path, "-h", "-o", "%i|%j|%u|%t|%P|%V|%S"]
-        if user is None:
-            cmd.append("--me")
-        else:
-            cmd += ["-u", user]
-        try:
-            result = self._transport.run(cmd, timeout=30)
-        except TransportError as exc:
-            logger.warning(f"squeue invocation failed: {exc}")
-            return []
-        if result.returncode != 0 or not result.stdout.strip():
-            return []
-        entries: list[QueueEntry] = []
-        for line in result.stdout.strip().split("\n"):
-            parts = line.split("|")
-            if len(parts) < 7:
-                continue
-            jid, name, usr, raw_state, part, sub_t, start_t = parts[:7]
-            entries.append(
-                QueueEntry(
-                    scheduler_job_id=jid,
-                    name=name or None,
-                    user=usr or None,
-                    state=_SLURM_STATE_MAP.get(raw_state, JobState.QUEUED),
-                    raw_state=raw_state,
-                    partition=part or None,
-                    submit_time=_parse_slurm_time(sub_t),
-                    start_time=_parse_slurm_time(start_t),
+        for field, flag in [
+            ("name", "job-name"),
+            ("partition", "partition"),
+            ("account", "account"),
+            ("qos", "qos"),
+            ("reservation", "reservation"),
+            ("priority", "priority"),
+        ]:
+            if field in s:
+                directives.append(f"--{flag}={s[field]}")
+        if s.get("exclusive"):
+            directives.append("--exclusive")
+        for a in r.get("accelerators", []):
+            if a["kind"] == "nvidia_mps":
+                directives.append(f"--gres=mps:{a['quantity']}")
+            else:
+                resource = f"{a.get('model', '') + ':' if a.get('model') else ''}{a['quantity']}"
+                directives.append(
+                    f"--{'gpus-per-node' if a['scope'] == 'per_node' else 'gpus'}={resource}"
+                )
+        if edges := s.get("dependencies"):
+            directives.append(
+                "--dependency="
+                + ",".join(
+                    f"{DEPENDENCIES[e['condition']]}:{e['ref']['native_id']}"
+                    for e in edges
                 )
             )
-        return entries
-
-    # --dependency=<keyword>:<jobid>[,<keyword>:<jobid2>...]
-    _DEP_KEYWORDS: dict[str, str] = {
-        "after_started": "after",
-        "after_success": "afterok",
-        "after_failure": "afternotok",
-        "after": "afterany",
-    }
-
-    def format_dependency(self, edge: DependencyEdge) -> str:
-        keyword = _dependency_keyword(self._DEP_KEYWORDS, edge.condition, "slurm")
-        return f"{keyword}:{edge.scheduler_job_id}"
-
-    def format_dependencies(self, edges: Sequence[DependencyEdge]) -> str:
-        return ",".join(self.format_dependency(edge) for edge in edges)
-
-    def _generate_script(self, spec: JobSpec, job_dir: Path) -> Path:
-        script_path = job_dir / "run_slurm.sh"
-        lines = ["#!/bin/bash"]
-
-        # SBATCH directives
-        directives = self._map_resources(spec)
-        for key, value in directives.items():
-            if value == "":
-                lines.append(f"#SBATCH --{key}")
-            else:
-                lines.append(f"#SBATCH --{key}={value}")
-
-        lines.extend(_render_job_lines(spec, job_dir))
-
-        self._transport.write_text(
-            str(script_path), "\n".join(lines) + "\n", mode=0o700
+        return (
+            "#!/usr/bin/env bash\n"
+            + "\n".join("#SBATCH " + d for d in directives)
+            + "\n"
+            + render_execution(spec, self.launch)
         )
-        return script_path
 
-    def _map_resources(self, spec: JobSpec) -> dict[str, str]:
-        mapped: dict[str, str] = {}
-        r, s, e = spec.resources, spec.scheduling, spec.execution
+    async def submit(self, spec: dict, directory: str) -> NativeJob:
+        """Return verified native identity; unavailable evidence is outcome unknown."""
+        path = await self.stage(spec, directory)
+        text = await self.native(["sbatch", "--parsable", path], mutation=True)
+        identity = text.strip().split(";")[0]
+        if not identity.isdigit():
+            raise MolqError(
+                "OUTCOME_UNKNOWN",
+                "Cannot parse accepted allocation identity",
+                outcome="unknown",
+            )
+        return await self.accepted_identity(identity)
 
-        if s.partition:
-            mapped["partition"] = s.partition
-        if r.cpu_count:
-            mapped["ntasks"] = str(r.cpu_count)
-        if r.memory:
-            mapped["mem"] = r.memory.to_slurm()
-        if r.time_limit:
-            mapped["time"] = r.time_limit.to_slurm()
-        if e.job_name:
-            mapped["job-name"] = e.job_name
-        if e.output_file:
-            mapped["output"] = e.output_file
-        if e.error_file:
-            mapped["error"] = e.error_file
-        if r.gpu_count:
-            gres = f"gpu:{r.gpu_count}"
-            if r.gpu_type:
-                gres = f"gpu:{r.gpu_type}:{r.gpu_count}"
-            mapped["gres"] = gres
-        if s.node_count:
-            mapped["nodes"] = str(s.node_count)
-        if s.exclusive_node:
-            mapped["exclusive"] = ""
-        if s.account:
-            mapped["account"] = s.account
-        if s.qos:
-            mapped["qos"] = s.qos
-        if s.dependency:
-            mapped["dependency"] = s.dependency
-        if s.array_spec:
-            mapped["array"] = s.array_spec
-        if s.reservation:
-            mapped["reservation"] = s.reservation
+    @staticmethod
+    def _parse(text: str, source: str) -> dict[str, NativeJob]:
+        jobs = {}
+        for line in text.splitlines():
+            fields = line.split("|")
+            if len(fields) < 5:
+                raise MolqError(
+                    "SCHEDULER_UNAVAILABLE", "Incomplete Slurm query response"
+                )
+            identity, raw, submit, cwd, name = fields[:5]
+            if "." in identity:  # accounting step rows are not allocations
+                continue
+            if not raw.strip():
+                raise MolqError("SCHEDULER_UNAVAILABLE", "Missing Slurm native state")
+            state = STATES.get(raw.split()[0].rstrip("+"), "unknown")
+            code = None
+            if len(fields) > 5 and fields[5]:
+                try:
+                    status, signal = fields[5].split(":")
+                    code = int(status) or (128 + int(signal) if int(signal) else 0)
+                except ValueError:
+                    raise MolqError(
+                        "SCHEDULER_UNAVAILABLE", "Invalid Slurm accounting exit code"
+                    ) from None
+            if submit in {"", "Unknown", "N/A"}:
+                submit = ""
+            jobs[identity] = NativeJob(
+                identity,
+                submit,
+                state,
+                source,
+                raw,
+                code,
+                cwd if cwd not in {"", "Unknown"} else None,
+                name,
+            )
+        return jobs
 
-        return mapped
+    async def query_many(self, ids: builtins.list[str]) -> dict[str, NativeJob]:
+        """Batch queue query with accounting for missing allocations."""
+        if not ids:
+            return {}
+        try:
+            text = await self.native(
+                [
+                    "squeue",
+                    "--noheader",
+                    "--jobs",
+                    ",".join(ids),
+                    "--format=%i|%T|%V|%Z|%j",
+                ]
+            )
+        except MolqError as exc:
+            # Single-ID queue lookups can reject a purged finished allocation.
+            # Only native absence permits accounting; an outage remains an error.
+            if exc.context.get(
+                "returncode"
+            ) != 1 or "Invalid job id specified" not in exc.context.get("stderr", ""):
+                raise
+            return await self.history(ids)
+        jobs = self._parse(text, "queue")
+        missing = [i for i in ids if i not in jobs]
+        if missing:
+            jobs.update(await self.history(missing))
+        return {i: j for i, j in jobs.items() if i in ids}
+
+    async def list(self) -> builtins.list[NativeJob]:
+        """Read this native account's queue, including externally submitted jobs."""
+        return list(
+            self._parse(
+                await self.native(
+                    ["squeue", "--me", "--noheader", "--format=%i|%T|%V|%Z|%j"]
+                ),
+                "queue",
+            ).values()
+        )
+
+    async def history(self, ids: builtins.list[str]) -> dict[str, NativeJob]:
+        """Query live accounting, without a mirrored history database."""
+        if not ids:
+            return {}
+        text = await self.native(
+            [
+                "sacct",
+                "--allocations",
+                "--noheader",
+                "--parsable2",
+                "--jobs",
+                ",".join(ids),
+                "--format=JobIDRaw,State,Submit,WorkDir,JobName,ExitCode",
+            ]
+        )
+        return self._parse(text, "accounting")
+
+    async def cancel(self, job: NativeJob) -> dict:
+        """Return request acceptance; actual state requires another native query."""
+        if job.state in TERMINAL:
+            return {"outcome": "already_terminal"}
+        try:
+            await self.native(["scancel", job.native_id], mutation=True)
+        except MolqError as exc:
+            if exc.kind == "SUBMISSION_REJECTED":
+                raise MolqError(
+                    "CANCEL_REJECTED", "Native cancellation rejected", **exc.context
+                ) from exc
+            raise
+        return {"outcome": "accepted"}

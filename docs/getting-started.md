@@ -1,158 +1,52 @@
-# Quickstart
+## Quickstart
 
-This page takes you from installation to a completed local job. You do not
-need an HPC account, a configuration file, or a running daemon.
+Install Python 3.12 or later:
 
-## Install
-
-molq requires Python 3.12 or newer.
-
-=== "pip"
-
-    ```bash
-    pip install molcrafts-molq
-    ```
-
-=== "uv"
-
-    ```bash
-    uv add molcrafts-molq
-    ```
-
-The distribution is named `molcrafts-molq`; the Python package and command are
-both named `molq`.
-
-```bash
-molq --help
+```sh
+pip install molcrafts-molq
+molq --registry ./registry.db clusters register --definition '{"name":"local","scheduler":"shell","target_root":"/tmp/molq-target"}'
+molq --registry ./registry.db submit local -- echo hello
 ```
 
-## Run a local job
+The submit response contains a stable registry-qualified JobRef. Save it and pass it to status, logs, cancel or wait:
 
-Create a destination, attach a queue to it, and submit an argument vector:
+```sh
+molq --registry ./registry.db status --ref @job-ref.json
+molq --registry ./registry.db wait --ref @job-ref.json --timeout 60
+molq discover
+```
+
+Use the OOP Python client without starting a service:
 
 ```python
-import molq as mq
+from molq import Molq
 
-cluster = mq.Cluster("laptop", "local")
-
-with mq.Submitor(target=cluster) as queue:
-    job = queue.submit_job(
-        argv=["python", "-c", "print('hello from molq')"]
+with Molq(registry="registry.db") as mq:
+    mq.clusters.register(
+        name="local", scheduler="shell", target_root="/tmp/molq-python"
     )
-    result = job.wait()
-
-print(result.state.value)
-print(result.exit_code)
+    job = mq.cluster("local").submit(argv=["echo", "hello"])
+    print(job.wait(timeout=60)["completion"])
+    print(job.logs()["text"])
 ```
 
-Expected output:
+When no endpoint is configured, native clients start a temporary stdio Runtime. Accepted Shell jobs detach from the client and retain original target launch/exit receipts; scheduler jobs already belong to the scheduler. Restarting a client can query a saved JobRef.
 
-```text
-succeeded
-0
+## Shared Runtime and Web
+
+```sh
+export MOLQ_TOKEN='replace-with-your-own-long-secret'
+molq runtime serve --registry ./registry.db --host 127.0.0.1 --port 17891
 ```
 
-`"laptop"` is a namespace for persisted records. `"local"` selects the
-no-batch scheduler. The context manager closes the SQLite connection when the
-work is finished; it does not cancel the job.
+Open http://127.0.0.1:17891/ and enter the token. Connect other clients to that same endpoint using MOLQ_ENDPOINT and MOLQ_TOKEN. HTTP and WebSocket use the same RPC implementation as stdio. A token is required even on loopback; deploy HTTPS/WSS through existing infrastructure.
 
-## Inspect what was submitted
+One registry normally has one active Runtime. Configure an explicit endpoint for shared clients. Temporary stdio instances have separate cache, event rings and cursors; SQLite protects short accidental write overlap, without synchronizing their observations.
 
-`submit_job()` returns a `JobHandle` immediately:
+Runtime performs finite requested operations. Periodic observation is optional:
 
-```python
-with mq.Submitor(target=cluster) as queue:
-    job = queue.submit_job(argv=["sleep", "2"])
-
-    print(job.job_id)            # molq's stable ID
-    print(job.scheduler_job_id)  # backend-specific ID
-    print(job.status())          # cached state
-
-    job.refresh()                # one scheduler reconciliation pass
-    record = job.wait(timeout=30)
+```sh
+molq --endpoint http://127.0.0.1:17891 observer --cluster local --interval 5
 ```
 
-The final `JobRecord` contains the state, timestamps, exit code, command,
-working directory, and artifact paths.
-
-You can inspect the same record from the CLI. Reuse the cluster namespace:
-
-```bash
-molq list local --cluster laptop --all
-molq status JOB_ID local --cluster laptop
-molq inspect JOB_ID local --cluster laptop
-```
-
-!!! tip "Keep the namespace stable"
-
-    Job commands filter records by cluster name. If submission used
-    `"laptop"`, inspection must also use `--cluster laptop`.
-
-## Run your own program
-
-`argv` is the safest command form because arguments are not interpreted by a
-shell:
-
-```python
-with mq.Submitor(target=cluster) as queue:
-    job = queue.submit_job(
-        argv=["python", "analysis.py", "--input", "sample.xyz"]
-    )
-    record = job.wait()
-```
-
-Use `command=` only when you intentionally need shell syntax such as pipes or
-redirection. Use `script=` for multi-line shell logic. See
-[Submit jobs](jobs.md#choose-a-command-form).
-
-## Move the same workflow to SLURM
-
-Use an SSH host alias that already works with `ssh`:
-
-```sshconfig
-Host dardel
-    HostName dardel.pdc.kth.se
-    User alice
-```
-
-Then change the destination and add scheduler resources:
-
-```python
-import molq as mq
-
-cluster = mq.Cluster("dardel", "slurm", host="dardel")
-
-with mq.Submitor(target=cluster) as queue:
-    job = queue.submit_job(
-        argv=["python", "train.py"],
-        resources=mq.JobResources(
-            cpu_count=8,
-            memory=mq.Memory.gb(32),
-            time_limit=mq.Duration.hours(4),
-        ),
-        scheduling=mq.JobScheduling(
-            partition="gpu",
-            account="project123",
-        ),
-    )
-    print(job.job_id)
-```
-
-molq invokes the system `ssh`, `rsync`, and scheduler clients. Your existing
-OpenSSH configuration remains the source of truth for authentication,
-ProxyJump, agents, and connection sharing.
-
-!!! warning "Code and inputs must exist remotely"
-
-    `argv=["python", "train.py"]` does not upload `train.py`. Stage files first
-    with a [Workspace or Project](remote-files.md), or submit from a working
-    directory that already exists on the cluster.
-
-## Where to go next
-
-- [Mental model](concepts.md) explains the small set of objects you just used.
-- [Submit jobs](jobs.md) covers resources, execution settings, retries, and
-  dependencies.
-- [Clusters and schedulers](schedulers.md) covers local, SSH, SLURM, PBS, and
-  LSF destinations.
-- [Monitor jobs](monitoring.md) covers status, logs, history, and daemon mode.
+Observer chooses cadence and notification delivery; Runtime computes snapshots, completion and changes. Subscriptions passively distribute already observed changes and do not poll a scheduler.

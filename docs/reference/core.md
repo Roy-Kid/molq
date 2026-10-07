@@ -1,9 +1,5 @@
-# Core API
+# OOP client API
 
-The lifecycle-facing classes used by nearly every molq application.
+::: molq.client.objects
 
-::: molq.cluster.Cluster
-
-::: molq.submitor.Submitor
-
-::: molq.submitor.JobHandle
+::: molq.client.async_objects
