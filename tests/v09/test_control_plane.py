@@ -120,3 +120,42 @@ def test_cli_submit_spec_options_after_destination():
 
     parsed = parser().parse_args(["submit", "hpc", "--spec", "@spec.json"])
     assert parsed.spec == "@spec.json" and not parsed.argv
+
+
+def test_cli_partial_cached_batch_has_exit_eight(tmp_path):
+    import subprocess
+
+    registry = tmp_path / "registry.db"
+    with Molq(registry=registry) as mq:
+        destination = mq.clusters.register(
+            name="remote",
+            scheduler="slurm",
+            target_root="/scratch",
+            transport={"kind": "ssh", "alias": "hpc"},
+        )
+        ref = {
+            "registry_id": mq.rpc("molq.hello")["registry_id"],
+            "cluster_id": destination.definition()["id"],
+            "native_id": "42",
+            "incarnation": "original",
+        }
+    response = subprocess.run(
+        [
+            sys.executable,
+            "-m",
+            "molq",
+            "--registry",
+            str(registry),
+            "rpc",
+            "jobs.get_many",
+            "--params",
+            json.dumps({"refs": [ref], "consistency": "cached"}),
+        ],
+        capture_output=True,
+        text=True,
+        timeout=10,
+    )
+    assert response.returncode == 8
+    result = json.loads(response.stdout)["result"]
+    assert result["coverage"]["errors"][0]["kind"] == "CACHE_MISS"
+    assert not result["completion"]["all_confirmed_terminal"]

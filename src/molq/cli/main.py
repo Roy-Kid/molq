@@ -284,7 +284,9 @@ def main() -> None:
             and result.get("completion", {}).get("successful") is False
         ):
             raise SystemExit(9)
-        if isinstance(result, dict) and result.get("partial_failure"):
+        if isinstance(result, dict) and (
+            result.get("partial_failure") or result.get("coverage", {}).get("errors")
+        ):
             raise SystemExit(8)
     except MolqError as exc:
         emit(
