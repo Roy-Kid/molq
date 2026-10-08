@@ -47,11 +47,9 @@ jobs:
   pypi:
     name: release / pypi
     needs: build
-    if: github.repository_owner == 'MolCrafts' && startsWith(github.ref, 'refs/tags/v')
+    if: github.event_name == 'push' && github.repository_owner == 'MolCrafts'
     runs-on: ubuntu-latest
-    environment:
-      name: pypi
-      url: https://pypi.org/p/molcrafts-molq
+    environment: ${{ github.event_name == 'push' && 'pypi' || '' }}
     permissions:
       id-token: write
     steps:
