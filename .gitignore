@@ -181,3 +181,7 @@ uv.lock
 # TypeScript build dependencies and output
 node_modules/
 sdk/typescript/dist/
+
+# Platform serve binary built by setup.py
+src/molq/_bin/
+/bin/

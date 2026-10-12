@@ -3,9 +3,7 @@
 from __future__ import annotations
 
 import json
-import os
 import subprocess
-import sys
 import threading
 import urllib.error
 import urllib.request
@@ -26,13 +24,16 @@ class Wire:
         *,
         endpoint: str | None = None,
         registry: Path | str | None = None,
+        config: Path | str | None = None,
         token: str | None = None,
         timeout: float = 130,
         registry_id: str | None = None,
     ):
-        self.endpoint = endpoint or os.environ.get("MOLQ_ENDPOINT")
+        self.config = config
+        self.endpoint = endpoint
         self.registry = registry
-        self.token = token or os.environ.get("MOLQ_TOKEN")
+        self.token = token
+        self.executable = None
         self.timeout = timeout
         self.registry_id = registry_id
         self.process: subprocess.Popen | None = None
@@ -44,7 +45,11 @@ class Wire:
     def _start(self) -> None:
         if self.process is not None:
             return
-        argv = [sys.executable, "-m", "molq", "runtime", "rpc", "--stdio"]
+        from molq.client.binary import executable
+
+        argv = [executable(self.config), "serve", "--stdio"]
+        if self.config is not None:
+            argv.extend(["--config", str(self.config)])
         if self.registry is not None:
             argv.extend(["--registry", str(self.registry)])
         # stdout is protocol-only; stderr is diagnostic and cannot fill a pipe.
@@ -88,6 +93,7 @@ class Wire:
             "clusters.update",
             "clusters.remove",
             "config.set",
+            "config.reload",
             "presets.set",
             "jobs.submit",
             "jobs.cancel",

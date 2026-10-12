@@ -32,21 +32,26 @@ with Molq(registry="registry.db") as mq:
 
 When no endpoint is configured, native clients start a temporary stdio Runtime. Accepted Shell jobs detach from the client and retain original target launch/exit receipts; scheduler jobs already belong to the scheduler. Restarting a client can query a saved JobRef.
 
-## Shared Runtime and Web
+## Shared serve process
 
-```sh
-export MOLQ_TOKEN='replace-with-your-own-long-secret'
-molq runtime serve --registry ./registry.db --host 127.0.0.1 --port 17891
+Put the listen address and token in the configuration file, then start serve:
+
+```json
+{"serve": {"host": "127.0.0.1", "port": 17891, "token": "replace-with-your-own-long-secret"}}
 ```
 
-Open http://127.0.0.1:17891/ and enter the token. Connect other clients to that same endpoint using MOLQ_ENDPOINT and MOLQ_TOKEN. HTTP and WebSocket use the same RPC implementation as stdio. A token is required even on loopback; deploy HTTPS/WSS through existing infrastructure.
-
-One registry normally has one active Runtime. Configure an explicit endpoint for shared clients. Temporary stdio instances have separate cache, event rings and cursors; SQLite protects short accidental write overlap, without synchronizing their observations.
-
-Runtime performs finite requested operations. Periodic observation is optional:
-
 ```sh
-molq --endpoint http://127.0.0.1:17891 observer --cluster local --interval 5
+molq serve --registry ./registry.db --config ./config.json
 ```
 
-Observer chooses cadence and notification delivery; Runtime computes snapshots, completion and changes. Subscriptions passively distribute already observed changes and do not poll a scheduler.
+Clients set `client.endpoint` and `client.token` in that same kind of file, or pass them to the SDK constructor. HTTP and WebSocket use the same RPC implementation as stdio. A token is required even on loopback; deploy HTTPS/WSS through existing infrastructure. There is no web UI.
+
+One registry normally has one active serve process. Temporary stdio instances have separate cache, event rings and cursors. SQLite protects short accidental write overlap and does not synchronize their observations.
+
+Periodic observation is optional:
+
+```sh
+molq watch --registry ./registry.db --config ./config.json --cluster local
+```
+
+`watch` chooses cadence and notification delivery. The serve process computes snapshots, completion and changes. Subscriptions deliver changes that were already observed.

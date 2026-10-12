@@ -6,6 +6,9 @@ on:
   pull_request:
   workflow_call:
 
+env:
+  UV_NO_SOURCES: "true"
+
 jobs:
   lint:
     name: Contract, lint and types

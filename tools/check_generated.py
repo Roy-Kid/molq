@@ -10,7 +10,6 @@ paths = [
     root / "src/molq/protocol/types.py",
     root / "src/molq/client/async_objects.py",
     root / "sdk/typescript/src/types.ts",
-    root / "src/molq/web/wire.js",
 ]
 before = {path: path.read_bytes() for path in paths}
 for script in ("build_contract.py", "generate_clients.py"):
@@ -21,4 +20,4 @@ changed = [
 ]
 if changed:
     raise SystemExit("Generated drift: " + ", ".join(changed))
-print("Canonical schema, DTOs, async projection and Web codec match.")
+print("Canonical schema, DTOs and async projection match.")

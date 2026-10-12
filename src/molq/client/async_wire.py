@@ -4,8 +4,6 @@ from __future__ import annotations
 
 import asyncio
 import json
-import os
-import sys
 from collections import deque
 from pathlib import Path
 from typing import Any
@@ -23,14 +21,16 @@ class AsyncWire:
         *,
         endpoint: str | None = None,
         registry: Path | str | None = None,
+        config: Path | str | None = None,
         token: str | None = None,
         timeout: float = 130,
         registry_id: str | None = None,
     ):
-        self.endpoint = endpoint or os.environ.get("MOLQ_ENDPOINT")
+        self.config = config
+        self.endpoint = endpoint
         self.registry, self.token, self.timeout, self.registry_id = (
             registry,
-            token or os.environ.get("MOLQ_TOKEN"),
+            token,
             timeout,
             registry_id,
         )
@@ -74,6 +74,7 @@ class AsyncWire:
             "clusters.update",
             "clusters.remove",
             "config.set",
+            "config.reload",
             "presets.set",
             "jobs.submit",
             "jobs.cancel",
@@ -110,14 +111,11 @@ class AsyncWire:
                         frame = bytes(chunks)
                 else:
                     if self.process is None:
-                        argv = [
-                            sys.executable,
-                            "-m",
-                            "molq",
-                            "runtime",
-                            "rpc",
-                            "--stdio",
-                        ]
+                        from molq.client.binary import executable
+
+                        argv = [executable(self.config), "serve", "--stdio"]
+                        if self.config is not None:
+                            argv.extend(["--config", str(self.config)])
                         if self.registry is not None:
                             argv.extend(["--registry", str(self.registry)])
                         self.process = await asyncio.create_subprocess_exec(

@@ -1,6 +1,6 @@
 # molq 0.9.0
 
-molq controls local executions and HPC allocations through one language-independent RPC contract. CLI, Python SDK, TypeScript SDK, Web UI and the optional Observer are peer clients. Runtime owns the business implementation; Scheduler owns native resource, submission, dependency and state semantics.
+molq controls local executions and HPC allocations through one language-independent RPC contract. The CLI, Python SDK, TypeScript SDK and `molq watch` are peer clients. `molq serve` owns the business implementation. Scheduler owns native resource, submission, dependency and state semantics. There is no web UI.
 
 **0.9.0 is a breaking replacement of 0.8.x.** Submitor, JobStore, implicit local destinations, Rich output, retry, workspace and the old daemon/plugin API are removed. Re-register destinations explicitly. Old jobs.db files are neither read nor migrated nor deleted.
 
@@ -38,28 +38,31 @@ with Molq(registry="registry.db") as mq:
 
 When no endpoint is configured, native clients start a temporary stdio Runtime. Accepted Shell jobs detach from the client and retain original target launch/exit receipts; scheduler jobs already belong to the scheduler. Restarting a client can query a saved JobRef.
 
-## Shared Runtime and Web
+## Shared serve process
 
-```sh
-export MOLQ_TOKEN='replace-with-your-own-long-secret'
-molq runtime serve --registry ./registry.db --host 127.0.0.1 --port 17891
+Put the listen address and token in the configuration file, then start serve:
+
+```json
+{"serve": {"host": "127.0.0.1", "port": 17891, "token": "replace-with-your-own-long-secret"}}
 ```
 
-Open http://127.0.0.1:17891/ and enter the token. Connect other clients to that same endpoint using MOLQ_ENDPOINT and MOLQ_TOKEN. HTTP and WebSocket use the same RPC implementation as stdio. A token is required even on loopback; deploy HTTPS/WSS through existing infrastructure.
-
-One registry normally has one active Runtime. Configure an explicit endpoint for shared clients. Temporary stdio instances have separate cache, event rings and cursors; SQLite protects short accidental write overlap, without synchronizing their observations.
-
-Runtime performs finite requested operations. Periodic observation is optional:
-
 ```sh
-molq --endpoint http://127.0.0.1:17891 observer --cluster local --interval 5
+molq serve --registry ./registry.db --config ./config.json
 ```
 
-Observer chooses cadence and notification delivery; Runtime computes snapshots, completion and changes. Subscriptions passively distribute already observed changes and do not poll a scheduler.
+Clients set `client.endpoint` and `client.token` in that file, or pass them to the SDK constructor. HTTP and WebSocket use the same RPC implementation as stdio. A token is required even on loopback. There is no web UI.
+
+One registry normally has one active serve process. Temporary stdio instances have separate cache, event rings and cursors.
+
+```sh
+molq watch --registry ./registry.db --config ./config.json --cluster local
+```
+
+`watch` chooses cadence and notification delivery. The serve process computes snapshots, completion and changes.
 
 ## Persistence and execution
 
-SQLite persists only registry identity/schema, Cluster definitions, Runtime settings and presets. Job states, history, transitions, events, cursors, leases and retry queues are not persisted. Scheduler/accounting is task truth. Shell launch and exit receipts are original execution evidence on the target, not a mirrored job database.
+SQLite persists only registry identity and Cluster definitions. Settings and presets are a JSON or YAML file, by default `~/.molcrafts/molq/config.json`. Job states, history, transitions, events, cursors, leases and retry queues are not persisted. Scheduler accounting is task truth. Shell launch and exit receipts are original execution evidence on the target.
 
 A Job is one allocation. Resources, Scheduling and Execution are independent sections. Execution holds units and explicit Unit/Sequence/Parallel plans. Memory is a decimal string of bytes **per node**; task and CPU budgets are explicit. MPI uses a configured launcher. nvidia_mps is a formal Scheduler resource request with no automatic GPU conversion or MPS server startup.
 
@@ -90,4 +93,21 @@ uv run pytest --cov=molq --cov-report=xml
 uv run python -m build
 ```
 
-See [the architecture spec](docs/spec/molq-1-0-runtime-spec.md), [implementation ledger](docs/spec/implementation-0-9-0.md) and [documentation](docs/getting-started.md).
+See [the architecture spec](docs/spec/molq-1-0-runtime-spec.md) and [documentation](docs/getting-started.md).
+
+## Query names and native history
+
+```sh
+molq list Arrhenius --state running
+molq history Arrhenius --state failed --since 2026-10-06T00:00:00Z --until 2026-10-08T00:00:00Z
+```
+
+Snapshots include native name/comment and available UTC timestamps. Historical
+ranges select terminal jobs by ended-at `[since, until)`, defaulting to the past
+24 hours for the current target account. This release supports range discovery
+on Slurm; other Schedulers explicitly reject ranges and retain ref-based history.
+History retention and stored comments depend on the site's native accounting.
+
+Configuration is a JSON or YAML file selected with `--config`. There is no
+registry schema older than the current file layout, and a foreign database is
+left untouched.

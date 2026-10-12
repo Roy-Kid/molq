@@ -1,6 +1,8 @@
 # molq 1.0 架构铁律
 
-现行规范：以下 50 条以用户提供的文本为基础，取代此前 24 条版本；已按最新要求取消 capability 层，统一 Scheduler 术语、移出 Cluster 监视策略，并明确一个 registry 正常对应一个 active Runtime。实现草案集中在 [runtime spec](molq-1-0-runtime-spec.md)，不得反过来扩大或削弱本原则。本文的 `Scheduler` 指 molq 实现抽象；“原生调度器 / native scheduler”指外部 Slurm/PBS/LSF 等系统。
+现行规范：以下 50 条取消了 capability 层，统一 Scheduler 术语，并把监视策略移出 Cluster。一个 registry 正常对应一个 active serve 进程。实现合同见 [runtime spec](molq-1-0-runtime-spec.md)。本文的 `Scheduler` 指 molq 实现抽象；“原生调度器 / native scheduler”指外部 Slurm、PBS、LSF。
+
+名称以现在的命令为准：业务进程是 `serve`，周期客户端是 `watch`。没有 Web UI，没有 1.0 之前的 API 版本，也没有 schema 迁移。配置是 JSON 或 YAML 文件，不使用 molcfg，不读取 `MOLQ_*`。下面条文里的 Runtime 指这个 serve 进程，Observer 指 `watch`。
 
 ## 一、单一实现，所有客户端平权
 
@@ -90,7 +92,7 @@
     原生调度器已经拥有的状态不得为了方便查询而永久复制。
 
 21. **Persistence 是实现细节，不是领域模型。**
-    SQLite 可以作为 Cluster registry/config 的实现，但不能再次演化成隐藏的 Job lifecycle database。
+    SQLite 只保存 Cluster registry 和 registry 身份。settings/presets 使用 JSON 或 YAML 配置文件，但不能再次演化成隐藏的 Job lifecycle database。
 
 22. **Client 永远不能直接访问 Runtime 持久层。**
     Cluster/Runtime-owned config 的读取和修改必须经过公共 runtime API；client-local 连接、观察 cadence 与通知路由配置由各 client 自行加载，不属于 registry。

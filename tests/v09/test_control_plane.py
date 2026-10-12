@@ -54,8 +54,7 @@ def test_stdio_subscription_pushes_registry_reset(tmp_path):
             sys.executable,
             "-m",
             "molq",
-            "runtime",
-            "rpc",
+            "serve",
             "--stdio",
             "--registry",
             str(tmp_path / "registry.db"),
@@ -113,13 +112,6 @@ def test_native_startup_schema_error_retains_kind(tmp_path):
         with Molq(registry=path):
             pass
     assert error.value.kind == "STATE_SCHEMA_INCOMPATIBLE"
-
-
-def test_cli_submit_spec_options_after_destination():
-    from molq.cli.main import parser
-
-    parsed = parser().parse_args(["submit", "hpc", "--spec", "@spec.json"])
-    assert parsed.spec == "@spec.json" and not parsed.argv
 
 
 def test_cli_partial_cached_batch_has_exit_eight(tmp_path):

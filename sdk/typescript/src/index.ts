@@ -1,6 +1,6 @@
 /** Equal OOP projections of molq's public RPC contract. */
 import {HttpWire, Wire, MolqError} from "./wire.js";
-import type {JobSpec, JobRef, ClusterDefinition, ObservationResult} from "./types.js";
+import type {JobSpec, JobRef, ClusterDefinition, ObservationResult, JobsListParams, JobsHistoryParams} from "./types.js";
 export * from "./types.js";
 export {HttpWire, MolqError};
 export type {Wire};
@@ -39,7 +39,8 @@ export class Cluster {
   submitArgv(argv: string[]): Promise<Job> { return this.submit({execution:{units:[{id:"main",command:{kind:"argv",argv}}]}}); }
   validate(spec: JobSpec): Promise<unknown> { return this.molq.rpc("jobs.validate",{cluster:this.name,spec}); }
   preview(spec: JobSpec): Promise<unknown> { return this.molq.rpc("jobs.preview",{cluster:this.name,spec}); }
-  list(): Promise<Observation> { return this.molq.rpc("jobs.list",{cluster:this.name}); }
+  list(filters: Omit<JobsListParams,"cluster"> = {}): Promise<Observation> { return this.molq.rpc("jobs.list",{cluster:this.name,...filters}); }
+  history(filters: Omit<Extract<JobsHistoryParams,{refs:unknown}>,"cluster"> | Omit<Extract<JobsHistoryParams,{since?:unknown}>,"cluster"> = {}): Promise<Observation> { return this.molq.rpc("jobs.history",{cluster:this.name,...filters}); }
   observe(cursor?: string): Promise<Observation> { return this.molq.rpc("jobs.observe",{cluster:this.name,...(cursor ? {cursor} : {})}); }
 }
 export class Job {

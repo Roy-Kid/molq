@@ -69,6 +69,7 @@ class Scheduling(TypedDict):
     """Canonical wire shape."""
 
     name: NotRequired[str]
+    comment: NotRequired[str]
     partition: NotRequired[str]
     account: NotRequired[str]
     qos: NotRequired[str]
@@ -213,6 +214,11 @@ class JobSnapshot(TypedDict):
     source: Literal["queue", "accounting", "shell_receipt", "absent", "unavailable"]
     raw_state: str
     exit_code: int | None
+    name: NotRequired[str | None]
+    comment: NotRequired[str | None]
+    submitted_at: NotRequired[str | None]
+    started_at: NotRequired[str | None]
+    ended_at: NotRequired[str | None]
     error: NotRequired[ErrorData]
     last_known: NotRequired[JobSnapshot]
 
@@ -235,9 +241,23 @@ class ObservedChange(TypedDict):
     terminal: bool
 
 
+class ObservationResultquery(TypedDict):
+    """Canonical wire shape."""
+
+    since: str
+    until: str
+    time_field: Literal["ended_at"]
+    account_scope: Literal["current_target_user"]
+    source: Literal["accounting"]
+    observed_at: str
+    freshness: Freshness
+    limit: int
+
+
 class ObservationResult(TypedDict):
     """Canonical wire shape."""
 
+    query: NotRequired[ObservationResultquery]
     snapshots: list[JobSnapshot]
     coverage: Coverage
     completion: Completion
@@ -354,13 +374,41 @@ class JobsListParams(TypedDict):
     """Canonical wire shape."""
 
     cluster: str
+    states: NotRequired[
+        list[
+            Literal[
+                "queued",
+                "running",
+                "succeeded",
+                "failed",
+                "cancelled",
+                "timed_out",
+                "unknown",
+            ]
+        ]
+    ]
+    name: NotRequired[str]
 
 
-class JobsHistoryParams(TypedDict):
+class JobsHistoryParams0(TypedDict):
     """Canonical wire shape."""
 
     cluster: str
     refs: list[JobRef]
+
+
+class JobsHistoryParams1(TypedDict):
+    """Canonical wire shape."""
+
+    cluster: str
+    since: NotRequired[str]
+    until: NotRequired[str]
+    states: NotRequired[list[Literal["succeeded", "failed", "cancelled", "timed_out"]]]
+    name: NotRequired[str]
+    limit: NotRequired[int]
+
+
+JobsHistoryParams = JobsHistoryParams0 | JobsHistoryParams1
 
 
 class JobsCancelParams(TypedDict):
@@ -410,6 +458,12 @@ class FilesTransferParams(TypedDict):
     source_path: str
     destination_cluster: str
     destination_path: str
+
+
+class ConfigReloadParams(TypedDict):
+    """Canonical wire shape."""
+
+    pass
 
 
 class ConfigGetParams(TypedDict):

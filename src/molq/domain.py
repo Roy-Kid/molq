@@ -51,6 +51,7 @@ class Scheduling(Value):
     """Scheduling intent, independent of execution content."""
 
     name: str | None = None
+    comment: str | None = None
     partition: str | None = None
     account: str | None = None
     qos: str | None = None

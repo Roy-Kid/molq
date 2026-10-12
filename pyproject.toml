@@ -28,7 +28,6 @@ classifiers = [
 ]
 dependencies = [
   "aiohttp>=3.12,<4",
-  "jsonschema>=4.23,<5",
 ]
 
 [project.urls]
@@ -68,7 +67,7 @@ include = ["molq*"]
 namespaces = false
 
 [tool.setuptools.package-data]
-molq = ["py.typed", "protocol/*.json", "web/*"]
+molq = ["py.typed", "protocol/*.json", "_bin/*"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]

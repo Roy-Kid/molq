@@ -6,7 +6,7 @@ export class StdioWire implements Wire {
   private process?: ChildProcessWithoutNullStreams;
   private sequence = 0;
   private pending = new Map<number,{resolve:(value:unknown)=>void;reject:(error:unknown)=>void;timer:ReturnType<typeof setTimeout>;mutation:boolean}>();
-  constructor(private command: string[] = ["molq","runtime","rpc","--stdio"], private timeout = 130000) {}
+  constructor(private command: string[] = ["molq","serve","--stdio"], private timeout = 130000) {}
   private start(): void {
     if (this.process) return;
     this.process = spawn(this.command[0],this.command.slice(1),{stdio:["pipe","pipe","pipe"]});
@@ -35,7 +35,7 @@ export class StdioWire implements Wire {
     this.start(); const id = ++this.sequence;
     const payload = JSON.stringify({jsonrpc:"2.0",id,method,params})+"\n";
     if (Buffer.byteLength(payload)>1048576) return Promise.reject(new Error("RPC frame exceeds 1 MiB"));
-    const mutation=["clusters.register", "clusters.update", "clusters.remove", "config.set", "presets.set", "jobs.submit","jobs.cancel","jobs.cancel_many","files.write","files.transfer"].includes(method);
+    const mutation=["clusters.register", "clusters.update", "clusters.remove", "config.set", "config.reload", "presets.set", "jobs.submit","jobs.cancel","jobs.cancel_many","files.write","files.transfer"].includes(method);
     return new Promise<T>((resolve,reject)=>{
       const timer = setTimeout(()=>{ this.pending.delete(id); reject(new MolqError({kind:mutation?"OUTCOME_UNKNOWN":"RUNTIME_UNAVAILABLE",message:"RPC deadline",outcome:mutation?"unknown":"not_applied",context:{}})); this.process?.kill(); },this.timeout);
       this.pending.set(id,{resolve:value=>resolve(value as T),reject,timer,mutation}); this.process!.stdin.write(payload);

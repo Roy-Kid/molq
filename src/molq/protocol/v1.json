@@ -195,6 +195,10 @@
           "type": "string",
           "pattern": "^[A-Za-z0-9][A-Za-z0-9_.-]{0,127}$"
         },
+        "comment": {
+          "type": "string",
+          "maxLength": 4094
+        },
         "partition": {
           "type": "string",
           "pattern": "^[A-Za-z0-9][A-Za-z0-9_.-]{0,127}$"
@@ -639,6 +643,36 @@
             "null"
           ]
         },
+        "name": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "comment": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "submitted_at": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "started_at": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "ended_at": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
         "error": {
           "$ref": "#/$defs/ErrorData"
         },
@@ -721,6 +755,52 @@
     "ObservationResult": {
       "type": "object",
       "properties": {
+        "query": {
+          "type": "object",
+          "properties": {
+            "since": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 4096
+            },
+            "until": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 4096
+            },
+            "time_field": {
+              "const": "ended_at"
+            },
+            "account_scope": {
+              "const": "current_target_user"
+            },
+            "source": {
+              "const": "accounting"
+            },
+            "observed_at": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 4096
+            },
+            "freshness": {
+              "$ref": "#/$defs/Freshness"
+            },
+            "limit": {
+              "type": "integer"
+            }
+          },
+          "required": [
+            "since",
+            "until",
+            "time_field",
+            "account_scope",
+            "source",
+            "observed_at",
+            "freshness",
+            "limit"
+          ],
+          "additionalProperties": false
+        },
         "snapshots": {
           "type": "array",
           "items": {
@@ -1049,6 +1129,27 @@
           "type": "string",
           "minLength": 1,
           "maxLength": 4096
+        },
+        "states": {
+          "type": "array",
+          "items": {
+            "enum": [
+              "queued",
+              "running",
+              "succeeded",
+              "failed",
+              "cancelled",
+              "timed_out",
+              "unknown"
+            ]
+          },
+          "minItems": 1,
+          "uniqueItems": true
+        },
+        "name": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 4096
         }
       },
       "required": [
@@ -1057,27 +1158,78 @@
       "additionalProperties": false
     },
     "jobs.history": {
-      "type": "object",
-      "properties": {
-        "cluster": {
-          "type": "string",
-          "minLength": 1,
-          "maxLength": 4096
-        },
-        "refs": {
-          "type": "array",
-          "items": {
-            "$ref": "#/$defs/JobRef"
+      "oneOf": [
+        {
+          "type": "object",
+          "properties": {
+            "cluster": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 4096
+            },
+            "refs": {
+              "type": "array",
+              "items": {
+                "$ref": "#/$defs/JobRef"
+              },
+              "minItems": 1,
+              "maxItems": 1024
+            }
           },
-          "minItems": 1,
-          "maxItems": 1024
+          "required": [
+            "cluster",
+            "refs"
+          ],
+          "additionalProperties": false
+        },
+        {
+          "type": "object",
+          "properties": {
+            "cluster": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 4096
+            },
+            "since": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 4096
+            },
+            "until": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 4096
+            },
+            "states": {
+              "type": "array",
+              "items": {
+                "enum": [
+                  "succeeded",
+                  "failed",
+                  "cancelled",
+                  "timed_out"
+                ]
+              },
+              "minItems": 1,
+              "uniqueItems": true
+            },
+            "name": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 4096
+            },
+            "limit": {
+              "type": "integer",
+              "minimum": 1,
+              "maximum": 1024
+            }
+          },
+          "required": [
+            "cluster"
+          ],
+          "additionalProperties": false
         }
-      },
-      "required": [
-        "cluster",
-        "refs"
-      ],
-      "additionalProperties": false
+      ]
     },
     "jobs.cancel": {
       "type": "object",
@@ -1229,6 +1381,12 @@
       ],
       "additionalProperties": false
     },
+    "config.reload": {
+      "type": "object",
+      "properties": {},
+      "required": [],
+      "additionalProperties": false
+    },
     "config.get": {
       "type": "object",
       "properties": {
@@ -1308,7 +1466,7 @@
   },
   "protocol_version": {
     "major": 1,
-    "minor": 0
+    "minor": 1
   },
   "release": "0.9.0"
 }

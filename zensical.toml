@@ -22,7 +22,7 @@ nav = [
     { "Monitor jobs" = "monitoring.md" },
     { "Remote files" = "remote-files.md" },
     { "Command line" = "cli.md" },
-    { "Observer & notifications" = "plugins.md" },
+    { "Watch & notifications" = "plugins.md" },
   ] },
   { "Reference" = [
     { "Configuration" = "configuration.md" },

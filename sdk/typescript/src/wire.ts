@@ -18,7 +18,7 @@ export class HttpWire implements Wire {
     const id = ++this.sequence;
     const data = JSON.stringify({ jsonrpc: "2.0", id, method, params });
     if (new TextEncoder().encode(data).length > 1048576) throw new Error("RPC frame exceeds 1 MiB");
-    const mutation = ["clusters.register", "clusters.update", "clusters.remove", "config.set", "presets.set", "jobs.submit", "jobs.cancel", "jobs.cancel_many", "files.write", "files.transfer"].includes(method);
+    const mutation = ["clusters.register", "clusters.update", "clusters.remove", "config.set", "config.reload", "presets.set", "jobs.submit", "jobs.cancel", "jobs.cancel_many", "files.write", "files.transfer"].includes(method);
     try {
       const response = await fetch(this.endpoint.replace(/\/$/, "") + "/rpc", { method: "POST", headers: { "Content-Type": "application/json", Authorization: "Bearer " + this.token }, body: data, signal: AbortSignal.timeout(this.timeout) });
       if (!response.body) throw new Error("Empty RPC response");

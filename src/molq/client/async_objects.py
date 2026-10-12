@@ -22,9 +22,10 @@ class AsyncMolq:
     """Connect to one Runtime; absent endpoint uses its temporary stdio form.
 
     Args:
-        endpoint: Explicit HTTP(S) endpoint, or MOLQ_ENDPOINT.
+        endpoint: Explicit HTTP(S) endpoint. Absent endpoint starts stdio serve.
         registry: Registry path for a no-service stdio session.
-        token: Endpoint credential, or MOLQ_TOKEN.
+        config: Configuration file for that temporary serve process.
+        token: Endpoint credential.
         timeout: Finite per-RPC response deadline.
         registry_id: Optional expected registry identity.
     """
@@ -34,6 +35,7 @@ class AsyncMolq:
         *,
         endpoint: str | None = None,
         registry: Path | str | None = None,
+        config: Path | str | None = None,
         token: str | None = None,
         timeout: float = 130,
         registry_id: str | None = None,
@@ -41,6 +43,7 @@ class AsyncMolq:
         self._wire = AsyncWire(
             endpoint=endpoint,
             registry=registry,
+            config=config,
             token=token,
             timeout=timeout,
             registry_id=registry_id,
@@ -154,9 +157,44 @@ class AsyncCluster:
             "jobs.preview", cluster=self.name, spec=wire_value(spec)
         )
 
-    async def list(self) -> dict:
-        """Query the actual native queue, including jobs submitted outside molq."""
-        return await self.molq.rpc("jobs.list", cluster=self.name)
+    async def list(
+        self, *, states: builtins.list[str] | None = None, name: str | None = None
+    ) -> dict:
+        """Query the target account queue with canonical states/exact name."""
+        return await self.molq.rpc(
+            "jobs.list", cluster=self.name, states=states, name=name
+        )
+
+    async def history(
+        self,
+        *,
+        refs: builtins.list[dict] | None = None,
+        since: str | None = None,
+        until: str | None = None,
+        states: builtins.list[str] | None = None,
+        name: str | None = None,
+        limit: int | None = None,
+    ) -> dict:
+        """Query refs or account history by RFC3339 ended-at window.
+
+        Args:
+            refs: Explicit refs, mutually exclusive with all range filters.
+            since: Inclusive ended-at lower bound, default until minus 24 hours.
+            until: Exclusive upper bound, default Runtime current UTC time.
+            states: Exact canonical terminal states; omitted selects all terminal states.
+            name: Exact native job name.
+            limit: Result bound, default 100, at most 1024.
+        """
+        return await self.molq.rpc(
+            "jobs.history",
+            cluster=self.name,
+            refs=refs,
+            since=since,
+            until=until,
+            states=states,
+            name=name,
+            limit=limit,
+        )
 
     async def observe(self, *, cursor: str | None = None) -> dict:
         """Request one sample; cadence remains a client choice."""

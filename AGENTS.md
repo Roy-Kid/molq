@@ -4,19 +4,19 @@ The architecture principles in docs/spec/molq-1-0-principles.md and concrete con
 
 ## Ownership and dependencies
 
-Clients (CLI, Python sync/async OOP SDK, TypeScript SDK, Web, Observer) are peers over public RPC. They may share wire codecs and value constructors, but must not wrap another client's façade or import Scheduler, Transport, registry or Runtime services for business operations. CLI Runtime process entry points assemble the service only.
+Clients (CLI, Python sync/async OOP SDK, TypeScript SDK, and `molq watch`) are peers over public RPC. There is no web UI. They may share wire codecs and value constructors, but must not wrap another client's façade or import Scheduler, Transport, registry or serve services for business operations. The `molq serve` process entry point assembles the service only.
 
-Runtime has one implementation, internally ordinary modules: protocol/domain, registry, planning, observation, services, Scheduler, Transport and RPC adapters. No extra backend/driver/engine/controller abstraction or internal service boundary.
+The serve process has one implementation, in Go: protocol, registry, scheduler, transport, observation and RPC. No extra backend/driver/engine/controller abstraction or internal service boundary. Do not put the service back in Python.
 
 Scheduler is the implementation abstraction. SlurmScheduler/PBSScheduler/LSFScheduler/ShellScheduler own native resource/directive/dependency/launcher mapping, rendering, submit/query/history/cancel and native state normalization. Runtime does not branch on Scheduler names for business logic. Transport is orthogonal and owns bounded target I/O.
 
 No capability inventory, probing, feature negotiation or fallback. Validation proves schema validity and exact representation only; real scheduling resources and permissions remain native decisions.
 
-SQLite persists exactly schema_meta, clusters, settings and presets. No mirrored Job state/history, event, lease or retry tables. Native scheduler/accounting is task truth. Shell launch/exit receipts are original target execution evidence. Clients never open the registry.
+SQLite persists exactly schema_meta and clusters. Settings and presets live in a JSON or YAML file, default `~/.molcrafts/molq/config.json`; clients change them through RPC. There is no earlier registry schema and no migration. No mirrored Job state/history, event, lease or retry tables. Native scheduler/accounting is task truth. Shell launch/exit receipts are original target execution evidence. Clients never open the registry. Do not read `MOLQ_*` environment variables.
 
-Cluster stores destination semantics only: ID/name, Scheduler/Transport binding, SSH alias, target root, defaults and necessary site launcher/dialect configuration. No cadence or notification policies. One registry normally has one active Runtime; temporary stdio is the no-service mode. Independent instances do not share cache/events/cursors.
+Cluster stores destination semantics only: ID/name, Scheduler/Transport binding, SSH alias, target root, defaults and necessary site launcher/dialect configuration. No cadence or notification policies. One registry normally has one active serve process; temporary stdio is the no-service mode. Independent instances do not share cache/events/cursors.
 
-Runtime owns canonical snapshots/completion and scoped diff/events; Observer chooses cadence/backoff/notification and uses RPC only. Notifications fail open. Subscriptions passively deliver already observed events.
+The serve process owns canonical snapshots/completion and scoped diff/events. `molq watch` chooses cadence, backoff and notification and uses RPC only. Notifications fail open. Subscriptions passively deliver already observed events.
 
 Use asynchronous bounded subprocesses and Cluster/batch concurrency. No permanent Job coroutine/timer/session. OpenSSH owns SSH configuration/multiplexing; invoke system ssh/rsync and never shut down user masters. No retry/workflow/MPS manager.
 
@@ -26,7 +26,7 @@ Job is one allocation, with independent Resources/Scheduling/Execution. Executio
 
 Python request values are frozen dataclasses. Molq/Cluster/Job/JobCollection are RPC-only OOP handles. Protocol major 1 uses JSON-RPC 2.0 with named params, 1 MiB frames, 128-request batches and structured errors. CLI outputs JSON with stable exit semantics.
 
-Edit tools/build_contract.py for schemas and src/molq/client/objects.py for the Python projection. Regenerate protocol/v1.json, protocol/types.py, async_objects.py and TypeScript types; do not edit generated files directly. TypeScript build generates the Web wire codec.
+Edit tools/build_contract.py for schemas and src/molq/client/objects.py for the Python projection. Regenerate protocol/v1.json, protocol/types.py, async_objects.py and TypeScript types; do not edit generated files directly. The TypeScript build compiles the SDK only.
 
 ## Required checks
 
@@ -39,9 +39,10 @@ Edit tools/build_contract.py for schemas and src/molq/client/objects.py for the 
     uv run ruff check src tests
     uv run ruff format --check src tests
     uv run ty check src/
+    CGO_ENABLED=0 go test ./...
     uv run pytest --cov=molq --cov-report=xml
     uv run python -m build
 
-Coverage floor is 80%, including Runtime subprocesses. Tests are in tests/v09. Use real SQLite/temporary files, fake native command fixtures for HPC mappings, real local Shell integration and installed-wheel smoke tests. Do not claim fixture tests prove live HPC resources. Windows checks cover the remote control plane; POSIX/Bash local execution runs on Linux/macOS.
+Go tests cover the serve process, including scheduler fixtures and local Shell execution. Python tests in tests/v09 cover the client. Use real SQLite and temporary files. Do not claim fixture tests prove live HPC resources. Windows checks cover the remote control plane; POSIX/Bash local execution runs on Linux/macOS. The wheel build compiles the current platform binary into the package.
 
 No import side effects. Keep source modules below 800 lines. Preserve user data and accepted native jobs during failures/client exit. Mutation disconnection means uncertain outcome; no automatic resend/fallback.

@@ -9,7 +9,7 @@ import {Molq,methods,MolqError} from '../dist/index.js';
 test('Native TS client uses the same Runtime and schema',async()=>{
   const temp=await mkdtemp(join(tmpdir(),'molq-ts-'));
   const python=process.env.MOLQ_TEST_PYTHON || resolve('../../.venv/bin/python');
-  const mq=new Molq(new StdioWire([python,'-m','molq','runtime','rpc','--stdio','--registry',join(temp,'registry.db')]));
+  const mq=new Molq(new StdioWire([python,'-m','molq','serve','--stdio','--registry',join(temp,'registry.db')]));
   try{
     const hello=await mq.connect();assert.equal(hello.release,'0.9.0');assert.deepEqual(hello.methods,methods);
     const destination=await mq.clusters.register({name:'local',scheduler:'shell',target_root:join(temp,'target')});
@@ -22,33 +22,27 @@ test('Native TS client uses the same Runtime and schema',async()=>{
 
 test('HTTP peer shares Runtime semantics and structured authentication errors', async()=>{
   const {spawn} = await import('node:child_process');
-  const {createInterface} = await import('node:readline');
   const {once} = await import('node:events');
+  const {writeFile} = await import('node:fs/promises');
+  const {createServer} = await import('node:net');
   const temp=await mkdtemp(join(tmpdir(),'molq-ts-http-'));
   const python=process.env.MOLQ_TEST_PYTHON || resolve('../../.venv/bin/python');
   const token='test-token-long-enough';
-  const code=[
-    'import asyncio,sys',
-    'from pathlib import Path',
-    'from aiohttp import web',
-    'from molq.runtime import Runtime',
-    'from molq.runtime.server import application',
-    'async def serve():',
-    ' runner=web.AppRunner(application(Runtime(Path(sys.argv[1])),sys.argv[2]))',
-    ' await runner.setup()',
-    ' site=web.TCPSite(runner,"127.0.0.1",0)',
-    ' await site.start()',
-    ' print(runner.addresses[0][1],flush=True)',
-    ' try: await asyncio.Event().wait()',
-    ' finally: await runner.cleanup()',
-    'asyncio.run(serve())'
-  ].join('\n');
-  const child=spawn(python,['-c',code,join(temp,'registry.db'),token],{stdio:['ignore','pipe','inherit']});
-  const lines=createInterface({input:child.stdout});
+  const port=await new Promise((resolvePort,reject)=>{const server=createServer();server.listen(0,'127.0.0.1',()=>{const address=server.address();server.close(()=>resolvePort(address.port));});server.on('error',reject);});
+  await writeFile(join(temp,'config.json'), JSON.stringify({serve:{host:'127.0.0.1',port,token}}));
+  const child=spawn(python,['-m','molq','serve','--registry',join(temp,'registry.db'),'--config',join(temp,'config.json')],{stdio:['ignore','ignore','inherit']});
   let mq;
+  const endpoint='http://127.0.0.1:'+port;
+  async function ready(){
+    const deadline=Date.now()+5000;
+    while(Date.now()<deadline){
+      try{const response=await fetch(endpoint+'/rpc',{method:'POST',headers:{Authorization:'Bearer '+token,'Content-Type':'application/json'},body:JSON.stringify({jsonrpc:'2.0',id:1,method:'molq.hello',params:{}})});if(response.ok)return;}catch{}
+      await new Promise(resolveWait=>setTimeout(resolveWait,50));
+    }
+    throw new Error('HTTP startup deadline');
+  }
   try{
-    const [port]=await Promise.race([once(lines,'line'),new Promise((_,reject)=>setTimeout(()=>reject(new Error('HTTP startup deadline')),5000).unref())]);
-    const endpoint='http://127.0.0.1:'+port;
+    await ready();
     const denied=Molq.http(endpoint,'wrong');
     await assert.rejects(()=>denied.connect(),error=>error instanceof MolqError && error.kind==='AUTH_REQUIRED');
     await denied.close();
@@ -64,7 +58,6 @@ test('HTTP peer shares Runtime semantics and structured authentication errors', 
     const exited=once(child,'exit');
     child.kill();
     await exited;
-    lines.close();
     await rm(temp,{recursive:true,force:true});
   }
 });

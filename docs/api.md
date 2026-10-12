@@ -25,3 +25,36 @@ await mq.close();
 All clients expose generic rpc for the full method catalog. Python durations for wait are seconds; TypeScript wait arguments are milliseconds. Request/result field names are the canonical snake_case wire names.
 
 See [core API](reference/core.md), [values](reference/types.md) and [RPC contract](reference/utilities.md).
+
+## Native history discovery
+
+```python
+from molq import Molq
+
+with Molq() as mq:
+    cluster = mq.cluster("Arrhenius")
+    queue = cluster.list(states=["running"], name="science")
+    history = cluster.history(
+        since="2026-10-06T00:00:00Z", until="2026-10-08T00:00:00Z",
+        states=["failed"], limit=100,
+    )
+    refs = [s["ref"] for s in history["snapshots"]]
+    # An empty set needs no explicit-ref query.
+    if refs:
+        observed = cluster.history(refs=refs)
+```
+
+AsyncCluster provides the same methods with `await`. TypeScript Cluster supports
+`list({states, name})` and `history({since, until, states, name, limit})` or
+`history({refs})`. All are direct public RPC projections.
+
+Range history returns terminal jobs ended in `[since, until)` for the current
+target account, including jobs submitted outside molq. Only Slurm implements
+range discovery in this release. Default range is 24 hours; missing native
+metadata is `null`, and unavailable accounting never becomes a successful empty
+query. Inspect coverage and query freshness before assuming complete results.
+Identity includes incarnation; reused native IDs remain distinct. History
+retention is owned by the scheduler. Runtime restart clears diff baselines and
+cursors; it does not erase native accounting.
+
+`Molq(config=...)` and `AsyncMolq(config=...)` select the configuration file for a temporary stdio serve process. Pass `registry=` for a registry other than the default. With HTTP, the configuration file belongs to the remote serve process. Connection settings are constructor arguments or the configuration file, not environment variables.

@@ -2,6 +2,7 @@
 
 import importlib
 import importlib.resources
+import importlib.util
 import os
 import pkgutil
 import tempfile
@@ -17,16 +18,14 @@ for item in pkgutil.walk_packages(molq.__path__, prefix="molq."):
     importlib.import_module(item.name)
 for name in molq.__all__:
     getattr(molq, name)
-for obsolete in ("submitor", "store", "retry", "plugins", "dashboard"):
+for obsolete in ("submitor", "store", "retry", "plugins", "dashboard", "web"):
     assert importlib.util.find_spec("molq." + obsolete) is None, obsolete
 assert importlib.resources.files("molq.protocol").joinpath("v1.json").is_file()
-for name in ("index.html", "app.js", "style.css", "wire.js"):
-    assert importlib.resources.files("molq.web").joinpath(name).is_file()
 
 
 with tempfile.TemporaryDirectory() as temp:
     root = Path(temp)
-    with Molq(registry=root / "registry.db") as mq:
+    with Molq(registry=root / "registry.db", config=root / "config.json") as mq:
         if os.name != "nt":
             mq.clusters.register(
                 name="local", scheduler="shell", target_root=str(root / "target")

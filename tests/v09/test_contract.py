@@ -7,6 +7,8 @@ import sys
 import pytest
 
 from molq import Execution, ExecutionUnit, JobSpec, Molq, MolqError, Resources
+from molq.protocol import contract
+from molq.protocol.types import JobsHistoryParams1, JobSnapshot
 
 
 def test_no_service_submit_wait_restart_and_no_job_tables(tmp_path):
@@ -29,7 +31,7 @@ def test_no_service_submit_wait_restart_and_no_job_tables(tmp_path):
             r[0]
             for r in db.execute("select name from sqlite_master where type='table'")
         }
-    assert tables == {"schema_meta", "clusters", "settings", "presets"}
+    assert tables == {"schema_meta", "clusters"}
 
 
 def test_unknown_cluster_is_not_local(tmp_path):
@@ -48,6 +50,13 @@ def test_single_job_and_multi_unit_schema_are_orthogonal():
     assert wire["resources"]["nodes"] == 2
     assert wire["execution"]["units"][0]["command"]["argv"] == ["echo", "ok"]
     assert "scheduler" not in wire
+
+
+def test_packaged_contract_loads():
+    document = contract()
+    assert "jobs.history" in document["methods"]
+    assert "name" in JobsHistoryParams1.__annotations__
+    assert JobSnapshot.__annotations__["state"]
 
 
 def test_client_import_has_no_runtime_side_effects(tmp_path):

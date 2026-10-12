@@ -140,6 +140,7 @@ async_names = {
     "rpc",
     "register",
     "list",
+    "history",
     "definition",
     "update",
     "remove",

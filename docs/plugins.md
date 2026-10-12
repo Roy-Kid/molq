@@ -1,12 +1,12 @@
-# Observer and notifications
+# Watch and notifications
 
-The 0.8 daemon/plugin host and built-in Nerve plugin are removed. The optional Observer is a peer client that requests Cluster observations, consumes Runtime-produced changes and forwards notifications. It owns cadence, bounded backoff and notification routes; no policy is stored on Cluster.
+There is no plugin host. `molq watch` asks the serve process for observations and forwards changes that the process already produced. It owns cadence, bounded backoff and the notification URL. None of that is stored on a Cluster. A repeated scheduler failure is printed once until that cluster succeeds again. On resync it also reports each terminal accounting job from the last 24 hours once.
 
 ```sh
-molq --endpoint http://127.0.0.1:17891 observer --cluster hpc --interval 5
-molq --endpoint http://127.0.0.1:17891 observer --once --nerve-endpoint http://127.0.0.1:17890/ingest
+molq watch --config ./config.json --cluster hpc --interval 5
+molq watch --config ./config.json --once
 ```
 
-The supplied notification receiver must accept Runtime change envelopes as JSON. No compatibility with the old Nerve plugin's custom rollup format is implied. Notification failures are fail-open and cannot affect scheduler operations.
+Set `client.watch.nerve_endpoint` in the configuration file when a receiver should get the same JSON envelopes. A failed notification does not affect submit, query or cancel.
 
-Other observers/UI integrations use the same RPC. They may choose sampling cadence and route events, but must not duplicate Runtime's state diff or terminal/completion logic.
+Other clients use the same RPC. They may choose sampling cadence and route events. They do not reimplement snapshot diff or completion.

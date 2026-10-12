@@ -22,3 +22,5 @@ There is no capability inventory, probing or negotiation. jobs.validate verifies
 Slurm reads queue then accounting; PBS reads retained extended job facts; LSF reads current/recent retained native history. Missing retention/evidence yields unknown/unavailable. HPC regression tests use fixtures, not a live cluster.
 
 Native references: [Slurm squeue](https://slurm.schedmd.com/squeue.html), [Slurm sacct](https://slurm.schedmd.com/sacct.html), [LSF output fields](https://www.ibm.com/docs/en/spectrum-lsf/10.1.0?topic=information-customize-job-output).
+
+See [NVIDIA MPS](nvidia-mps.md) for native resource requests and user-managed execution examples.

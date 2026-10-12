@@ -1,8 +1,8 @@
-# Spec: molq 0.9.0 单一 runtime、公共 RPC 与任务 schema
+# Spec: molq 0.9.0 单一 serve 进程、公共 RPC 与任务 schema
 
-状态：0.9.0 已实施合同。日期：2026-10-07。约束来源：[现行 50 条原则](molq-1-0-principles.md)。
-本文是唯一实现设计入口；已按 0.9.0 breaking release 落实，取代此前 RPC/daemon、server/Web、部署与语言四份并行草案。验收记录见 [implementation ledger](implementation-0-9-0.md)。
-原则为已确定约束；0.9.0 的精确字段、方法、请求/结果类型以 src/molq/protocol/v1.json 为准。本文的示意不另立协议；生成类型和测试共同验证该合同。
+状态：0.9.0 实施合同。约束来源：[现行 50 条原则](molq-1-0-principles.md)。
+业务进程是 Go 二进制 `molq serve`。周期客户端是 `molq watch`。没有 Web UI，没有 1.0 之前的 API 版本，registry 对不上当前布局就拒绝，不迁移。配置是 JSON 或 YAML，不使用 molcfg，不读取 `MOLQ_*`。下文里的 Runtime 指 serve 进程，Observer 指 watch。
+精确字段、方法和请求/结果类型以 `src/molq/protocol/v1.json` 为准。本文的示意不另立协议。
 
 ## Summary
 
@@ -60,7 +60,7 @@ CI 用依赖规则禁止 clients/Observer import runtime services、scheduler、
 | HPC login node | clients → RPC → runtime → LocalTransport → native scheduler | 本机用户/原生 scheduler 身份；DB选实际本地磁盘 |
 | 独立管理节点 | clients → HTTPS/WSS → runtime → OpenSSH → native scheduler | SSH配置、凭据与alias属于runtime host |
 
-0.9.0 入口为 `molq runtime serve`、`molq runtime rpc --stdio` 和 `molq --endpoint ... observer`。
+0.9.0 入口为 `molq serve`、`molq serve --stdio` 和 `molq watch`。
 网络 listener 只是 Runtime 的入口，Observer 是 RPC client。
 0.9.0 Native client 没有显式 endpoint 时启动临时 stdio Runtime；有 endpoint 时只连接该 Runtime。不自动探测服务、不在 auth/version/registry mismatch 时 fallback，mutation dispatch 后断连不换实例重发。需要共享观察状态的 clients 明确连接同一 endpoint。
 网页需要可访问的网络runtime，Observer可选；native stdio不等于client直接调Scheduler。临时runtime/stdout只传协议，stderr诊断；EOF有限排空已dispatch操作，accepted计算与辅助进程清理范围分开。
@@ -182,6 +182,8 @@ quantity 是 schema 规定、Scheduler 准确映射的原生调度器资源单�
 | 原生调度器未配置 MPS 或拒绝资源申请 | 返回原生拒绝/不确定结果，不创建MPS代理或改请求 |
 | 用户自行启动MPS或设置CUDA/MPS env | 普通Execution command/env；不赋予原生调度器资源/隔离保证 |
 
+用户负责预先判断目标站点是否提供原生 MPS 资源。Slurm 映射为 `--gres=mps:<quantity>`，当前仅支持 `scope: per_node`，quantity 按站点原生资源单位解释。未提供原生 MPS 时，用户自行计算普通 GPU/CPU 资源预算，通过普通 Execution command/script/env 启动、使用及清理 MPS，提交与观察流程与一般任务相同。完整示例见 [NVIDIA MPS](../nvidia-mps.md)。
+
 Slurm确实可以由管理员配置MPS GRES；molq只发送正式资源请求，不检查配置以建立capability清单，其他Scheduler不能准确表达时拒绝。[Slurm GRES/MPS官方文档](https://slurm.schedmd.com/gres.html)
 runtime、Observer和SDK均不因资源字段自动启动nvidia-cuda-mps-control、不提供MPSdaemon/connection manager、不模拟原生调度器没有提供的资源；MPS 请求失败也不改为整卡 GPU 请求。
 
@@ -217,9 +219,9 @@ cache key包括授权scope/Cluster/identity/window/filter，runtimeinstance重�
 | target scripts/logs/artifacts | 文件保留，静态manifest必要描述，无完整JobState/timeline镜像 |
 | Shell launch/process identity/exitreceipt | ShellScheduler 使用的 target 原始执行证据，不复制为通用JobStore |
 
-允许SQLite实现ownedstate，白名单schema_meta（registry ID/schema version）、clusters、settings、presets；无jobs/status_transitions/event/lease/retry表。optionalusage另立明确schema，不因旧jobs.db而保留镜像。
+SQLite 只保存 schema_meta 和 clusters。settings/presets 在 ~/.molcrafts/molq/config.json 或显式 YAML 里。没有 jobs、status_transitions、event、lease、retry 表，也不因旧 jobs.db 保留镜像。
 Clients/Observer 不打开 Runtime DB。一个 registry 正常只由一个 active Runtime 服务；SQLite 短事务（如 BEGIN IMMEDIATE）、entity expected_revision 与有限 STATE_BUSY 返回保护 registry 写入，并防护意外、短暂的重叠访问，不构成多 Runtime 共享 registry 的服务保证。重叠实例的 cache/events/cursors 各自独立，不承诺 global revision 同步、跨 Runtime cache invalidation 或 event synchronization，也不建设分布式协调。需要共享这些状态的 clients 连接同一 endpoint；不同机器不共享 NFS 数据库。不在 DB 事务中执行 SSH/原生调度操作。
-YAML可import/export/bootstrap，不能与DB同时权威；WAL需本地磁盘，backup用SQLite API/停止后的完整备份。[SQLite WAL限制](https://sqlite.org/wal.html)
+JSON/YAML 是 settings/presets 的持久事实来源，经 serve 进程的 RPC 管理。没有更早的 schema 可升级。WAL 需要本地磁盘。[SQLite WAL限制](https://sqlite.org/wal.html)
 ShellScheduler 没有外部 accounting，必须有target原子launch/exitreceipt与process-startidentity，PID不可当稳定JobID；缺证据返回无法确认。receipt保留窗口可发现，active证据不能清理；不新建每Jobmonitor或target常驻agent。
 
 ### 9. Scheduler / Transport合同与资源映射（原则 28–32、45–47）
@@ -249,10 +251,10 @@ OpenSSH解析runtimehost上的alias，默认系统ssh/rsync与BatchMode/noTTY；
 
 ### 10. 网页、平台与语言（原则 8–11、48–50）
 
-Web UI与API建议同源，普通HTTP请求/WS订阅使用相同publicRPC；remote部署HTTPS/WSS复用reverseproxy/TLS/auth。本机网页可由runtime入口服务静态文件；公共网页任意连localhost的权限/credentials/onboarding不是首发默认。
+没有 Web UI。HTTP 与 WebSocket 使用同一套 RPC。远端 HTTPS/WSS 由现有反向代理和 TLS 提供。serve 进程不提供静态页面。
 网络listener与Observer分别管理，runtime长驻只接收请求、维护cache等基础设施；周期原生 scheduler 观察由 Observer/显式 foreground caller 触发。网页缺Observer仍可observe/live刷新，缺API则明确不可用。
 Linux/macOS/Windows控制面同contract；Windows当前BashShell/rsync不假装存在，平台/工具不足结构化失败。targetpath按target平台，不按clientPath猜。
-Runtime实现语言可继续Python，原生异步I/O/有限并发/cancel/deadline/backpressure沿用既定要求；Go/Rust为替换唯一runtime的备选，不是1.0架构要求，也不创建多语言业务服务链。SDK仍Python/TS。
+serve 进程用 Go 实现。SDK 仍是 Python 和 TypeScript。不把业务逻辑放回 Python，也不做第二套实现。
 部署auth以单owner/OS-HPC身份为最小模式；共享多用户credentialdelegation/HA不是因为有网页就自动进入1.0。安全身份/文件权限检查在runtime，不信任client自称principal。
 每新增subsystem必须写明已有原生调度器/OpenSSH/RPC/TLS 设施为何无法承担：本轮不加入lease、MPSmanager、retry/workflowengine、dependency solver、containerbuilder、自研SSHpool或另一个core框架。
 
@@ -315,13 +317,13 @@ CLI建议沿用分类：0成功、1内部、2输入、3资源缺失、4不可达
 
 执行预算已冻结为 nodes/tasks/cpus_per_task；memory_bytes 是每节点最低字节数的十进制字符串，Scheduler 向原生粒度向上取整。nvidia_mps 使用正式数量与 scope，无 fallback。Sequence 首失败停止；Parallel 等待所有已启动分支后按 plan 顺序返回首失败。MPI 使用显式 site launcher。协议类型从统一 schema 生成，Python async projection 从同一同步 projection 生成。
 
-Runtime 暂用 Python，业务并发采用有界异步任务/子进程；普通 stdio pipes 的读桥兼容 Windows，不承担监视或业务逻辑。跨平台控制面不要求 Unix socket。目标端执行使用 POSIX/Bash；Windows 客户端通过 OpenSSH 或网络 Runtime 控制 POSIX 目标，原生 Windows Shell execution 不在本次范围。
+serve 进程用 Go，业务并发采用有界子进程。stdio 是协议通道。跨平台控制面不要求 Unix socket。目标端执行使用 POSIX/Bash。Windows 客户端通过 OpenSSH 或网络 serve 进程控制 POSIX 目标。原生 Windows Shell 执行不在范围内。
 
 四种 Scheduler 的映射覆盖/限制见 [schedulers](../schedulers.md)。测试中的文档覆盖表不是 runtime capability state。HPC 使用原生命令 fixtures；不能把本地验收表述为真实 Slurm/PBS/LSF 集群验收。
 
 ## Open Questions
 
-后续只能扩展正式 schema 与 Scheduler 映射，并增加真实集群 conformance 证据；不得绕回 capability、native flags 或 fallback。独立 Runtime 的通知可能重复、event ring 不持久化；需要更强投递保证时必须另行说明 owned durable state。Runtime 改用 Go/Rust 只替换唯一实现，须通过现有协议 fixtures，不是 0.9.0 前提。
+后续只能扩展正式 schema 与 Scheduler 映射，并增加真实集群 conformance 证据；不得绕回 capability、native flags、网页或 fallback。独立 serve 进程的通知可能重复，event ring 不持久化。需要更强投递保证时必须另行说明 owned durable state。
 
 ## 50条原则追踪
 
@@ -337,3 +339,21 @@ Runtime 暂用 Python，业务并发采用有界异步任务/子进程；普通 
 | 41–44 | 6：nvidia_mps 资源≠user env，Scheduler 渲染与原生调度器拒绝，无代理实现 |
 | 45–47 | 4–5、9：Scheduler唯一native语义与验证合同 |
 | 48–50 | 7、10：删除lease/多runtime链，新增subsystem理由门槛 |
+
+## Query/configuration refinement
+
+SQLite 只有 schema_meta 和 clusters。配置文件默认是
+~/.molcrafts/molq/config.json，用 --config 选择另一份 JSON 或 YAML。没有更早的 schema，也不读取 MOLQ_CONFIG。
+新 config.reload 校验后替换配置并使内存观察失效；写入使用有界文件锁及原子替换。
+迁移从已知 v1 显式备份/export/drop，冲突不覆盖，身份与 revision 保留。
+
+Scheduling.comment 映射 Slurm 原生 comment 或 LSF 原生 description；PBS/Shell 不支持
+时明确拒绝。Snapshot 提供原生 name/comment、可获取的 submitted_at/started_at/ended_at，
+不存在为 null。PBS 系统 comment 不是用户 description。Slurm 只解析结构化 JSON。
+
+jobs.list 支持 canonical states 与 exact name。jobs.history 接受互斥的 cluster+refs
+或 cluster+since/until/states/name/limit；范围默认 24h、按 ended_at [since,until)
+筛选当前目标账户终态，limit 默认100、上限1024。Slurm 实现原生 accounting 范围发现，
+其他 Scheduler 明确拒绝范围而保留 refs 查询。结果包含 query/source/freshness/coverage，
+超限明确 partial；原生 ID 复用保留不同 incarnation，无 accounting 历史保留保证。
+所有 snapshots/diff/events/cursors 仍为可丢弃内存，不持久化 Job 登记或同步。

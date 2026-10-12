@@ -94,6 +94,7 @@ defs = {
     "Scheduling": obj(
         {
             "name": identifier,
+            "comment": {"type": "string", "maxLength": 4094},
             "partition": identifier,
             "account": identifier,
             "qos": identifier,
@@ -244,6 +245,16 @@ defs.update(
                 },
                 "raw_state": {"type": "string"},
                 "exit_code": {"type": ["integer", "null"]},
+                **{
+                    field: {"type": ["string", "null"]}
+                    for field in (
+                        "name",
+                        "comment",
+                        "submitted_at",
+                        "started_at",
+                        "ended_at",
+                    )
+                },
                 "error": ref("ErrorData"),
                 "last_known": ref("JobSnapshot"),
             },
@@ -278,6 +289,28 @@ defs.update(
         ),
         "ObservationResult": obj(
             {
+                "query": obj(
+                    {
+                        "since": string,
+                        "until": string,
+                        "time_field": {"const": "ended_at"},
+                        "account_scope": {"const": "current_target_user"},
+                        "source": {"const": "accounting"},
+                        "observed_at": string,
+                        "freshness": ref("Freshness"),
+                        "limit": {"type": "integer"},
+                    },
+                    [
+                        "since",
+                        "until",
+                        "time_field",
+                        "account_scope",
+                        "source",
+                        "observed_at",
+                        "freshness",
+                        "limit",
+                    ],
+                ),
                 "snapshots": {"type": "array", "items": ref("JobSnapshot")},
                 "coverage": ref("Coverage"),
                 "completion": ref("Completion"),
@@ -345,10 +378,42 @@ params = {
     ),
     "jobs.get_many": obj(query, ["refs"]),
     "jobs.observe": obj({**query, "cluster": string, "cursor": string}),
-    "jobs.list": obj({"cluster": string}, ["cluster"]),
-    "jobs.history": obj(
-        {"cluster": string, "refs": query["refs"]}, ["cluster", "refs"]
+    "jobs.list": obj(
+        {
+            "cluster": string,
+            "states": {
+                "type": "array",
+                "items": defs["JobSnapshot"]["properties"]["state"],
+                "minItems": 1,
+                "uniqueItems": True,
+            },
+            "name": string,
+        },
+        ["cluster"],
     ),
+    "jobs.history": {
+        "oneOf": [
+            obj({"cluster": string, "refs": query["refs"]}, ["cluster", "refs"]),
+            obj(
+                {
+                    "cluster": string,
+                    "since": string,
+                    "until": string,
+                    "states": {
+                        "type": "array",
+                        "items": {
+                            "enum": ["succeeded", "failed", "cancelled", "timed_out"]
+                        },
+                        "minItems": 1,
+                        "uniqueItems": True,
+                    },
+                    "name": string,
+                    "limit": {"type": "integer", "minimum": 1, "maximum": 1024},
+                },
+                ["cluster"],
+            ),
+        ]
+    },
     "jobs.cancel": obj({"ref": ref("JobRef"), "request_key": identifier}, ["ref"]),
     "jobs.cancel_many": obj({"refs": query["refs"]}, ["refs"]),
     "logs.read": obj(
@@ -387,6 +452,7 @@ params = {
         },
         ["source_cluster", "source_path", "destination_cluster", "destination_path"],
     ),
+    "config.reload": obj({}),
     "config.get": obj({"key": identifier}, ["key"]),
     "config.set": obj({"key": identifier, "value": {}}, ["key", "value"]),
     "presets.list": obj({}),
@@ -399,7 +465,7 @@ contract = {
     "$id": "https://molcrafts.org/molq/protocol/v1",
     "$defs": defs,
     "methods": params,
-    "protocol_version": {"major": 1, "minor": 0},
+    "protocol_version": {"major": 1, "minor": 1},
     "release": "0.9.0",
 }
 p = Path(__file__).resolve().parents[1] / "src/molq/protocol/v1.json"
