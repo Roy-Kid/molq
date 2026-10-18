@@ -1,13 +1,17 @@
 """Register an explicit SSH computing destination; OpenSSH owns the alias."""
 
-from molq import Molq
+import json
 
-with Molq() as mq:
-    destination = mq.clusters.register(
-        name="research",
-        scheduler="slurm",
-        transport={"kind": "ssh", "alias": "hpc"},
-        target_root="/scratch/user/molq",
-        launcher="srun",
-    )
-    print(destination.definition())
+from molq import submit
+
+destination = submit(
+    "research",
+    "slurm",
+    transport={"kind": "ssh", "alias": "hpc"},
+    target_root="/scratch/user/molq",
+    launcher="srun",
+)
+try:
+    print(json.dumps(destination.definition(), ensure_ascii=False))
+finally:
+    destination.close()

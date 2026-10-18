@@ -1,5 +1,7 @@
 """Formal resources; validate/render through the selected Scheduler."""
 
+import json
+
 from molq import Accelerator, Resources
 
 request = Resources(
@@ -10,4 +12,4 @@ request = Resources(
     time_limit_seconds=3600,
     accelerators=(Accelerator("gpu", 1, "per_node"),),
 )
-print(request.to_wire())
+print(json.dumps(request.to_wire(), ensure_ascii=False))

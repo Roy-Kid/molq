@@ -8,14 +8,14 @@ import sys
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
-contract = json.loads((ROOT / "src/molq/protocol/v1.json").read_text())
+contract = json.loads((ROOT / "src/molq/protocol/contract.json").read_text())
 py = [
-    '"""Generated from protocol/v1.json; edit its declarative source."""',
+    '"""Generated from protocol/contract.json; edit its declarative source."""',
     "from __future__ import annotations",
     "from typing import Any, Literal, NotRequired, TypedDict",
     "",
 ]
-ts = ["// Generated from protocol/v1.json. Do not edit."]
+ts = ["// Generated from protocol/contract.json. Do not edit."]
 
 
 def type_of(schema, name, language):
@@ -130,10 +130,18 @@ source = (
 
 source = re.sub(r"\bWire\b", "AsyncWire", source)
 tree = ast.parse(source)
+for node in tree.body:
+    if isinstance(node, ast.FunctionDef) and node.name == "submit":
+        node.name = "asubmit"
+        node.body[0].value.value = node.body[0].value.value.replace(
+            'local = submit("dev", "local")', 'local = await asubmit("dev", "local")'
+        )
 tree.body[
     0
 ].value.value = "Generated async OOP projection; edit objects.py and regenerate."
 async_names = {
+    "asubmit",
+    "invoke",
     "__aenter__",
     "__aexit__",
     "close",
@@ -142,9 +150,11 @@ async_names = {
     "list",
     "history",
     "definition",
+    "authenticate",
     "update",
     "remove",
     "submit",
+    "transfer",
     "validate",
     "preview",
     "observe",
@@ -158,7 +168,7 @@ async_names = {
 class MakeAsync(ast.NodeTransformer):
     def visit_FunctionDef(self, node):
         if node.name not in async_names:
-            return node
+            return self.generic_visit(node)
         node = ast.AsyncFunctionDef(**{f: getattr(node, f) for f in node._fields})
         return self.generic_visit(node)
 
@@ -171,6 +181,7 @@ class MakeAsync(ast.NodeTransformer):
             "close",
             "wait",
             "observe",
+            "submit",
             "sleep",
         }:
             if node.func.attr == "sleep":

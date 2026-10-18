@@ -1,6 +1,7 @@
 package serve
 
 import (
+	"encoding/json"
 	"path/filepath"
 	"testing"
 )
@@ -19,8 +20,16 @@ func TestHello(t *testing.T) {
 	if !ok {
 		t.Fatalf("result = %#v", result)
 	}
-	if body.Version.Major != 1 || body.RegistryID == "" || body.InstanceID == "" {
+	if body.RegistryID == "" || body.InstanceID == "" {
 		t.Fatalf("hello = %#v", body)
+	}
+	encoded, _ := json.Marshal(body)
+	var fields map[string]any
+	_ = json.Unmarshal(encoded, &fields)
+	for _, key := range []string{"version", "protocol_version", "schema_version"} {
+		if _, present := fields[key]; present {
+			t.Fatalf("hello contains version field %s", key)
+		}
 	}
 	if body.Limits.MaxFrameBytes != 1048576 || body.Limits.BatchSize != 128 {
 		t.Fatalf("limits = %#v", body.Limits)

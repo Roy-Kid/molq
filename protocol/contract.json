@@ -1,6 +1,6 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
-  "$id": "https://molcrafts.org/molq/protocol/v1",
+  "$id": "https://molcrafts.org/molq/protocol",
   "$defs": {
     "Command": {
       "oneOf": [
@@ -134,6 +134,28 @@
         }
       },
       "required": [],
+      "additionalProperties": false
+    },
+    "FileLocation": {
+      "type": "object",
+      "properties": {
+        "cluster": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 4096
+        },
+        "path": {
+          "type": "string",
+          "maxLength": 4096
+        },
+        "root": {
+          "type": "string",
+          "maxLength": 4096
+        }
+      },
+      "required": [
+        "path"
+      ],
       "additionalProperties": false
     },
     "JobRef": {
@@ -1291,6 +1313,101 @@
       ],
       "additionalProperties": false
     },
+    "files.transfer": {
+      "type": "object",
+      "properties": {
+        "sources": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/FileLocation"
+          },
+          "minItems": 1,
+          "maxItems": 64
+        },
+        "destination": {
+          "$ref": "#/$defs/FileLocation"
+        },
+        "options": {
+          "type": "array",
+          "items": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 4096,
+            "pattern": "^-"
+          },
+          "maxItems": 256
+        },
+        "timeout_seconds": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 3600
+        }
+      },
+      "required": [
+        "sources",
+        "destination"
+      ],
+      "additionalProperties": false
+    },
+    "files.stat": {
+      "type": "object",
+      "properties": {
+        "cluster": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 4096
+        },
+        "path": {
+          "type": "string",
+          "maxLength": 4096
+        },
+        "root": {
+          "type": "string",
+          "maxLength": 4096
+        }
+      },
+      "required": [
+        "cluster",
+        "path"
+      ],
+      "additionalProperties": false
+    },
+    "files.list": {
+      "type": "object",
+      "properties": {
+        "cluster": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 4096
+        },
+        "path": {
+          "type": "string",
+          "maxLength": 4096
+        },
+        "root": {
+          "type": "string",
+          "maxLength": 4096
+        },
+        "with_stat": {
+          "type": "boolean"
+        },
+        "limit": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 512
+        },
+        "after": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 4096
+        }
+      },
+      "required": [
+        "cluster",
+        "path"
+      ],
+      "additionalProperties": false
+    },
     "files.read": {
       "type": "object",
       "properties": {
@@ -1301,7 +1418,6 @@
         },
         "path": {
           "type": "string",
-          "minLength": 1,
           "maxLength": 4096
         },
         "offset": {
@@ -1310,8 +1426,12 @@
         },
         "limit": {
           "type": "integer",
-          "minimum": 1,
+          "minimum": 0,
           "maximum": 262144
+        },
+        "root": {
+          "type": "string",
+          "maxLength": 4096
         }
       },
       "required": [
@@ -1330,16 +1450,19 @@
         },
         "path": {
           "type": "string",
-          "minLength": 1,
           "maxLength": 4096
+        },
+        "data": {
+          "type": "string",
+          "maxLength": 349528
         },
         "offset": {
           "type": "integer",
           "minimum": 0
         },
-        "data": {
+        "root": {
           "type": "string",
-          "maxLength": 350000
+          "maxLength": 4096
         }
       },
       "required": [
@@ -1349,35 +1472,120 @@
       ],
       "additionalProperties": false
     },
-    "files.transfer": {
+    "files.mkdir": {
       "type": "object",
       "properties": {
-        "source_cluster": {
+        "cluster": {
           "type": "string",
           "minLength": 1,
           "maxLength": 4096
         },
-        "source_path": {
+        "path": {
           "type": "string",
-          "minLength": 1,
           "maxLength": 4096
         },
-        "destination_cluster": {
-          "type": "string",
-          "minLength": 1,
-          "maxLength": 4096
+        "parents": {
+          "type": "boolean"
         },
-        "destination_path": {
+        "exist_ok": {
+          "type": "boolean"
+        },
+        "mode": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 4095
+        },
+        "root": {
           "type": "string",
-          "minLength": 1,
           "maxLength": 4096
         }
       },
       "required": [
-        "source_cluster",
-        "source_path",
-        "destination_cluster",
-        "destination_path"
+        "cluster",
+        "path"
+      ],
+      "additionalProperties": false
+    },
+    "files.remove": {
+      "type": "object",
+      "properties": {
+        "cluster": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 4096
+        },
+        "path": {
+          "type": "string",
+          "maxLength": 4096
+        },
+        "directory": {
+          "type": "boolean"
+        },
+        "root": {
+          "type": "string",
+          "maxLength": 4096
+        },
+        "recursive": {
+          "type": "boolean"
+        }
+      },
+      "required": [
+        "cluster",
+        "path"
+      ],
+      "additionalProperties": false
+    },
+    "files.rename": {
+      "type": "object",
+      "properties": {
+        "cluster": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 4096
+        },
+        "path": {
+          "type": "string",
+          "maxLength": 4096
+        },
+        "target": {
+          "type": "string",
+          "maxLength": 4096
+        },
+        "root": {
+          "type": "string",
+          "maxLength": 4096
+        }
+      },
+      "required": [
+        "cluster",
+        "path",
+        "target"
+      ],
+      "additionalProperties": false
+    },
+    "files.touch": {
+      "type": "object",
+      "properties": {
+        "cluster": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 4096
+        },
+        "path": {
+          "type": "string",
+          "maxLength": 4096
+        },
+        "exist_ok": {
+          "type": "boolean"
+        },
+        "root": {
+          "type": "string",
+          "maxLength": 4096
+        }
+      },
+      "required": [
+        "cluster",
+        "path"
       ],
       "additionalProperties": false
     },
@@ -1462,11 +1670,140 @@
       },
       "required": [],
       "additionalProperties": false
+    },
+    "files.chmod": {
+      "type": "object",
+      "properties": {
+        "cluster": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 4096
+        },
+        "path": {
+          "type": "string",
+          "maxLength": 4096
+        },
+        "root": {
+          "type": "string",
+          "maxLength": 4096
+        },
+        "mode": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 4095
+        }
+      },
+      "required": [
+        "cluster",
+        "path",
+        "mode"
+      ],
+      "additionalProperties": false
+    },
+    "files.symlink": {
+      "type": "object",
+      "properties": {
+        "cluster": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 4096
+        },
+        "path": {
+          "type": "string",
+          "maxLength": 4096
+        },
+        "root": {
+          "type": "string",
+          "maxLength": 4096
+        },
+        "target": {
+          "type": "string",
+          "maxLength": 4096
+        }
+      },
+      "required": [
+        "cluster",
+        "path",
+        "target"
+      ],
+      "additionalProperties": false
+    },
+    "files.resolve": {
+      "type": "object",
+      "properties": {
+        "cluster": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 4096
+        },
+        "path": {
+          "type": "string",
+          "maxLength": 4096
+        },
+        "root": {
+          "type": "string",
+          "maxLength": 4096
+        }
+      },
+      "required": [
+        "cluster",
+        "path"
+      ],
+      "additionalProperties": false
+    },
+    "files.read_many": {
+      "type": "object",
+      "properties": {
+        "cluster": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 4096
+        },
+        "root": {
+          "type": "string",
+          "maxLength": 4096
+        },
+        "paths": {
+          "type": "array",
+          "items": {
+            "type": "string",
+            "maxLength": 4096
+          },
+          "minItems": 1,
+          "maxItems": 128
+        },
+        "max_bytes": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 262144
+        }
+      },
+      "required": [
+        "cluster",
+        "paths"
+      ],
+      "additionalProperties": false
+    },
+    "connections.authenticate": {
+      "type": "object",
+      "properties": {
+        "cluster": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 4096
+        },
+        "code": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 4096
+        }
+      },
+      "required": [
+        "cluster",
+        "code"
+      ],
+      "additionalProperties": false
     }
-  },
-  "protocol_version": {
-    "major": 1,
-    "minor": 1
   },
   "release": "0.9.0"
 }

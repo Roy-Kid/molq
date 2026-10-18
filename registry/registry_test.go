@@ -53,3 +53,69 @@ func TestOpenRejectsForeignTables(t *testing.T) {
 		t.Fatalf("err = %#v", err)
 	}
 }
+
+func TestOpenRejectsIncompleteRegistryWithoutRepair(t *testing.T) {
+	for _, damage := range []string{
+		"DELETE FROM schema_meta WHERE key='registry_id'",
+		"UPDATE schema_meta SET value='' WHERE key='registry_id'",
+		"DROP TABLE clusters",
+	} {
+		t.Run(damage, func(t *testing.T) {
+			path := filepath.Join(t.TempDir(), "registry.db")
+			reg, err := Open(path)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if _, err := reg.db.Exec(damage); err != nil {
+				t.Fatal(err)
+			}
+			reg.Close()
+			before, err := os.ReadFile(path)
+			if err != nil {
+				t.Fatal(err)
+			}
+			opened, err := Open(path)
+			if opened != nil {
+				opened.Close()
+			}
+			failure, ok := err.(*protocol.Error)
+			if !ok || failure.Kind != "STATE_SCHEMA_INCOMPATIBLE" {
+				t.Fatalf("error = %#v", err)
+			}
+			after, err := os.ReadFile(path)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if string(before) != string(after) {
+				t.Fatal("invalid registry was modified")
+			}
+		})
+	}
+}
+
+func TestCorruptClusterDefinitionReturnsStructuredError(t *testing.T) {
+	for _, definition := range []string{"null", "[]", "false", "invalid"} {
+		t.Run(definition, func(t *testing.T) {
+			reg, err := Open(filepath.Join(t.TempDir(), "registry.db"))
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer reg.Close()
+			if _, err := reg.db.Exec("INSERT INTO clusters VALUES ('broken','broken',?,1)", definition); err != nil {
+				t.Fatal(err)
+			}
+			_, err = reg.Get("broken")
+			failure, ok := err.(*protocol.Error)
+			if !ok || failure.Kind != "STATE_SCHEMA_INCOMPATIBLE" {
+				t.Fatalf("error = %#v", err)
+			}
+			var stored string
+			if err := reg.db.QueryRow("SELECT definition FROM clusters WHERE id='broken'").Scan(&stored); err != nil {
+				t.Fatal(err)
+			}
+			if stored != definition {
+				t.Fatal("invalid definition was modified")
+			}
+		})
+	}
+}

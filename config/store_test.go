@@ -4,7 +4,10 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 	"testing"
+
+	"github.com/MolCrafts/molq/protocol"
 )
 
 func TestSetPreservesClientAndReloads(t *testing.T) {
@@ -46,5 +49,73 @@ func TestRejectsUnknownSetting(t *testing.T) {
 	}
 	if _, err := store.Set("settings", "cadence", 1); err == nil {
 		t.Fatal("expected unknown setting")
+	}
+}
+
+func TestConcurrentStoreSnapshots(t *testing.T) {
+	store, err := Open(filepath.Join(t.TempDir(), "config.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	var calls sync.WaitGroup
+	for range 4 {
+		calls.Go(func() {
+			for range 100 {
+				if _, err := store.Get("settings", "cache_max_entries"); err != nil {
+					t.Error(err)
+				}
+				if _, err := store.List("settings"); err != nil {
+					t.Error(err)
+				}
+				store.Entries(4096)
+				store.MaxAge(5)
+			}
+		})
+	}
+	calls.Go(func() {
+		for i := 1; i <= 20; i++ {
+			if _, err := store.Set("settings", "cache_max_entries", i); err != nil {
+				t.Error(err)
+			}
+			if err := store.Reload(); err != nil {
+				t.Error(err)
+			}
+		}
+	})
+	calls.Wait()
+}
+
+func TestBusyStorePreservesSettings(t *testing.T) {
+	store, err := Open(filepath.Join(t.TempDir(), "config.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.Set("settings", "cache_max_entries", 12); err != nil {
+		t.Fatal(err)
+	}
+	before, err := os.ReadFile(store.path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	lock, err := os.OpenFile(store.path+".lock", os.O_RDWR, 0o600)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer lock.Close()
+	if err := lockFile(lock); err != nil {
+		t.Fatal(err)
+	}
+	defer unlockFile(lock)
+	_, err = store.Set("settings", "cache_max_entries", 99)
+	failure, ok := err.(*protocol.Error)
+	if !ok || failure.Kind != "STATE_BUSY" {
+		t.Fatalf("failure = %#v", err)
+	}
+	after, err := os.ReadFile(store.path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(before) != string(after) || store.Entries(0) != 12 {
+		t.Fatal("busy mutation changed settings")
 	}
 }

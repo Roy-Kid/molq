@@ -1,5 +1,7 @@
 """Explicit allocation-internal parallel then sequential work."""
 
+import json
+
 from molq import Execution, ExecutionUnit, JobSpec, Parallel, Sequence, UnitRef
 
 spec = JobSpec(
@@ -12,4 +14,4 @@ spec = JobSpec(
         plan=Sequence((Parallel((UnitRef("a"), UnitRef("b"))), UnitRef("finish"))),
     )
 )
-print(spec.to_wire())
+print(json.dumps(spec.to_wire(), ensure_ascii=False))

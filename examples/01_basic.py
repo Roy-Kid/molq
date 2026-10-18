@@ -1,16 +1,25 @@
 """Submit and wait without a long-lived Runtime."""
 
+import json
 import tempfile
 from pathlib import Path
 
-from molq import Molq
+from molq import JobSpec, submit
 
 with tempfile.TemporaryDirectory() as directory:
     root = Path(directory)
-    with Molq(registry=root / "registry.db") as mq:
-        mq.clusters.register(
-            name="local", scheduler="shell", target_root=str(root / "jobs")
-        )
-        job = mq.cluster("local").submit(argv=["echo", "molq 0.9.0"])
-        print(job.wait(timeout=10))
-        print(job.logs()["text"])
+    local = submit(
+        "local", "local", registry=root / "registry.db", target_root=str(root / "jobs")
+    )
+
+    @local
+    def hello(name):
+        job = yield JobSpec.argv(["echo", name])
+        return job
+
+    try:
+        job = hello("molq 0.9.0")
+        print(json.dumps(job.wait(timeout=10), ensure_ascii=False))
+        print(json.dumps(job.logs(), ensure_ascii=False))
+    finally:
+        local.close()

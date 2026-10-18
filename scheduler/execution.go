@@ -10,6 +10,17 @@ func RenderExecution(spec map[string]any, launch func(map[string]any, string) (s
 	execution := mapAny(spec["execution"])
 	units, _ := execution["units"].([]any)
 	var lines []string
+	globalEnvironment := stringMap(execution["env"])
+	if len(globalEnvironment) > 0 {
+		// Keep large allocation-wide values in one function. Invoke it after
+		// each unit's cd so variables such as PWD retain their original timing.
+		lines = append(lines, "molq_environment() {")
+		for _, key := range environmentKeys(globalEnvironment) {
+			// An overridden global value must never be applied temporarily.
+			lines = append(lines, `case "${1-}" in *"|`+key+`|"*) ;; *) export `+key+"="+quote(globalEnvironment[key])+" ;; esac")
+		}
+		lines = append(lines, "}")
+	}
 	names := map[string]string{}
 	for index, item := range units {
 		unit := mapAny(item)
@@ -36,15 +47,11 @@ func RenderExecution(spec map[string]any, launch func(map[string]any, string) (s
 		if cwd != "" {
 			body = append(body, "cd -- "+quote(cwd)+" || exit 126")
 		}
-		environment := stringMap(execution["env"])
-		for key, value := range stringMap(unit["env"]) {
-			environment[key] = value
+		environment := stringMap(unit["env"])
+		keys := environmentKeys(environment)
+		if len(globalEnvironment) > 0 {
+			body = append(body, "molq_environment "+quote("|"+strings.Join(keys, "|")+"|"))
 		}
-		keys := make([]string, 0, len(environment))
-		for key := range environment {
-			keys = append(keys, key)
-		}
-		sort.Strings(keys)
 		for _, key := range keys {
 			body = append(body, "export "+key+"="+quote(environment[key]))
 		}
@@ -108,6 +115,15 @@ func RenderExecution(spec map[string]any, launch func(map[string]any, string) (s
 	}
 	lines = append(lines, root, `exit "$?"`)
 	return strings.Join(lines, "\n") + "\n", nil
+}
+
+func environmentKeys(environment map[string]string) []string {
+	keys := make([]string, 0, len(environment))
+	for key := range environment {
+		keys = append(keys, key)
+	}
+	sort.Strings(keys)
+	return keys
 }
 
 func itoa(value int) string {

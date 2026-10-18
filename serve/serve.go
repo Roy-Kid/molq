@@ -12,15 +12,19 @@ import (
 
 // Service answers public RPC methods for one registry.
 type Service struct {
-	Registry   *registry.Registry
-	ID         string
-	mu         sync.Mutex
-	obs        *Observation
-	schedulers map[string]scheduler.Scheduler
-	locks      map[string]*sync.Mutex
-	listeners  map[chan struct{}]struct{}
-	config     *config.Store
-	operations map[string]*remembered
+	Registry     *registry.Registry
+	ID           string
+	mu           sync.Mutex
+	init         sync.Once
+	obs          *Observation
+	schedulers   map[string]scheduler.Scheduler
+	locks        map[string]chan struct{}
+	nativeSlots  chan struct{}
+	listeners    map[chan struct{}]struct{}
+	config       *config.Store
+	operations   map[string]*remembered
+	queryFlights map[string]*queryFlight
+	queryActive  int
 }
 
 // UseConfig loads the serve-owned settings file. An empty path leaves settings unset.
@@ -92,7 +96,14 @@ func (s *Service) Since(cursor string) map[string]any {
 }
 
 // Close releases resources owned by this process.
-func (s *Service) Close() error { return s.Registry.Close() }
+func (s *Service) Close() error {
+	s.mu.Lock()
+	for _, flight := range s.queryFlights {
+		flight.cancel()
+	}
+	s.mu.Unlock()
+	return s.Registry.Close()
+}
 
 // Call validates and executes one public method.
 func (s *Service) Call(method string, params map[string]any) (any, error) {
@@ -107,21 +118,14 @@ func (s *Service) invoke(method string, params map[string]any) (any, error) {
 	contract := protocol.Current()
 	if method == "molq.hello" {
 		return hello{
-			Version:       version{Major: contract.Version()["major"], Minor: contract.Version()["minor"]},
-			Release:       contract.Release(),
-			SchemaVersion: 2,
-			RegistryID:    s.Registry.ID,
-			InstanceID:    s.ID,
-			Methods:       contract.Methods(),
-			Limits:        limits{MaxFrameBytes: 1048576, BatchSize: 128},
+			Release:    contract.Release(),
+			RegistryID: s.Registry.ID,
+			InstanceID: s.ID,
+			Methods:    contract.Methods(),
+			Limits:     limits{MaxFrameBytes: 1048576, BatchSize: 128},
 		}, nil
 	}
 	return s.dispatch(method, params)
-}
-
-type version struct {
-	Major int `json:"major"`
-	Minor int `json:"minor"`
 }
 
 type limits struct {
@@ -130,11 +134,9 @@ type limits struct {
 }
 
 type hello struct {
-	Version       version  `json:"version"`
-	Release       string   `json:"release"`
-	SchemaVersion int      `json:"schema_version"`
-	RegistryID    string   `json:"registry_id"`
-	InstanceID    string   `json:"runtime_instance_id"`
-	Methods       []string `json:"methods"`
-	Limits        limits   `json:"limits"`
+	Release    string   `json:"release"`
+	RegistryID string   `json:"registry_id"`
+	InstanceID string   `json:"runtime_instance_id"`
+	Methods    []string `json:"methods"`
+	Limits     limits   `json:"limits"`
 }

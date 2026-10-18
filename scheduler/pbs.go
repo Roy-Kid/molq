@@ -31,6 +31,9 @@ func (p *PBS) Validate(spec map[string]any) error {
 		return unsupported("PBS requires explicit pbs_dialect=openpbs for JSON/select semantics")
 	}
 	resources, scheduling := mapAny(spec["resources"]), mapAny(spec["scheduling"])
+	if _, err := memoryMiB(resources); err != nil {
+		return err
+	}
 	nodes, tasks := defaultInt(resources["nodes"], 1), defaultInt(resources["tasks"], 1)
 	cpus := defaultInt(resources["cpus_per_task"], 1)
 	units, _ := mapAny(spec["execution"])["units"].([]any)
@@ -78,12 +81,10 @@ func (p *PBS) Render(spec map[string]any, directory string) (string, error) {
 	resources, scheduling := mapAny(spec["resources"]), mapAny(spec["scheduling"])
 	nodes, tasks, cpus := defaultInt(resources["nodes"], 1), defaultInt(resources["tasks"], 1), defaultInt(resources["cpus_per_task"], 1)
 	chunk := "select=" + itoa(nodes) + ":ncpus=" + itoa(tasks/nodes*cpus) + ":mpiprocs=" + itoa(tasks/nodes) + ":ompthreads=" + itoa(cpus)
-	if memory, ok := resources["memory_bytes"].(string); ok && memory != "" {
-		bytes := 0
-		for _, digit := range memory {
-			bytes = bytes*10 + int(digit-'0')
-		}
-		chunk += ":mem=" + itoa((bytes+1048575)/1048576) + "mb"
+	if memory, err := memoryMiB(resources); err != nil {
+		return "", err
+	} else if memory != "" {
+		chunk += ":mem=" + memory + "mb"
 	}
 	for _, item := range anySlice(resources["accelerators"]) {
 		chunk += ":ngpus=" + itoa(defaultInt(mapAny(item)["quantity"], 0))

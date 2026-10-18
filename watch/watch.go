@@ -11,7 +11,6 @@ import (
 	"time"
 
 	"github.com/MolCrafts/molq/protocol"
-	"github.com/MolCrafts/molq/serve"
 )
 
 // Options is one watch pass. Zero interval means five seconds.
@@ -25,7 +24,18 @@ type Options struct {
 
 // Run calls jobs.observe on the serve process. Notification failure does not
 // change submitted work.
-func Run(ctx context.Context, service *serve.Service, options Options) error {
+type Caller interface {
+	CallContext(context.Context, string, map[string]any) (any, error)
+}
+
+// ReportedError marks a failure already emitted to the output stream.
+// CLI callers use it to choose an exit status without printing it twice.
+type ReportedError struct{ Err error }
+
+func (e *ReportedError) Error() string { return e.Err.Error() }
+func (e *ReportedError) Unwrap() error { return e.Err }
+
+func Run(ctx context.Context, service Caller, options Options) error {
 	if options.Interval <= 0 {
 		options.Interval = 5 * time.Second
 	}
@@ -33,54 +43,67 @@ func Run(ctx context.Context, service *serve.Service, options Options) error {
 		options.Out = io.Discard
 	}
 	backoff := options.Interval
+	sendNotification, stopNotifications := notifications(ctx, options.NerveEndpoint)
+	defer stopNotifications()
 	cursors := map[string]string{}
 	reported := map[string]string{}
-	seen := map[string]bool{}
 	for {
 		if err := ctx.Err(); err != nil {
 			return err
 		}
 		names := options.Clusters
 		if len(names) == 0 {
-			listed, err := service.Call("clusters.list", map[string]any{})
+			listed, err := service.CallContext(ctx, "clusters.list", map[string]any{})
 			if err != nil {
+				if writeErr := reportError(options.Out, reported, "", err); writeErr != nil {
+					return writeErr
+				}
+				if options.Once {
+					return &ReportedError{Err: err}
+				}
 				if !sleep(ctx, backoff) {
 					return ctx.Err()
 				}
 				backoff = nextBackoff(backoff, options.Interval)
 				continue
 			}
-			for _, item := range listed.([]map[string]any) {
+			for _, item := range mapList(listed) {
 				names = append(names, stringField(item["name"]))
 			}
 		}
 		failed := false
+		var firstError error
 		for _, name := range names {
 			params := map[string]any{"cluster": name}
 			if cursor := cursors[name]; cursor != "" {
 				params["cursor"] = cursor
 			}
-			observed, err := service.Call("jobs.observe", params)
+			observed, err := service.CallContext(ctx, "jobs.observe", params)
 			if err != nil {
 				failed = true
-				reportError(options.Out, reported, name, err)
+				if firstError == nil {
+					firstError = err
+				}
+				if writeErr := reportError(options.Out, reported, name, err); writeErr != nil {
+					return writeErr
+				}
 				continue
 			}
 			delete(reported, name)
 			body := observed.(map[string]any)
 			cursors[name] = stringField(body["cursor"])
 			for _, change := range mapList(body["changes"]) {
-				if ref, ok := change["ref"].(map[string]any); ok {
-					seen[serve.RefKey(ref)] = true
+				if err := writeEvent(options.Out, change); err != nil {
+					return err
 				}
-				_ = writeEvent(options.Out, change)
-				notify(options.NerveEndpoint, change)
+				sendNotification(change)
 			}
-			if body["resync"] == true {
-				replayTerminal(service, name, seen, options)
-			}
+
 		}
 		if options.Once {
+			if firstError != nil {
+				return &ReportedError{Err: firstError}
+			}
 			return nil
 		}
 		wait := options.Interval
@@ -94,6 +117,48 @@ func Run(ctx context.Context, service *serve.Service, options Options) error {
 			return ctx.Err()
 		}
 	}
+}
+
+// Notifications run independently of sampling. A slow recipient may lose
+// notifications when the finite queue fills; observed events remain on Out.
+func notifications(parent context.Context, endpoint string) (func(map[string]any), func()) {
+	if endpoint == "" {
+		return func(map[string]any) {}, func() {}
+	}
+	ctx, cancel := context.WithCancel(parent)
+	queue := make(chan map[string]any, 128)
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		for {
+			select {
+			case <-ctx.Done():
+				return
+			case event, ok := <-queue:
+				if !ok {
+					return
+				}
+				notify(ctx, endpoint, event)
+			}
+		}
+	}()
+	return func(event map[string]any) {
+			select {
+			case queue <- event:
+			default:
+			}
+		}, func() {
+			close(queue)
+			timer := time.NewTimer(5 * time.Second)
+			defer timer.Stop()
+			select {
+			case <-done:
+			case <-parent.Done():
+			case <-timer.C:
+			}
+			cancel()
+			<-done
+		}
 }
 
 func mapList(value any) []map[string]any {
@@ -122,13 +187,16 @@ func writeEvent(out io.Writer, event map[string]any) error {
 	return err
 }
 
-func reportError(out io.Writer, reported map[string]string, cluster string, err error) {
+func reportError(out io.Writer, reported map[string]string, cluster string, err error) error {
 	signature := errorSignature(err)
 	if reported[cluster] == signature {
-		return
+		return nil
+	}
+	if writeErr := writeError(out, err); writeErr != nil {
+		return writeErr
 	}
 	reported[cluster] = signature
-	_ = writeError(out, err)
+	return nil
 }
 
 func errorSignature(err error) string {
@@ -138,50 +206,6 @@ func errorSignature(err error) string {
 	}
 	encoded, _ := json.Marshal(item.Data())
 	return string(encoded)
-}
-
-// replayTerminal reports each finished accounting job from the last 24 hours
-// once per process. A history error, including a scheduler with no range
-// query, is ignored so it cannot repeat on every resync.
-func replayTerminal(service *serve.Service, cluster string, seen map[string]bool, options Options) {
-	since := time.Now().UTC().Add(-24 * time.Hour).Format(time.RFC3339Nano)
-	result, err := service.Call("jobs.history", map[string]any{
-		"cluster": cluster, "since": since, "limit": 1024,
-	})
-	if err != nil {
-		return
-	}
-	for _, event := range terminalEvents(result, seen) {
-		_ = writeEvent(options.Out, event)
-		notify(options.NerveEndpoint, event)
-	}
-}
-
-func terminalEvents(result any, seen map[string]bool) []map[string]any {
-	body, ok := result.(map[string]any)
-	if !ok {
-		return nil
-	}
-	var events []map[string]any
-	for _, snap := range mapList(body["snapshots"]) {
-		if snap["terminal"] != true {
-			continue
-		}
-		ref, ok := snap["ref"].(map[string]any)
-		if !ok {
-			continue
-		}
-		identity := serve.RefKey(ref)
-		if identity == "|||" || seen[identity] {
-			continue
-		}
-		seen[identity] = true
-		events = append(events, map[string]any{
-			"observed_at": snap["observed_at"], "ref": snap["ref"],
-			"previous_state": nil, "state": snap["state"], "terminal": true,
-		})
-	}
-	return events
 }
 
 func writeError(out io.Writer, err error) error {
@@ -197,7 +221,7 @@ func writeError(out io.Writer, err error) error {
 	return writeErr
 }
 
-func notify(endpoint string, event map[string]any) {
+func notify(parent context.Context, endpoint string, event map[string]any) {
 	if endpoint == "" {
 		return
 	}
@@ -205,7 +229,7 @@ func notify(endpoint string, event map[string]any) {
 	if err != nil {
 		return
 	}
-	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	ctx, cancel := context.WithTimeout(parent, 5*time.Second)
 	defer cancel()
 	request, err := http.NewRequestWithContext(ctx, http.MethodPost, endpoint, bytes.NewReader(body))
 	if err != nil {

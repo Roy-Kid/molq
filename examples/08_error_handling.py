@@ -1,9 +1,21 @@
 """Inspect typed errors; uncertain mutations are never automatically resent."""
 
-from molq import Molq, MolqError
+import json
+
+from molq import JobSpec, MolqError, submit
+
+destination = submit("not-registered")
+
+
+@destination
+def hello():
+    job = yield JobSpec.argv(["echo", "hello"])
+    return job
+
 
 try:
-    with Molq() as mq:
-        mq.cluster("not-registered").submit(argv=["echo", "hello"])
+    hello()
 except MolqError as error:
-    print(error.to_wire())
+    print(json.dumps(error.to_wire(), ensure_ascii=False))
+finally:
+    destination.close()

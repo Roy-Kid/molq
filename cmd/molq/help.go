@@ -1,6 +1,7 @@
 package main
 
 import (
+	"encoding/json"
 	"fmt"
 	"os"
 	"strings"
@@ -25,6 +26,7 @@ Jobs:
   molq clusters remove CLUSTER --revision N
   molq submit CLUSTER -- ARGV
   molq submit CLUSTER --spec JSON
+  molq transfer [RSYNC_OPTION...] SRC... DEST
   molq status --ref JSON
   molq list CLUSTER
   molq observe CLUSTER
@@ -45,8 +47,8 @@ Where data lives:
   --token TEXT         Bearer token for --endpoint
 
 JSON or @file values are the public request shapes from molq discover.
-Business commands print one JSON object. Errors do too.
-doctor and help print their own text. doctor also prints JSON.
+Commands print JSON, including errors, help, version, and doctor.
+watch prints one JSON-RPC notification or error per line.
 
 --name and --comment apply only to argv submission. With --spec, put them in
 the spec. Give argv or --spec, not both. --ref is the JobRef, not the whole
@@ -83,6 +85,18 @@ var commandHelp = map[string]string{
   CLUSTER is a name or id. Use argv or --spec, not both.
   --name and --comment are only for argv; a spec already carries scheduling.
   --request-key repeats the same submit inside one serve process.`,
+	"transfer": `molq transfer [RSYNC_OPTION...] SRC... DEST
+
+  rsync syntax. SRC and DEST are CLUSTER:PATH or a local PATH, the way rsync
+  reads HOST:PATH: a colon before the first slash names a registered cluster.
+  CLUSTER:relative is relative to that login's home; a local PATH is resolved
+  against this shell's directory. A trailing slash is passed to rsync as is.
+  Options go to rsync unchanged; nothing is implied, so write -a or --delete
+  yourself. -e/--rsh, --rsync-path, -M/--remote-option and daemon options are
+  owned by the cluster transport and rejected. Only one side may be remote.
+
+  molq transfer -av --delete --exclude build/ ./project/ hpc:/scratch/you/project/
+  molq transfer -a hpc:runs/out.xyz .`,
 	"status": `molq status --ref JSON [--consistency live|bounded|cached]
   --ref is a JobRef object, or @file. live queries the scheduler.`,
 	"list": `molq list CLUSTER [--state STATE] [--name NAME]
@@ -115,27 +129,35 @@ var commandHelp = map[string]string{
 }
 
 func printHelp(args []string) {
+	result := map[string]any{"command": "molq", "description": strings.TrimSpace(helpText), "commands": commandHelp}
 	if len(args) > 0 {
 		name := args[0]
 		if name == "help" && len(args) > 1 {
 			name = args[1]
 		}
 		if text, ok := commandHelp[name]; ok && name != "help" {
-			fmt.Fprintln(os.Stdout, text)
-			return
+			result = map[string]any{"command": name, "description": text}
 		}
 	}
-	fmt.Fprintln(os.Stdout, strings.TrimSpace(helpText))
+	encoded, _ := json.Marshal(map[string]any{"jsonrpc": "2.0", "id": 1, "result": result})
+	fmt.Fprintln(os.Stdout, string(encoded))
 }
 
 func wantsHelp(args []string) bool {
 	if len(args) == 0 {
 		return true
 	}
+	if args[0] == "transfer" {
+		// rsync reads -h as --human-readable unless it stands alone.
+		return len(args) == 1 || args[1] == "--help" || len(args) == 2 && args[1] == "-h"
+	}
 	for _, arg := range args {
-		if arg == "--help" || arg == "-h" || arg == "help" {
+		if arg == "--" {
+			break
+		}
+		if arg == "--help" || arg == "-h" {
 			return true
 		}
 	}
-	return false
+	return args[0] == "help"
 }

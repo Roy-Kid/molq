@@ -1,6 +1,7 @@
 package rpc
 
 import (
+	"bufio"
 	"bytes"
 	"encoding/json"
 	"net/http"
@@ -26,6 +27,47 @@ func TestStdioHello(t *testing.T) {
 	result := response["result"].(map[string]any)
 	if result["registry_id"] == "" || result["runtime_instance_id"] == "" {
 		t.Fatalf("result = %#v", result)
+	}
+}
+
+type countingReader struct {
+	*strings.Reader
+	reads int
+}
+
+func (r *countingReader) Read(p []byte) (int, error) { r.reads++; return r.Reader.Read(p) }
+func TestFrameReaderUsesBufferedReads(t *testing.T) {
+	input := &countingReader{Reader: strings.NewReader(strings.Repeat("x", maxFrame) + "\n")}
+	reader := bufReader{r: bufio.NewReader(input)}
+	frame, err := reader.readLine(maxFrame + 1)
+	if err != nil || len(frame) != maxFrame || input.reads > 300 {
+		t.Fatalf("frame=%d reads=%d err=%v", len(frame), input.reads, err)
+	}
+}
+
+func TestStdioOversizedFrameIsNotSplit(t *testing.T) {
+	service := open(t)
+	// A request hidden after an oversized prefix belongs to that same frame.
+	hello := `{"jsonrpc":"2.0","id":99,"method":"molq.hello"}`
+	input := strings.Repeat(" ", maxFrame+1) + hello + "\n" + hello + "\n"
+	var out bytes.Buffer
+	if err := Stdio(service, strings.NewReader(input), &out); err != nil {
+		t.Fatal(err)
+	}
+	lines := bytes.Split(bytes.TrimSpace(out.Bytes()), []byte("\n"))
+	if len(lines) != 2 || !bytes.Contains(lines[0], []byte(`"error"`)) || !bytes.Contains(lines[1], []byte(`"result"`)) {
+		t.Fatalf("oversized frame was split: %s", out.Bytes())
+	}
+}
+
+func TestStdioAcceptsFrameAtLimit(t *testing.T) {
+	hello := `{"jsonrpc":"2.0","id":1,"method":"molq.hello"}`
+	for _, ending := range []string{"", "\n"} {
+		var out bytes.Buffer
+		input := hello + strings.Repeat(" ", maxFrame-len(hello)) + ending
+		if err := Stdio(open(t), strings.NewReader(input), &out); err != nil || !bytes.Contains(out.Bytes(), []byte(`"result"`)) {
+			t.Fatalf("frame at limit failed: %v %s", err, out.Bytes())
+		}
 	}
 }
 

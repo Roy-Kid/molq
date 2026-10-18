@@ -5,7 +5,13 @@
   "license": "MIT",
   "type": "module",
   "exports": {
-    ".": "./dist/index.js",
+    ".": {
+      "node": {
+        "types": "./dist/node.d.ts",
+        "default": "./dist/node.js"
+      },
+      "default": "./dist/index.js"
+    },
     "./node": "./dist/node.js"
   },
   "types": "./dist/index.d.ts",
@@ -14,7 +20,7 @@
   ],
   "scripts": {
     "build": "tsc",
-    "test": "npm run build && node --test test/*.mjs"
+    "test": "npm run build && tsc --noEmit --strict --skipLibCheck --target ES2022 --module NodeNext --moduleResolution NodeNext test/types.ts && node --test test/*.mjs"
   },
   "devDependencies": {
     "@types/node": "^22.0.0",

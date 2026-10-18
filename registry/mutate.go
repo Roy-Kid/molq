@@ -138,7 +138,7 @@ func scanCluster(rows *sql.Rows) (map[string]any, error) {
 
 func decodeCluster(id, definition string, revision int) (map[string]any, error) {
 	var body map[string]any
-	if err := json.Unmarshal([]byte(definition), &body); err != nil {
+	if err := json.Unmarshal([]byte(definition), &body); err != nil || body == nil {
 		return nil, protocol.Fail("STATE_SCHEMA_INCOMPATIBLE", "Cluster definition is not an object", nil)
 	}
 	body["id"] = id

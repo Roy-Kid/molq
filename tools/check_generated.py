@@ -6,7 +6,7 @@ from pathlib import Path
 
 root = Path(__file__).resolve().parents[1]
 paths = [
-    root / "src/molq/protocol/v1.json",
+    root / "src/molq/protocol/contract.json",
     root / "src/molq/protocol/types.py",
     root / "src/molq/client/async_objects.py",
     root / "sdk/typescript/src/types.ts",

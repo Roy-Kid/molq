@@ -2,7 +2,9 @@
 package rpc
 
 import (
+	"bufio"
 	"bytes"
+	"context"
 	"encoding/json"
 	"io"
 	"sync"
@@ -20,8 +22,12 @@ var mutations = map[string]bool{
 	"jobs.submit":       true,
 	"jobs.cancel":       true,
 	"jobs.cancel_many":  true,
-	"files.write":       true,
 	"files.transfer":    true,
+	"files.write":       true,
+	"files.mkdir":       true,
+	"files.remove":      true,
+	"files.rename":      true,
+	"files.touch":       true,
 	"config.set":        true,
 	"config.reload":     true,
 	"presets.set":       true,
@@ -86,6 +92,14 @@ func Dispatch(service *serve.Service, payload any, streaming bool) any {
 
 // Stdio serves newline-delimited frames until EOF.
 func Stdio(service *serve.Service, in io.Reader, out io.Writer) error {
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	var stop func()
+	defer func() {
+		if stop != nil {
+			stop()
+		}
+	}()
 	var writeMu sync.Mutex
 	write := func(value any) error {
 		encoded, err := marshal(value)
@@ -97,7 +111,7 @@ func Stdio(service *serve.Service, in io.Reader, out io.Writer) error {
 		_, err = out.Write(append(encoded, '\n'))
 		return err
 	}
-	reader := bufReader{r: in}
+	reader := bufReader{r: bufio.NewReader(in)}
 	for {
 		frame, err := reader.readLine(maxFrame + 1)
 		if err == io.EOF && len(frame) == 0 {
@@ -117,7 +131,12 @@ func Stdio(service *serve.Service, in io.Reader, out io.Writer) error {
 			if err := write(response); err != nil {
 				return err
 			}
-			startEvents(service, response, payload, write)
+			if next := startEvents(ctx, service, response, payload, write); next != nil {
+				if stop != nil {
+					stop()
+				}
+				stop = next
+			}
 		}
 		if err == io.EOF {
 			return nil
@@ -125,30 +144,25 @@ func Stdio(service *serve.Service, in io.Reader, out io.Writer) error {
 	}
 }
 
-func startEvents(service *serve.Service, response, payload any, write func(any) error) {
+func startEvents(ctx context.Context, service *serve.Service, response, payload any, write func(any) error) func() {
 	request, ok := payload.(map[string]any)
 	if !ok || request["method"] != "events.subscribe" {
-		return
+		return nil
 	}
 	body, ok := response.(map[string]any)
 	if !ok || body["result"] == nil {
-		return
+		return nil
 	}
 	result, _ := body["result"].(map[string]any)
 	cursor, _ := result["cursor"].(string)
 	updates, stop := service.Listen()
+	streamCtx, cancel := context.WithCancel(ctx)
 	go func() {
 		defer stop()
-		for range updates {
-			event := service.Since(cursor)
-			next, _ := event["cursor"].(string)
-			if next == cursor {
-				continue
-			}
-			cursor = next
-			_ = write(map[string]any{"jsonrpc": "2.0", "method": "events", "params": event})
-		}
+		defer cancel()
+		streamSocket(streamCtx, service, cursor, updates, write)
 	}()
+	return func() { cancel(); stop() }
 }
 
 func decode(frame []byte) (any, error) {
@@ -266,22 +280,23 @@ func validID(request map[string]any) bool {
 	}
 }
 
-type bufReader struct{ r io.Reader }
+type bufReader struct{ r *bufio.Reader }
 
 func (b bufReader) readLine(limit int) ([]byte, error) {
-	frame := make([]byte, 0, 128)
-	one := make([]byte, 1)
-	for len(frame) < limit {
-		n, err := b.r.Read(one)
-		if n == 1 {
-			if one[0] == '\n' {
-				return frame, err
-			}
-			frame = append(frame, one[0])
+	frame := make([]byte, 0, 4096)
+	for {
+		chunk, err := b.r.ReadSlice('\n')
+		if err == nil {
+			chunk = chunk[:len(chunk)-1]
 		}
-		if err != nil {
+		remaining := limit - len(frame)
+		if len(chunk) > remaining {
+			chunk = chunk[:remaining]
+		}
+		frame = append(frame, chunk...)
+		// Keep draining an oversized frame to LF; its suffix is never a request.
+		if err != bufio.ErrBufferFull {
 			return frame, err
 		}
 	}
-	return frame, nil
 }

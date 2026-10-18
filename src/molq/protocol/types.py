@@ -1,4 +1,4 @@
-"""Generated from protocol/v1.json; edit its declarative source."""
+"""Generated from protocol/contract.json; edit its declarative source."""
 
 from __future__ import annotations
 
@@ -47,6 +47,14 @@ class Resources(TypedDict):
     memory_bytes: NotRequired[str]
     time_limit_seconds: NotRequired[int]
     accelerators: NotRequired[list[Accelerator]]
+
+
+class FileLocation(TypedDict):
+    """Canonical wire shape."""
+
+    cluster: NotRequired[str]
+    path: str
+    root: NotRequired[str]
 
 
 class JobRef(TypedDict):
@@ -433,6 +441,34 @@ class LogsReadParams(TypedDict):
     limit: NotRequired[int]
 
 
+class FilesTransferParams(TypedDict):
+    """Canonical wire shape."""
+
+    sources: list[FileLocation]
+    destination: FileLocation
+    options: NotRequired[list[str]]
+    timeout_seconds: NotRequired[int]
+
+
+class FilesStatParams(TypedDict):
+    """Canonical wire shape."""
+
+    cluster: str
+    path: str
+    root: NotRequired[str]
+
+
+class FilesListParams(TypedDict):
+    """Canonical wire shape."""
+
+    cluster: str
+    path: str
+    root: NotRequired[str]
+    with_stat: NotRequired[bool]
+    limit: NotRequired[int]
+    after: NotRequired[str]
+
+
 class FilesReadParams(TypedDict):
     """Canonical wire shape."""
 
@@ -440,6 +476,7 @@ class FilesReadParams(TypedDict):
     path: str
     offset: NotRequired[int]
     limit: NotRequired[int]
+    root: NotRequired[str]
 
 
 class FilesWriteParams(TypedDict):
@@ -447,17 +484,48 @@ class FilesWriteParams(TypedDict):
 
     cluster: str
     path: str
-    offset: NotRequired[int]
     data: str
+    offset: NotRequired[int]
+    root: NotRequired[str]
 
 
-class FilesTransferParams(TypedDict):
+class FilesMkdirParams(TypedDict):
     """Canonical wire shape."""
 
-    source_cluster: str
-    source_path: str
-    destination_cluster: str
-    destination_path: str
+    cluster: str
+    path: str
+    parents: NotRequired[bool]
+    exist_ok: NotRequired[bool]
+    mode: NotRequired[int]
+    root: NotRequired[str]
+
+
+class FilesRemoveParams(TypedDict):
+    """Canonical wire shape."""
+
+    cluster: str
+    path: str
+    directory: NotRequired[bool]
+    root: NotRequired[str]
+    recursive: NotRequired[bool]
+
+
+class FilesRenameParams(TypedDict):
+    """Canonical wire shape."""
+
+    cluster: str
+    path: str
+    target: str
+    root: NotRequired[str]
+
+
+class FilesTouchParams(TypedDict):
+    """Canonical wire shape."""
+
+    cluster: str
+    path: str
+    exist_ok: NotRequired[bool]
+    root: NotRequired[str]
 
 
 class ConfigReloadParams(TypedDict):
@@ -502,3 +570,45 @@ class EventsSubscribeParams(TypedDict):
     """Canonical wire shape."""
 
     cursor: NotRequired[str]
+
+
+class FilesChmodParams(TypedDict):
+    """Canonical wire shape."""
+
+    cluster: str
+    path: str
+    root: NotRequired[str]
+    mode: int
+
+
+class FilesSymlinkParams(TypedDict):
+    """Canonical wire shape."""
+
+    cluster: str
+    path: str
+    root: NotRequired[str]
+    target: str
+
+
+class FilesResolveParams(TypedDict):
+    """Canonical wire shape."""
+
+    cluster: str
+    path: str
+    root: NotRequired[str]
+
+
+class FilesRead_ManyParams(TypedDict):
+    """Canonical wire shape."""
+
+    cluster: str
+    root: NotRequired[str]
+    paths: list[str]
+    max_bytes: NotRequired[int]
+
+
+class ConnectionsAuthenticateParams(TypedDict):
+    """Canonical wire shape."""
+
+    cluster: str
+    code: str

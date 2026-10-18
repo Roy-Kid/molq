@@ -6,7 +6,7 @@ import (
 	"path/filepath"
 	"sort"
 	"strings"
-	"syscall"
+	"sync"
 	"time"
 
 	"github.com/MolCrafts/molq/protocol"
@@ -22,6 +22,7 @@ var settingKinds = map[string]string{
 // Store is the serve-owned configuration file. client and serve sections are
 // preserved and are not scheduling state.
 type Store struct {
+	mu   sync.RWMutex
 	path string
 	data map[string]any
 }
@@ -55,6 +56,8 @@ func (s *Store) Reload() error {
 
 // Get returns one setting or preset. A missing key has a null value.
 func (s *Store) Get(namespace, key string) (map[string]any, error) {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
 	if err := knownNamespace(namespace); err != nil {
 		return nil, err
 	}
@@ -68,6 +71,8 @@ func (s *Store) Get(namespace, key string) (map[string]any, error) {
 
 // List returns one namespace in key order.
 func (s *Store) List(namespace string) ([]map[string]any, error) {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
 	if err := knownNamespace(namespace); err != nil {
 		return nil, err
 	}
@@ -101,11 +106,13 @@ func (s *Store) Set(namespace, key string, value any) (map[string]any, error) {
 	}); err != nil {
 		return nil, err
 	}
-	return s.Get(namespace, key)
+	return map[string]any{"key": key, "value": clone(value)}, nil
 }
 
 // Entries reads one integer setting, or fallback when it is absent.
 func (s *Store) Entries(fallback int) int {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
 	value, ok := whole(s.section("settings")["cache_max_entries"])
 	if !ok || value <= 0 {
 		return fallback
@@ -115,6 +122,8 @@ func (s *Store) Entries(fallback int) int {
 
 // MaxAge reads cache_max_age seconds, or fallback when it is absent.
 func (s *Store) MaxAge(fallback float64) float64 {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
 	value, ok := number(s.section("settings")["cache_max_age"])
 	if !ok || value <= 0 {
 		return fallback
@@ -198,6 +207,8 @@ func (s *Store) save(data map[string]any) error {
 }
 
 func (s *Store) locked(fn func() error) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
 	if err := os.MkdirAll(filepath.Dir(s.path), 0o755); err != nil {
 		return protocol.Fail("STATE_BUSY", "Cannot lock configuration", nil)
 	}
@@ -208,7 +219,7 @@ func (s *Store) locked(fn func() error) error {
 	defer lock.Close()
 	deadline := time.Now().Add(100 * time.Millisecond)
 	for {
-		err = syscall.Flock(int(lock.Fd()), syscall.LOCK_EX|syscall.LOCK_NB)
+		err = lockFile(lock)
 		if err == nil {
 			break
 		}
@@ -217,7 +228,7 @@ func (s *Store) locked(fn func() error) error {
 		}
 		time.Sleep(10 * time.Millisecond)
 	}
-	defer syscall.Flock(int(lock.Fd()), syscall.LOCK_UN)
+	defer unlockFile(lock)
 	return fn()
 }
 

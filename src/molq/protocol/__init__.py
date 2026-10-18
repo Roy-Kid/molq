@@ -11,4 +11,4 @@ from typing import Any
 @lru_cache(maxsize=1)
 def contract() -> dict[str, Any]:
     """Load the packaged language-independent contract."""
-    return json.loads(files(__package__).joinpath("v1.json").read_text())
+    return json.loads(files(__package__).joinpath("contract.json").read_text())

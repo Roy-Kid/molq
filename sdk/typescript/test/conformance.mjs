@@ -4,7 +4,7 @@ import {mkdtemp,rm} from 'node:fs/promises';
 import {tmpdir} from 'node:os';
 import {join,resolve} from 'node:path';
 import {StdioWire} from '../dist/node.js';
-import {Molq,methods,MolqError} from '../dist/index.js';
+import {Molq,methods,MolqError,HttpWire,submit as browserSubmit,JobSpec} from '../dist/index.js';
 
 test('Native TS client uses the same Runtime and schema',async()=>{
   const temp=await mkdtemp(join(tmpdir(),'molq-ts-'));
@@ -13,10 +13,10 @@ test('Native TS client uses the same Runtime and schema',async()=>{
   try{
     const hello=await mq.connect();assert.equal(hello.release,'0.9.0');assert.deepEqual(hello.methods,methods);
     const destination=await mq.clusters.register({name:'local',scheduler:'shell',target_root:join(temp,'target')});
-    const job=await destination.submitArgv([python,'-c','print("typescript")']);
-    const result=await job.wait(10000,50);assert.equal(result.completion.successful,true);
+    const job=await destination.submit(JobSpec.argv([python,'-c','print("typescript")']));
+    const result=await job.wait(10,0.05);assert.equal(result.completion.successful,true);
     assert.match((await job.logs()).text,/typescript/);
-    await assert.rejects(()=>mq.cluster('missing').submitArgv(['true']),error=>error instanceof MolqError && error.kind==='CLUSTER_NOT_FOUND');
+    await assert.rejects(()=>mq.cluster('missing').submit(JobSpec.argv(['true'])),error=>error instanceof MolqError && error.kind==='CLUSTER_NOT_FOUND');
   }finally{await mq.close();await rm(temp,{recursive:true,force:true});}
 });
 
@@ -43,14 +43,35 @@ test('HTTP peer shares Runtime semantics and structured authentication errors', 
   }
   try{
     await ready();
-    const denied=Molq.http(endpoint,'wrong');
+    // The streaming client must use the same authenticated /rpc endpoint.
+    const stream = new HttpWire(endpoint,token);
+    let socket;
+    try {
+      const subscribed = new Promise((resolveSubscription,reject)=>{
+        socket=stream.subscribe(response=>{
+          if(response.id===1) resolveSubscription(response);
+        });
+        socket.addEventListener('error',()=>reject(new Error('WebSocket RPC endpoint unavailable')));
+      });
+      let timer;
+      const deadline=new Promise((_,reject)=>{timer=setTimeout(()=>reject(new Error('subscription deadline')),5000);});
+      let response;
+      try { response=await Promise.race([subscribed,deadline]); } finally { clearTimeout(timer); }
+      assert.equal(response.result.resync,true);
+    } finally { socket?.close(); }
+    const denied=new Molq(new HttpWire(endpoint,'wrong'));
     await assert.rejects(()=>denied.connect(),error=>error instanceof MolqError && error.kind==='AUTH_REQUIRED');
     await denied.close();
-    mq=Molq.http(endpoint,token);
+    mq=new Molq(new HttpWire(endpoint,token));
     assert.equal((await mq.connect()).release,'0.9.0');
     const destination=await mq.clusters.register({name:'local',scheduler:'shell',target_root:join(temp,'target')});
-    const job=await destination.submitArgv([python,'-c','print("http-peer")']);
-    assert.equal((await job.wait(10000,50)).completion.successful,true);
+    const hpc=await browserSubmit('local',{endpoint,token});
+    let job;
+    try {
+      const hello=hpc(function* () { const submitted=yield JobSpec.argv([python,'-c','print("http-peer")']); return submitted; });
+      job=await hello();
+    } finally { await hpc.close(); }
+    assert.equal((await job.wait(10,0.05)).completion.successful,true);
     assert.match((await job.logs()).text,/http-peer/);
     await assert.rejects(()=>mq.rpc('clusters.register',{name:'bad',scheduler:'shell',target_root:'/target',supports_gpu:true}),error=>error instanceof MolqError && error.kind==='INVALID_INPUT');
   }finally{

@@ -63,6 +63,9 @@ func (s *Slurm) Validate(spec map[string]any) error {
 		return err
 	}
 	resources := mapAny(spec["resources"])
+	if _, err := memoryMiB(resources); err != nil {
+		return err
+	}
 	nodes, ok := AsInt(resources["nodes"])
 	if !ok {
 		nodes = 1
@@ -150,15 +153,10 @@ func (s *Slurm) Render(spec map[string]any, directory string) (string, error) {
 			directives = append(directives, "--"+pair.flag+"="+itoa(value))
 		}
 	}
-	if memory, ok := resources["memory_bytes"].(string); ok && memory != "" {
-		bytes := 0
-		for _, digit := range memory {
-			if digit < '0' || digit > '9' {
-				return "", protocol.Fail("RESOURCE_REQUEST_INVALID", "memory_bytes must be a decimal string", nil)
-			}
-			bytes = bytes*10 + int(digit-'0')
-		}
-		directives = append(directives, "--mem="+itoa((bytes+1048575)/1048576)+"M")
+	if memory, err := memoryMiB(resources); err != nil {
+		return "", err
+	} else if memory != "" {
+		directives = append(directives, "--mem="+memory+"M")
 	}
 	if seconds, ok := AsInt(resources["time_limit_seconds"]); ok {
 		directives = append(directives, "--time="+itoa(seconds/3600)+":"+two(seconds%3600/60)+":"+two(seconds%60))
@@ -344,7 +342,7 @@ func parseSlurmJobs(text, source string) ([]Job, error) {
 		Warnings any              `json:"warnings"`
 		Jobs     []map[string]any `json:"jobs"`
 	}
-	if err := json.Unmarshal([]byte(text), &data); err != nil || data.Jobs == nil || nonempty(data.Errors) || nonempty(data.Warnings) {
+	if err := json.Unmarshal([]byte(text), &data); err != nil || data.Jobs == nil || nonempty(data.Errors) || slurmWarningsPartial(data.Warnings, source, len(data.Jobs)) {
 		return nil, protocol.Fail("SCHEDULER_UNAVAILABLE", "Invalid/partial Slurm JSON response", nil)
 	}
 	jobs := make([]Job, 0, len(data.Jobs))
@@ -356,6 +354,21 @@ func parseSlurmJobs(text, source string) ([]Job, error) {
 		jobs = append(jobs, job)
 	}
 	return jobs, nil
+}
+
+func slurmWarningsPartial(warnings any, source string, jobs int) bool {
+	if !nonempty(warnings) {
+		return false
+	}
+	// Slurm 25.05 squeue emits this warning for a successful empty queue.
+	// Restrict the exception to the observed complete response; other warnings
+	// can indicate partial results and must not turn missing jobs into absence.
+	items, ok := warnings.([]any)
+	if !ok || source != "queue" || jobs != 0 || len(items) != 1 {
+		return true
+	}
+	item, ok := items[0].(map[string]any)
+	return !ok || len(item) != 2 || item["description"] != "Zero jobs to dump" || item["source"] != ""
 }
 
 func slurmJob(row map[string]any, source string) (Job, error) {

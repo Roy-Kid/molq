@@ -12,7 +12,7 @@ import (
 	"github.com/santhosh-tekuri/jsonschema/v6"
 )
 
-//go:embed v1.json
+//go:embed contract.json
 var raw []byte
 
 // Error is one stable RPC failure.
@@ -56,7 +56,6 @@ func (e *Error) Data() map[string]any {
 // Contract is the embedded protocol document.
 type Contract struct {
 	raw     []byte
-	version map[string]int
 	release string
 	methods []string
 	schemas map[string]*jsonschema.Schema
@@ -64,10 +63,6 @@ type Contract struct {
 
 var load = sync.OnceValue(func() *Contract {
 	var doc struct {
-		ProtocolVersion struct {
-			Major int `json:"major"`
-			Minor int `json:"minor"`
-		} `json:"protocol_version"`
 		Release string `json:"release"`
 	}
 	if err := json.Unmarshal(raw, &doc); err != nil {
@@ -82,12 +77,12 @@ var load = sync.OnceValue(func() *Contract {
 	if err != nil {
 		panic(err)
 	}
-	if err := compiler.AddResource("https://molcrafts.org/molq/protocol/v1", parsed); err != nil {
+	if err := compiler.AddResource("https://molcrafts.org/molq/protocol", parsed); err != nil {
 		panic(err)
 	}
 	schemas := make(map[string]*jsonschema.Schema, len(names))
 	for _, name := range names {
-		compiled, err := compiler.Compile("https://molcrafts.org/molq/protocol/v1#/methods/" + name)
+		compiled, err := compiler.Compile("https://molcrafts.org/molq/protocol#/methods/" + name)
 		if err != nil {
 			panic(err)
 		}
@@ -95,7 +90,6 @@ var load = sync.OnceValue(func() *Contract {
 	}
 	return &Contract{
 		raw:     bytes.Clone(raw),
-		version: map[string]int{"major": doc.ProtocolVersion.Major, "minor": doc.ProtocolVersion.Minor},
 		release: doc.Release,
 		methods: names,
 		schemas: schemas,
@@ -107,9 +101,6 @@ func Current() *Contract { return load() }
 
 // Raw is the canonical schema document.
 func (c *Contract) Raw() []byte { return c.raw }
-
-// Version is the protocol major and minor.
-func (c *Contract) Version() map[string]int { return c.version }
 
 // Release is the packaged molq release.
 func (c *Contract) Release() string { return c.release }
@@ -138,10 +129,10 @@ func (c *Contract) pointer(pointer string) (*jsonschema.Schema, error) {
 	if err != nil {
 		return nil, err
 	}
-	if err := compiler.AddResource("https://molcrafts.org/molq/protocol/v1", parsed); err != nil {
+	if err := compiler.AddResource("https://molcrafts.org/molq/protocol", parsed); err != nil {
 		return nil, err
 	}
-	compiled, err := compiler.Compile("https://molcrafts.org/molq/protocol/v1" + pointer)
+	compiled, err := compiler.Compile("https://molcrafts.org/molq/protocol" + pointer)
 	if err != nil {
 		return nil, Fail("INVALID_INPUT", "Request does not match the method schema", map[string]any{"reason": err.Error()})
 	}

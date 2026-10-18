@@ -1,4 +1,4 @@
-"""Build the versioned protocol from one declarative source."""
+"""Build the protocol contract from one declarative source."""
 
 import json
 from pathlib import Path
@@ -20,6 +20,7 @@ def ref(name):
 string = {"type": "string", "minLength": 1, "maxLength": 4096}
 identifier = {"type": "string", "pattern": "^[A-Za-z0-9][A-Za-z0-9_.-]{0,127}$"}
 positive = {"type": "integer", "minimum": 1, "maximum": 1000000}
+file_path = {"type": "string", "maxLength": 4096}
 strings = {"type": "array", "items": string, "minItems": 1, "maxItems": 4096}
 env = {
     "type": "object",
@@ -70,6 +71,7 @@ defs = {
             },
         }
     ),
+    "FileLocation": obj({"cluster": string, "path": file_path}, ["path"]),
     "JobRef": obj(
         {
             "registry_id": string,
@@ -425,32 +427,64 @@ params = {
         },
         ["ref"],
     ),
+    "files.transfer": obj(
+        {
+            "sources": {
+                "type": "array",
+                "items": ref("FileLocation"),
+                "minItems": 1,
+                "maxItems": 64,
+            },
+            "destination": ref("FileLocation"),
+            "options": {
+                "type": "array",
+                "items": {**string, "pattern": "^-"},
+                "maxItems": 256,
+            },
+        },
+        ["sources", "destination"],
+    ),
+    "files.stat": obj({"cluster": string, "path": file_path}, ["cluster", "path"]),
+    "files.list": obj({"cluster": string, "path": file_path}, ["cluster", "path"]),
     "files.read": obj(
         {
             "cluster": string,
-            "path": string,
+            "path": file_path,
             "offset": {"type": "integer", "minimum": 0},
-            "limit": {"type": "integer", "minimum": 1, "maximum": 262144},
+            "limit": {"type": "integer", "minimum": 0, "maximum": 262144},
         },
         ["cluster", "path"],
     ),
     "files.write": obj(
         {
             "cluster": string,
-            "path": string,
+            "path": file_path,
+            "data": {"type": "string", "maxLength": 349528},
             "offset": {"type": "integer", "minimum": 0},
-            "data": {"type": "string", "maxLength": 350000},
         },
         ["cluster", "path", "data"],
     ),
-    "files.transfer": obj(
+    "files.mkdir": obj(
         {
-            "source_cluster": string,
-            "source_path": string,
-            "destination_cluster": string,
-            "destination_path": string,
+            "cluster": string,
+            "path": file_path,
+            "parents": {"type": "boolean"},
+            "exist_ok": {"type": "boolean"},
+            "mode": {"type": "integer", "minimum": 0, "maximum": 4095},
         },
-        ["source_cluster", "source_path", "destination_cluster", "destination_path"],
+        ["cluster", "path"],
+    ),
+    "files.remove": obj(
+        {"cluster": string, "path": file_path, "directory": {"type": "boolean"}},
+        ["cluster", "path"],
+    ),
+    "files.rename": obj(
+        {"cluster": string, "path": file_path, "target": file_path},
+        ["cluster", "path", "target"],
+    ),
+    "files.touch": obj(
+        {"cluster": string, "path": file_path, "exist_ok": {"type": "boolean"}},
+        ["cluster", "path"],
     ),
     "config.reload": obj({}),
     "config.get": obj({"key": identifier}, ["key"]),
@@ -460,13 +494,36 @@ params = {
     "presets.set": obj({"key": identifier, "value": ref("Defaults")}, ["key", "value"]),
     "events.subscribe": obj({"cursor": string}),
 }
+# Generic target I/O: no workspace vocabulary or scheduler initialization.
+for _name, _schema in params.items():
+    if _name.startswith("files.") and _name != "files.transfer":
+        _schema["properties"]["root"] = file_path
+params["files.list"]["properties"].update({
+    "with_stat": {"type": "boolean"},
+    "limit": {"type": "integer", "minimum": 1, "maximum": 512},
+    "after": string,
+})
+params["files.remove"]["properties"]["recursive"] = {"type": "boolean"}
+params["files.chmod"] = obj({"cluster": string, "path": file_path, "root": file_path, "mode": {"type": "integer", "minimum": 0, "maximum": 4095}}, ["cluster", "path", "mode"])
+params["files.symlink"] = obj({"cluster": string, "path": file_path, "root": file_path, "target": file_path}, ["cluster", "path", "target"])
+params["files.resolve"] = obj({"cluster": string, "path": file_path, "root": file_path}, ["cluster", "path"])
+params["files.read_many"] = obj({
+    "cluster": string, "root": file_path,
+    "paths": {"type": "array", "items": file_path, "minItems": 1, "maxItems": 128},
+    "max_bytes": {"type": "integer", "minimum": 1, "maximum": 262144},
+}, ["cluster", "paths"])
+params["connections.authenticate"] = obj({"cluster": string, "code": {"type": "string", "minLength": 1, "maxLength": 4096}}, ["cluster", "code"])
+params["files.transfer"]["properties"]["timeout_seconds"] = {"type": "integer", "minimum": 1, "maximum": 3600}
+defs["FileLocation"]["properties"]["root"] = file_path
+
 contract = {
     "$schema": "https://json-schema.org/draft/2020-12/schema",
-    "$id": "https://molcrafts.org/molq/protocol/v1",
+    "$id": "https://molcrafts.org/molq/protocol",
     "$defs": defs,
     "methods": params,
-    "protocol_version": {"major": 1, "minor": 1},
     "release": "0.9.0",
 }
-p = Path(__file__).resolve().parents[1] / "src/molq/protocol/v1.json"
-p.write_text(json.dumps(contract, indent=2) + "\n")
+text = json.dumps(contract, indent=2) + "\n"
+root = Path(__file__).resolve().parents[1]
+(root / "src/molq/protocol/contract.json").write_text(text)
+(root / "protocol/contract.json").write_text(text)

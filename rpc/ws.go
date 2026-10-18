@@ -18,6 +18,7 @@ func acceptSocket(w http.ResponseWriter, r *http.Request, service *serve.Service
 		return
 	}
 	defer conn.Close(websocket.StatusInternalError, "")
+	conn.SetReadLimit(maxFrame)
 	authCtx, cancel := context.WithTimeout(r.Context(), 10*time.Second)
 	_, message, err := conn.Read(authCtx)
 	cancel()
@@ -70,28 +71,36 @@ func acceptSocket(w http.ResponseWriter, r *http.Request, service *serve.Service
 			result := body["result"].(map[string]any)
 			cursor, _ := result["cursor"].(string)
 			updates, cancel := service.Listen()
-			stop = cancel
-			go streamSocket(r.Context(), service, cursor, updates, write)
+			streamCtx, stopStream := context.WithCancel(r.Context())
+			stop = func() { stopStream(); cancel() }
+			go func() {
+				defer stopStream()
+				defer cancel()
+				streamSocket(streamCtx, service, cursor, updates, write)
+			}()
 		}
 	}
 }
 
 func streamSocket(ctx context.Context, service *serve.Service, cursor string, updates <-chan struct{}, write func(any) error) {
 	for {
+		if ctx.Err() != nil {
+			return
+		}
+		// Catch changes between Dispatch and listener registration before waiting.
+		event := service.Since(cursor)
+		next, _ := event["cursor"].(string)
+		if next != cursor {
+			cursor = next
+			if err := write(bounded(map[string]any{"jsonrpc": "2.0", "method": "events", "params": event})); err != nil {
+				return
+			}
+		}
 		select {
 		case <-ctx.Done():
 			return
 		case _, ok := <-updates:
 			if !ok {
-				return
-			}
-			event := service.Since(cursor)
-			next, _ := event["cursor"].(string)
-			if next == cursor {
-				continue
-			}
-			cursor = next
-			if err := write(map[string]any{"jsonrpc": "2.0", "method": "events", "params": event}); err != nil {
 				return
 			}
 		}

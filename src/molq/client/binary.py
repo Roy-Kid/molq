@@ -26,10 +26,25 @@ def executable(
         if path.is_file():
             try:
                 data = json.loads(path.read_text())
-            except (OSError, ValueError):
+            except OSError as error:
+                raise MolqError(
+                    "INVALID_INPUT", "Cannot read client configuration"
+                ) from error
+            except ValueError:
                 data = {}
-            chosen = data.get("client", {}).get("executable")
-            if chosen:
+            if not isinstance(data, dict) or not isinstance(
+                data.get("client", {}), dict
+            ):
+                raise MolqError(
+                    "INVALID_INPUT", "Client configuration must be an object"
+                )
+            client = data.get("client", {})
+            chosen = client.get("executable")
+            if "executable" in client and (not isinstance(chosen, str) or not chosen):
+                raise MolqError(
+                    "INVALID_INPUT", "Client executable must be a nonempty path"
+                )
+            if chosen is not None:
                 return str(Path(chosen).expanduser())
     here = Path(__file__).resolve()
     for parent in here.parents:

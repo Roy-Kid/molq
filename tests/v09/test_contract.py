@@ -17,7 +17,9 @@ def test_no_service_submit_wait_restart_and_no_job_tables(tmp_path):
         mq.clusters.register(
             name="local", scheduler="shell", target_root=str(tmp_path / "target")
         )
-        job = mq.cluster("local").submit(argv=[sys.executable, "-c", 'print("molq09")'])
+        job = mq.cluster("local").submit(
+            JobSpec.argv([sys.executable, "-c", 'print("molq09")'])
+        )
         ref = job.ref
     with Molq(registry=registry) as mq:
         result = mq.job(ref).wait(timeout=10, interval=0.05)
@@ -37,7 +39,7 @@ def test_no_service_submit_wait_restart_and_no_job_tables(tmp_path):
 def test_unknown_cluster_is_not_local(tmp_path):
     with Molq(registry=tmp_path / "registry.db") as mq:
         with pytest.raises(MolqError) as e:
-            mq.cluster("missing").submit(argv=["true"])
+            mq.cluster("missing").submit(JobSpec.argv(["true"]))
         assert e.value.kind == "CLUSTER_NOT_FOUND"
 
 
@@ -80,3 +82,13 @@ def test_cli_is_structured_on_input_error():
     )
     assert proc.returncode != 0
     assert json.loads(proc.stdout)["error"]["data"]["kind"] == "METHOD_NOT_FOUND"
+
+
+def test_contract_and_runtime_have_no_independent_protocol_version(tmp_path):
+    assert "protocol_version" not in contract()
+    assert not contract()["$id"].endswith(("/v1", "/v2"))
+    with Molq(registry=tmp_path / "registry.db") as mq:
+        hello = mq.rpc("molq.hello")
+        assert hello["release"] == "0.9.0"
+        assert hello["registry_id"]
+        assert not {"version", "protocol_version", "schema_version"} & hello.keys()

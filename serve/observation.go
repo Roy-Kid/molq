@@ -87,10 +87,10 @@ func Collection(snapshots []map[string]any, failures []map[string]any) map[strin
 
 // RefKey keeps registry, cluster, native ID and incarnation in every cache key.
 func RefKey(ref map[string]any) string {
-	return strings.Join([]string{
+	return string(mustJSON([]string{
 		stringField(ref["registry_id"]), stringField(ref["cluster_id"]),
 		stringField(ref["native_id"]), stringField(ref["incarnation"]),
-	}, "|")
+	}))
 }
 
 // Observation is disposable cache, baseline and event memory.
@@ -105,17 +105,20 @@ type Observation struct {
 	baselineOrder []string
 	baselineBytes int
 	events        []map[string]any
+	eventSizes    []int
 	eventBytes    int
 	sequence      int
 	instance      string
 }
 
 type cacheItem struct {
+	size  int
 	at    time.Time
 	value map[string]any
 }
 
 type baselineRecord struct {
+	size  int
 	at    time.Time
 	scope string
 	items map[string]map[string]any
@@ -163,6 +166,7 @@ func (o *Observation) Clear() {
 	o.baselineOrder = nil
 	o.baselineBytes = 0
 	o.events = nil
+	o.eventSizes = nil
 	o.eventBytes = 0
 	o.sequence = 0
 	o.instance = newHex()
@@ -173,25 +177,27 @@ func (o *Observation) Remember(value map[string]any) {
 	if value["source"] == "absent" || value["source"] == "unavailable" {
 		return
 	}
+	stored := cloneSnapshot(value)
+	identity := RefKey(mapValue(stored["ref"]))
+	size := len(mustJSON(stored))
 	o.mu.Lock()
 	defer o.mu.Unlock()
-	identity := RefKey(mapValue(value["ref"]))
-	size := len(mustJSON(value))
 	if previous, ok := o.cache[identity]; ok {
-		o.cacheBytes -= len(mustJSON(previous.value))
+		o.cacheBytes -= previous.size
 	} else {
 		o.cacheOrder = append(o.cacheOrder, identity)
 	}
-	o.cache[identity] = cacheItem{at: time.Now(), value: cloneSnapshot(value)}
+	o.cache[identity] = cacheItem{at: time.Now(), value: stored, size: size}
 	o.cacheBytes += size
 	o.evictCache()
 }
 
 // Cached reads one bounded snapshot. It is not current truth.
 func (o *Observation) Cached(ref map[string]any, maxAge *time.Duration) map[string]any {
+	identity := RefKey(ref)
 	o.mu.Lock()
-	defer o.mu.Unlock()
-	item, ok := o.cache[RefKey(ref)]
+	item, ok := o.cache[identity]
+	o.mu.Unlock()
 	if !ok {
 		return nil
 	}
@@ -212,7 +218,7 @@ func (o *Observation) evictCache() {
 		identity := o.cacheOrder[0]
 		o.cacheOrder = o.cacheOrder[1:]
 		if item, ok := o.cache[identity]; ok {
-			o.cacheBytes -= len(mustJSON(item.value))
+			o.cacheBytes -= item.size
 			delete(o.cache, identity)
 		}
 	}
@@ -240,31 +246,73 @@ func mustJSON(value any) []byte {
 }
 
 func cloneSnapshot(value map[string]any) map[string]any {
-	copied, _ := deepCopy(value).(map[string]any)
-	if copied == nil {
-		return map[string]any{}
+	copied := make(map[string]any, len(value))
+	for key, item := range value {
+		copied[key] = cloneObservationValue(item)
 	}
 	return copied
 }
 
+// Stored JSON values are immutable; readers copy after releasing the lock.
+func cloneObservationValue(value any) any {
+	switch item := value.(type) {
+	case map[string]any:
+		return cloneSnapshot(item)
+	case []any:
+		out := make([]any, len(item))
+		for i, entry := range item {
+			out[i] = cloneObservationValue(entry)
+		}
+		return out
+	case []map[string]any:
+		out := make([]map[string]any, len(item))
+		for i, entry := range item {
+			out[i] = cloneSnapshot(entry)
+		}
+		return out
+	case nil, string, bool, float64, int, int64, uint64, json.Number:
+		return item
+	default:
+		// Native snapshots can contain pointer-valued exit codes. JSON
+		// normalization avoids retaining mutable pointers into stored state.
+		return deepCopy(item)
+	}
+}
+
+func cloneBaseline(items map[string]map[string]any) map[string]map[string]any {
+	out := make(map[string]map[string]any, len(items))
+	for key, value := range items {
+		out[key] = cloneSnapshot(value)
+	}
+	return out
+}
+
 // Observe computes one scoped diff and keeps only a bounded baseline.
 func (o *Observation) Observe(result map[string]any, scope, cursor string) map[string]any {
+	// Prepare a private baseline and its byte budget before taking the lock.
+	complete := mapValue(result["coverage"])["complete"] == true
+	current := map[string]map[string]any{}
+	size := len(scope) + 2
+	if complete {
+		snapshots, _ := result["snapshots"].([]map[string]any)
+		for _, value := range snapshots {
+			current[RefKey(mapValue(value["ref"]))] = cloneSnapshot(value)
+		}
+		size = len(mustJSON(current)) + len(scope)
+	}
+	out := cloneSnapshot(result)
 	o.mu.Lock()
-	defer o.mu.Unlock()
 	prior, ok := o.baselines[cursor]
 	resync := !ok || prior.scope != scope || time.Since(prior.at) > time.Hour
 	baseline := map[string]map[string]any{}
 	if !resync {
 		baseline = prior.items
+		if !complete {
+			size = prior.size
+		}
 	}
 	var changes []map[string]any
-	coverage := mapValue(result["coverage"])
-	if coverage["complete"] == true {
-		current := map[string]map[string]any{}
-		snapshots, _ := result["snapshots"].([]map[string]any)
-		for _, value := range snapshots {
-			current[RefKey(mapValue(value["ref"]))] = value
-		}
+	if complete {
 		if !resync {
 			for identity, value := range current {
 				old := baseline[identity]
@@ -279,10 +327,13 @@ func (o *Observation) Observe(result map[string]any, scope, cursor string) map[s
 						event["previous_state"] = old["state"]
 					}
 					o.events = append(o.events, event)
-					o.eventBytes += len(mustJSON(event))
+					eventSize := len(mustJSON(event))
+					o.eventSizes = append(o.eventSizes, eventSize)
+					o.eventBytes += eventSize
 					for len(o.events) > 512 || o.eventBytes > o.maxBytes/4 {
-						o.eventBytes -= len(mustJSON(o.events[0]))
+						o.eventBytes -= o.eventSizes[0]
 						o.events = o.events[1:]
+						o.eventSizes = o.eventSizes[1:]
 					}
 					changes = append(changes, event)
 				}
@@ -294,13 +345,12 @@ func (o *Observation) Observe(result map[string]any, scope, cursor string) map[s
 	if resync {
 		token = newHex()
 	}
-	size := len(mustJSON(baseline)) + len(scope)
 	if previous, exists := o.baselines[token]; exists {
-		o.baselineBytes -= len(mustJSON(previous.items)) + len(previous.scope)
+		o.baselineBytes -= previous.size
 	} else {
 		o.baselineOrder = append(o.baselineOrder, token)
 	}
-	o.baselines[token] = baselineRecord{at: time.Now(), scope: scope, items: baseline}
+	o.baselines[token] = baselineRecord{at: time.Now(), scope: scope, items: baseline, size: size}
 	o.baselineBytes += size
 	for len(o.baselineOrder) > 64 || o.baselineBytes > o.maxBytes {
 		if len(o.baselineOrder) == 0 {
@@ -309,15 +359,16 @@ func (o *Observation) Observe(result map[string]any, scope, cursor string) map[s
 		removed := o.baselineOrder[0]
 		o.baselineOrder = o.baselineOrder[1:]
 		if item, exists := o.baselines[removed]; exists {
-			o.baselineBytes -= len(mustJSON(item.items)) + len(item.scope)
+			o.baselineBytes -= item.size
 			delete(o.baselines, removed)
 		}
 	}
 	if changes == nil {
 		changes = []map[string]any{}
 	}
-	out := cloneSnapshot(result)
-	out["changes"] = changes
+	o.mu.Unlock()
+	// Events may remain in the ring after returning; expose private copies.
+	out["changes"] = cloneObservationValue(changes)
 	out["cursor"] = token
 	out["resync"] = resync
 	return out
@@ -326,7 +377,6 @@ func (o *Observation) Observe(result map[string]any, scope, cursor string) map[s
 // Since reads the event ring or asks the caller to resync.
 func (o *Observation) Since(cursor string) map[string]any {
 	o.mu.Lock()
-	defer o.mu.Unlock()
 	start := o.sequence
 	resync := cursor == ""
 	if cursor != "" {
@@ -343,20 +393,20 @@ func (o *Observation) Since(cursor string) map[string]any {
 			}
 		}
 	}
-	return map[string]any{
-		"events": events, "cursor": o.instance + ":" + strconv.Itoa(o.sequence), "resync": resync,
-	}
+	next := o.instance + ":" + strconv.Itoa(o.sequence)
+	o.mu.Unlock()
+	return map[string]any{"events": cloneObservationValue(events), "cursor": next, "resync": resync}
 }
 
 // Baseline returns one stored scope, used when an observation cursor is still valid.
 func (o *Observation) Baseline(cursor string) (string, map[string]map[string]any, bool) {
 	o.mu.Lock()
-	defer o.mu.Unlock()
 	item, ok := o.baselines[cursor]
+	o.mu.Unlock()
 	if !ok {
 		return "", nil, false
 	}
-	return item.scope, item.items, true
+	return item.scope, cloneBaseline(item.items), true
 }
 
 func parseCursor(cursor string) (string, int, bool) {

@@ -53,8 +53,8 @@ dev = [
   "tox>=4.23",
 ]
 docs = [
-  "zensical>=0.0.45",
-  "molcrafts-zensical-theme==0.2.3",
+  "zensical>=0.0.70",
+  "molcrafts-zensical-theme==0.2.9",
   "mkdocstrings[python]>=1.0.0",
 ]
 

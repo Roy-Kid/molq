@@ -1,6 +1,7 @@
 package main
 
 import (
+	"github.com/MolCrafts/molq/config"
 	"os"
 	"path/filepath"
 	"testing"
@@ -29,7 +30,7 @@ func TestResolveConfigUsesDefaultFile(t *testing.T) {
 func TestResolveConfigMissingDefaultIsEmpty(t *testing.T) {
 	t.Setenv("HOME", t.TempDir())
 	file, resolved, err := resolveConfig("")
-	if err != nil || resolved != "" || file.Client.Watch.Interval != 0 {
+	if err != nil || resolved != config.DefaultPath() || file.Client.Watch.Interval != 0 {
 		t.Fatalf("resolved=%q err=%v interval=%v", resolved, err, file.Client.Watch.Interval)
 	}
 }

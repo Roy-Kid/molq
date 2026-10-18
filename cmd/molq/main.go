@@ -3,10 +3,9 @@ package main
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"flag"
 	"fmt"
-	"net"
-	"net/http"
 	"os"
 	"strings"
 	"time"
@@ -15,13 +14,13 @@ import (
 
 	"github.com/MolCrafts/molq/config"
 	"github.com/MolCrafts/molq/protocol"
-	"github.com/MolCrafts/molq/registry"
-	"github.com/MolCrafts/molq/rpc"
-	"github.com/MolCrafts/molq/serve"
 )
 
 func main() {
 	if err := run(os.Args[1:]); err != nil {
+		if result, ok := err.(commandExit); ok {
+			os.Exit(result.code)
+		}
 		if item, ok := err.(*protocol.Error); ok {
 			emit(item)
 			os.Exit(exitCode(item.Kind))
@@ -31,16 +30,20 @@ func main() {
 	}
 }
 
+type commandExit struct{ code int }
+
+func (e commandExit) Error() string { return fmt.Sprintf("command exit %d", e.code) }
+
 func run(args []string) error {
+	args = peelGlobals(args)
 	if wantsHelp(args) {
 		printHelp(args)
 		return nil
 	}
 	if len(args) > 0 && (args[0] == "--version" || args[0] == "version") {
-		fmt.Fprintln(os.Stdout, "0.9.0")
+		fmt.Fprintln(os.Stdout, `{"jsonrpc":"2.0","id":1,"result":{"version":"0.9.0"}}`)
 		return nil
 	}
-	args = peelGlobals(args)
 	if len(args) == 0 {
 		printHelp(nil)
 		return nil
@@ -62,57 +65,7 @@ func run(args []string) error {
 	if args[0] != "serve" {
 		return runCommand(args[0], args[1:])
 	}
-	flags := flag.NewFlagSet("serve", flag.ContinueOnError)
-	flags.SetOutput(os.Stderr)
-	stdio := flags.Bool("stdio", false, "serve RPC on stdin and stdout")
-	configPath := flags.String("config", "", "configuration file")
-	registryPath := flags.String("registry", "", "registry database")
-	host := flags.String("host", "", "listen address for this start")
-	port := flags.Int("port", 0, "listen port for this start")
-	if err := flags.Parse(args[1:]); err != nil {
-		return protocol.Fail("INVALID_INPUT", err.Error(), nil)
-	}
-	file, resolved, err := resolveConfig(*configPath)
-	if err != nil {
-		return err
-	}
-	path := *registryPath
-	if path == "" {
-		path = file.Client.Registry
-	}
-	if path == "" {
-		path = registry.DefaultPath()
-	}
-	service, err := serve.Open(path)
-	if err != nil {
-		return err
-	}
-	defer service.Close()
-	if err := service.UseConfig(resolved); err != nil {
-		return err
-	}
-	if *stdio {
-		return rpc.Stdio(service, os.Stdin, os.Stdout)
-	}
-	listenHost := *host
-	if listenHost == "" {
-		listenHost = file.Serve.Host
-	}
-	if listenHost == "" {
-		listenHost = "127.0.0.1"
-	}
-	listenPort := *port
-	if listenPort == 0 {
-		listenPort = file.Serve.Port
-	}
-	if listenPort == 0 {
-		listenPort = 17891
-	}
-	handler, err := rpc.Handler(service, file.Serve.Token)
-	if err != nil {
-		return err
-	}
-	return http.ListenAndServe(net.JoinHostPort(listenHost, fmt.Sprint(listenPort)), handler)
+	return runServe(args[1:])
 }
 
 func runWatch(args []string) error {
@@ -120,6 +73,8 @@ func runWatch(args []string) error {
 	flags.SetOutput(os.Stderr)
 	configPath := flags.String("config", "", "configuration file")
 	registryPath := flags.String("registry", "", "registry database")
+	endpoint := flags.String("endpoint", "", "explicit RPC endpoint")
+	token := flags.String("token", "", "RPC bearer token")
 	interval := flags.Float64("interval", 0, "seconds between observations")
 	once := flags.Bool("once", false, "observe once and exit")
 	var clusters stringsFlag
@@ -127,25 +82,18 @@ func runWatch(args []string) error {
 	if err := flags.Parse(args); err != nil {
 		return protocol.Fail("INVALID_INPUT", err.Error(), nil)
 	}
-	file, resolved, err := resolveConfig(*configPath)
+	file, _, err := resolveConfig(*configPath)
 	if err != nil {
 		return err
 	}
-	path := *registryPath
-	if path == "" {
-		path = file.Client.Registry
-	}
-	if path == "" {
-		path = registry.DefaultPath()
-	}
-	service, err := serve.Open(path)
+	wire, err := newCaller(map[string][]string{
+		"--config": {*configPath}, "--registry": {*registryPath},
+		"--endpoint": {*endpoint}, "--token": {*token},
+	})
 	if err != nil {
 		return err
 	}
-	defer service.Close()
-	if err := service.UseConfig(resolved); err != nil {
-		return err
-	}
+	defer wire.Close()
 	names := file.Client.Watch.Clusters
 	if len(clusters) > 0 {
 		names = clusters
@@ -154,10 +102,19 @@ func runWatch(args []string) error {
 	if *interval > 0 {
 		every = time.Duration(*interval * float64(time.Second))
 	}
-	return watch.Run(context.Background(), service, watch.Options{
+	err = watch.Run(context.Background(), wire, watch.Options{
 		Interval: every, Clusters: names, NerveEndpoint: file.Client.Watch.NerveEndpoint,
 		Once: *once, Out: os.Stdout,
 	})
+	var reported *watch.ReportedError
+	if errors.As(err, &reported) {
+		var failure *protocol.Error
+		if errors.As(reported.Err, &failure) {
+			return commandExit{exitCode(failure.Kind)}
+		}
+		return commandExit{1}
+	}
+	return err
 }
 
 type stringsFlag []string
@@ -174,6 +131,10 @@ func peelGlobals(args []string) []string {
 	var flags []string
 	var positionals []string
 	for i := 0; i < len(args); i++ {
+		if args[i] == "--" {
+			positionals = append(positionals, args[i:]...)
+			break
+		}
 		if globals[args[i]] && i+1 < len(args) {
 			flags = append(flags, args[i], args[i+1])
 			i++
@@ -214,26 +175,12 @@ func callRPC(args []string) error {
 	if !ok {
 		return protocol.Fail("INVALID_INPUT", "Named RPC params must be an object", nil)
 	}
-	file, resolved, err := resolveConfig(first(flags["--config"]))
+	wire, err := newCaller(flags)
 	if err != nil {
 		return err
 	}
-	path := first(flags["--registry"])
-	if path == "" {
-		path = file.Client.Registry
-	}
-	if path == "" {
-		path = registry.DefaultPath()
-	}
-	service, err := serve.Open(path)
-	if err != nil {
-		return err
-	}
-	defer service.Close()
-	if err := service.UseConfig(resolved); err != nil {
-		return err
-	}
-	result, err := service.Call(method, body)
+	defer wire.Close()
+	result, err := wire.Call(method, body)
 	if err != nil {
 		return err
 	}
@@ -243,7 +190,7 @@ func callRPC(args []string) error {
 	}
 	fmt.Fprintln(os.Stdout, string(encoded))
 	if hasCoverageErrors(result) {
-		os.Exit(8)
+		return commandExit{8}
 	}
 	return nil
 }
@@ -270,19 +217,13 @@ func hasCoverageErrors(result any) bool {
 	}
 }
 
-// resolveConfig loads --config, or ~/.molcrafts/molq/config.json when that
-// file exists. A missing default is an empty configuration. An invalid file
+// resolveConfig loads --config, or ~/.molcrafts/molq/config.json.
+// A missing file starts empty and can be written through RPC. An invalid file
 // is an error. The returned path is what serve should validate.
 func resolveConfig(explicit string) (config.File, string, error) {
 	path := explicit
 	if path == "" {
-		candidate := config.DefaultPath()
-		info, err := os.Stat(candidate)
-		if err == nil && !info.IsDir() {
-			path = candidate
-		} else if err != nil && !os.IsNotExist(err) {
-			return config.File{}, "", protocol.Fail("INVALID_INPUT", "Cannot read configuration file", map[string]any{"path": candidate})
-		}
+		path = config.DefaultPath()
 	}
 	file, err := config.Load(path)
 	if err != nil {
@@ -307,7 +248,7 @@ func exitCode(kind string) int {
 		"CLUSTER_NOT_FOUND": 3, "CACHE_MISS": 3, "FILE_UNAVAILABLE": 3,
 		"RUNTIME_UNAVAILABLE": 4, "SCHEDULER_UNAVAILABLE": 4, "TRANSPORT_UNAVAILABLE": 4,
 		"SCHEDULER_UNSUPPORTED": 5, "TRANSFER_UNSUPPORTED": 5, "RESOURCE_REQUEST_INVALID": 5,
-		"EXECUTION_RESOURCE_CONFLICT": 5, "RPC_CHANNEL_UNSUPPORTED": 5, "PROTOCOL_MISMATCH": 5,
+		"EXECUTION_RESOURCE_CONFLICT": 5, "RPC_CHANNEL_UNSUPPORTED": 5,
 		"STATE_SCHEMA_INCOMPATIBLE": 5, "WAIT_TIMEOUT": 6,
 		"AUTH_REQUIRED": 7, "PERMISSION_DENIED": 7, "SUBMISSION_REJECTED": 7, "CANCEL_REJECTED": 7,
 		"PARTIAL_FAILURE": 8, "CONFLICT": 10, "STATE_BUSY": 10, "OUTCOME_UNKNOWN": 10,

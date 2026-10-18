@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import json
 import subprocess
 import threading
 import urllib.error
@@ -11,9 +10,17 @@ from collections import deque
 from pathlib import Path
 from typing import Any
 
+from molq.client.codec import (
+    MAX_FRAME,
+    decode_frame,
+    encode_request,
+    is_event,
+    positive_timeout,
+    response_result,
+    validate_connection,
+    validate_hello,
+)
 from molq.errors import MolqError
-
-MAX_FRAME = 1048576
 
 
 class Wire:
@@ -29,12 +36,13 @@ class Wire:
         timeout: float = 130,
         registry_id: str | None = None,
     ):
+        validate_connection(endpoint, token, registry_id)
         self.config = config
         self.endpoint = endpoint
         self.registry = registry
         self.token = token
         self.executable = None
-        self.timeout = timeout
+        self.timeout = positive_timeout(timeout)
         self.registry_id = registry_id
         self.process: subprocess.Popen | None = None
         self.events = deque(maxlen=128)
@@ -58,11 +66,10 @@ class Wire:
         )
 
     def connect(self) -> dict:
-        """Verify protocol and optional registry identity before any business call."""
+        """Verify optional registry identity before any business call."""
         if self.hello is None:
             hello = self._request("molq.hello", {})
-            if hello["version"]["major"] != 1:
-                raise MolqError("PROTOCOL_MISMATCH", "Incompatible RPC major version")
+            validate_hello(hello)
             if self.registry_id and hello["registry_id"] != self.registry_id:
                 raise MolqError(
                     "REGISTRY_MISMATCH", "Endpoint serves a different registry"
@@ -73,21 +80,15 @@ class Wire:
     def call(self, method: str, params: dict | None = None) -> Any:
         """Send one operation without renderer, defaults merge or state logic."""
         with self.lock:
+            params = {} if params is None else params
+            encode_request(method, params, self.sequence + 1)
             if method != "molq.hello":
                 self.connect()
-            return self._request(method, params or {})
+            return self._request(method, params)
 
     def _request(self, method: str, params: dict) -> Any:
         self.sequence += 1
-        payload = {
-            "jsonrpc": "2.0",
-            "id": self.sequence,
-            "method": method,
-            "params": params,
-        }
-        data = json.dumps(payload, allow_nan=False, separators=(",", ":")).encode()
-        if len(data) > MAX_FRAME:
-            raise MolqError("INVALID_INPUT", "RPC frame exceeds 1 MiB")
+        data = encode_request(method, params, self.sequence)
         mutation = method in {
             "clusters.register",
             "clusters.update",
@@ -98,8 +99,12 @@ class Wire:
             "jobs.submit",
             "jobs.cancel",
             "jobs.cancel_many",
-            "files.write",
             "files.transfer",
+            "files.write",
+            "files.mkdir",
+            "files.remove",
+            "files.rename",
+            "files.touch",
         }
         try:
             if self.endpoint:
@@ -125,6 +130,11 @@ class Wire:
             else:
                 self._start()
                 assert self.process and self.process.stdin and self.process.stdout
+                if self.process.poll() is not None:
+                    raise MolqError(
+                        "RUNTIME_UNAVAILABLE",
+                        "RPC session is closed; close before reconnecting",
+                    )
                 self.process.stdin.write(data + b"\n")
                 self.process.stdin.flush()
                 # One finite read bridge supports Windows ordinary pipes too.
@@ -134,14 +144,13 @@ class Wire:
                 def read():
                     try:
                         while True:
-                            received = stdout.readline(MAX_FRAME + 1)
+                            received = stdout.readline(MAX_FRAME + 2).removesuffix(
+                                b"\n"
+                            )
                             if not received or len(received) > MAX_FRAME:
                                 raise OSError("Invalid frame length")
-                            decoded = json.loads(received)
-                            if (
-                                decoded.get("method") == "events"
-                                and "id" not in decoded
-                            ):
+                            decoded = decode_frame(received)
+                            if is_event(decoded):
                                 self.events.append(decoded["params"])
                                 continue
                             value.append(received)
@@ -162,16 +171,21 @@ class Wire:
                 frame = value[0]
             if not frame or len(frame) > MAX_FRAME:
                 raise OSError("Empty/oversized RPC response")
-            response = json.loads(frame)
-            if (
-                response.get("id") != self.sequence
-                and not (response.get("id") is None and "error" in response)
-            ) or response.get("jsonrpc") != "2.0":
-                raise OSError("RPC response identity mismatch")
-            if "error" in response:
-                raise MolqError.from_wire(response["error"]["data"])
-            return response["result"]
-        except (OSError, ValueError, KeyError, TimeoutError) as exc:
+            return response_result(decode_frame(frame), self.sequence)
+        except (
+            OSError,
+            ValueError,
+            KeyError,
+            TypeError,
+            RecursionError,
+            TimeoutError,
+        ) as exc:
+            if self.process and self.process.poll() is None:
+                try:
+                    self.process.kill()
+                    self.process.wait(timeout=5)
+                except (OSError, subprocess.TimeoutExpired):
+                    pass
             raise MolqError(
                 "OUTCOME_UNKNOWN" if mutation else "RUNTIME_UNAVAILABLE",
                 "RPC connection failed",

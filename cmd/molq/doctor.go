@@ -5,10 +5,10 @@ import (
 	"fmt"
 	"os"
 
+	"github.com/MolCrafts/molq/client"
 	"github.com/MolCrafts/molq/config"
 	"github.com/MolCrafts/molq/protocol"
-	"github.com/MolCrafts/molq/registry"
-	"github.com/MolCrafts/molq/serve"
+	"path/filepath"
 )
 
 // runPing asks the selected serve process for molq.hello and reports only whether it answered.
@@ -75,13 +75,15 @@ func runChecks(args []string, command string, diagnose bool) error {
 	}
 	if !ok {
 		probe.close()
-		os.Exit(1)
+		return commandExit{1}
 	}
 	return nil
 }
 
 type probe struct {
-	service       *serve.Service
+	wire          *client.Wire
+	helloResult   any
+	helloErr      error
 	endpoint      string
 	token         string
 	registryPath  string
@@ -116,46 +118,41 @@ func newProbe(args []string, command string) (*probe, error) {
 	if item.token == "" {
 		item.token = file.Client.Token
 	}
-	if item.endpoint != "" {
-		item.registryPath = "endpoint"
-		return item, nil
+	executable := file.Client.Executable
+	if executable == "" {
+		executable, err = clientExecutable()
+		if err != nil {
+			return nil, err
+		}
 	}
-	item.registryPath = first(flags["--registry"])
+	item.registryPath = orString(first(flags["--registry"]), file.Client.Registry)
 	if item.registryPath == "" {
-		item.registryPath = file.Client.Registry
+		item.registryPath = filepath.Join(filepath.Dir(config.DefaultPath()), "registry.db")
 	}
-	if item.registryPath == "" {
-		item.registryPath = registry.DefaultPath()
+	validatedConfig := item.configPath
+	if item.configErr != nil {
+		validatedConfig = ""
 	}
-	service, err := serve.Open(item.registryPath)
-	item.registryErr = err
-	if err != nil {
-		return item, nil
-	}
-	item.service = service
-	if item.configErr == nil && item.configPath != "" {
-		item.configErr = service.UseConfig(item.configPath)
+	item.wire = client.New(client.Options{
+		Endpoint: item.endpoint, Token: item.token, Registry: item.registryPath,
+		Config: validatedConfig, Executable: executable,
+	})
+	item.helloResult, item.helloErr = item.wire.Call("molq.hello", map[string]any{})
+	if item.endpoint == "" {
+		item.registryErr = item.helloErr
+		if failure, ok := item.helloErr.(*protocol.Error); ok && failure.Kind == "INVALID_INPUT" && item.configChecked {
+			item.configErr, item.registryErr = item.helloErr, nil
+		}
 	}
 	return item, nil
 }
 
-func (p *probe) hello() (any, error) {
-	if p.registryErr != nil {
-		return nil, p.registryErr
-	}
-	if p.endpoint != "" && p.service == nil {
-		return (&caller{endpoint: p.endpoint, token: p.token}).call("molq.hello", map[string]any{})
-	}
-	if p.service == nil {
-		return nil, protocol.Fail("RUNTIME_UNAVAILABLE", "Serve process is not available", nil)
-	}
-	return p.service.Call("molq.hello", map[string]any{})
-}
+func (p *probe) hello() (any, error) { return p.helloResult, p.helloErr }
 
 func (p *probe) close() {
-	if p.service != nil {
-		_ = p.service.Close()
-		p.service = nil
+	if p.wire != nil {
+		_ = p.wire.Close()
+		p.wire = nil
 	}
 }
 
@@ -172,7 +169,7 @@ func attachError(check map[string]any, err error) {
 }
 
 func printJSON(value any) error {
-	encoded, err := json.Marshal(value)
+	encoded, err := json.Marshal(map[string]any{"jsonrpc": "2.0", "id": 1, "result": value})
 	if err != nil {
 		return err
 	}

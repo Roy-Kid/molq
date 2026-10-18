@@ -87,14 +87,14 @@ func (r *Registry) initialize() error {
 			extra = true
 		}
 	}
-	if extra || (len(tables) > 0 && !tables["schema_meta"]) {
+	if extra || (len(tables) > 0 && (!tables["schema_meta"] || !tables["clusters"])) {
 		return protocol.Fail("STATE_SCHEMA_INCOMPATIBLE", incompatibleRegistry, nil)
 	}
 	if tables["schema_meta"] {
 		meta := map[string]string{}
 		rows, err := r.db.Query("SELECT key, value FROM schema_meta")
 		if err != nil {
-			return protocol.Fail("STATE_BUSY", "Cannot open registry configuration", nil)
+			return protocol.Fail("STATE_SCHEMA_INCOMPATIBLE", incompatibleRegistry, nil)
 		}
 		for rows.Next() {
 			var key, value string
@@ -104,10 +104,17 @@ func (r *Registry) initialize() error {
 			}
 			meta[key] = value
 		}
+		err = rows.Err()
 		_ = rows.Close()
-		if meta["schema_version"] != schemaVersion {
+		if err != nil || meta["schema_version"] != schemaVersion || meta["registry_id"] == "" {
 			return protocol.Fail("STATE_SCHEMA_INCOMPATIBLE", incompatibleRegistry, nil)
 		}
+		rows, err = r.db.Query("SELECT id, name, definition, revision FROM clusters LIMIT 0")
+		if err != nil {
+			return protocol.Fail("STATE_SCHEMA_INCOMPATIBLE", incompatibleRegistry, nil)
+		}
+		_ = rows.Close()
+		r.ID = meta["registry_id"]
 	}
 	if _, err := r.db.Exec("PRAGMA journal_mode=WAL"); err != nil {
 		return protocol.Fail("STATE_BUSY", "Cannot open registry configuration", nil)
@@ -115,25 +122,34 @@ func (r *Registry) initialize() error {
 	if _, err := r.db.Exec("PRAGMA foreign_keys=ON"); err != nil {
 		return protocol.Fail("STATE_BUSY", "Cannot open registry configuration", nil)
 	}
-	if _, err := r.db.Exec(`CREATE TABLE IF NOT EXISTS schema_meta(key TEXT PRIMARY KEY, value TEXT NOT NULL)`); err != nil {
+	if len(tables) > 0 {
+		return nil
+	}
+	tx, err := r.db.Begin()
+	if err != nil {
+		return protocol.Fail("STATE_BUSY", "Cannot initialize registry configuration", nil)
+	}
+	defer tx.Rollback()
+	if _, err := tx.Exec(`CREATE TABLE schema_meta(key TEXT PRIMARY KEY, value TEXT NOT NULL)`); err != nil {
 		return protocol.Fail("STATE_BUSY", "Cannot open registry configuration", nil)
 	}
-	if _, err := r.db.Exec(`CREATE TABLE IF NOT EXISTS clusters(id TEXT PRIMARY KEY, name TEXT UNIQUE NOT NULL, definition TEXT NOT NULL, revision INTEGER NOT NULL)`); err != nil {
+	if _, err := tx.Exec(`CREATE TABLE clusters(id TEXT PRIMARY KEY, name TEXT UNIQUE NOT NULL, definition TEXT NOT NULL, revision INTEGER NOT NULL)`); err != nil {
 		return protocol.Fail("STATE_BUSY", "Cannot open registry configuration", nil)
 	}
 	id, err := newUUID()
 	if err != nil {
 		return err
 	}
-	if _, err := r.db.Exec("INSERT OR IGNORE INTO schema_meta VALUES (?, ?)", "schema_version", schemaVersion); err != nil {
+	if _, err := tx.Exec("INSERT INTO schema_meta VALUES (?, ?)", "schema_version", schemaVersion); err != nil {
 		return protocol.Fail("STATE_BUSY", "Cannot open registry configuration", nil)
 	}
-	if _, err := r.db.Exec("INSERT OR IGNORE INTO schema_meta VALUES (?, ?)", "registry_id", id); err != nil {
+	if _, err := tx.Exec("INSERT INTO schema_meta VALUES (?, ?)", "registry_id", id); err != nil {
 		return protocol.Fail("STATE_BUSY", "Cannot open registry configuration", nil)
 	}
-	if err := r.db.QueryRow("SELECT value FROM schema_meta WHERE key = ?", "registry_id").Scan(&r.ID); err != nil {
+	if err := tx.Commit(); err != nil {
 		return protocol.Fail("STATE_BUSY", "Cannot open registry configuration", nil)
 	}
+	r.ID = id
 	return nil
 }
 

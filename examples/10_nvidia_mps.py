@@ -6,8 +6,9 @@ Resource quantities below are examples; choose your own allocation budget.
 """
 
 import argparse
+import json
 
-from molq import Accelerator, Execution, ExecutionUnit, JobSpec, Molq, Resources
+from molq import Accelerator, Execution, ExecutionUnit, JobSpec, Resources, submit
 
 MPS_SCRIPT = 'set -euo pipefail\nmps_root=$(mktemp -d "${TMPDIR:-/tmp}/molq-mps.XXXXXX")\nexport CUDA_MPS_PIPE_DIRECTORY="$mps_root/pipe"\nexport CUDA_MPS_LOG_DIRECTORY="$mps_root/log"\nmkdir -p "$CUDA_MPS_PIPE_DIRECTORY" "$CUDA_MPS_LOG_DIRECTORY"\ncleanup() {\n    printf \'quit\\n\' | nvidia-cuda-mps-control || true\n    rm -rf "$mps_root"\n}\ntrap cleanup EXIT\nnvidia-cuda-mps-control -d\npython train.py\n'
 
@@ -42,7 +43,16 @@ if __name__ == "__main__":
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("mode", choices=("native", "manual"))
     args = parser.parse_args()
-    with Molq() as mq:
-        job = mq.cluster("hpc").submit(request(args.mode))
-        print(job.wait())
-        print(job.logs())
+    hpc = submit("hpc")
+
+    @hpc
+    def train(mode):
+        job = yield request(mode)
+        return job
+
+    try:
+        job = train(args.mode)
+        print(json.dumps(job.wait(), ensure_ascii=False))
+        print(json.dumps(job.logs(), ensure_ascii=False))
+    finally:
+        hpc.close()

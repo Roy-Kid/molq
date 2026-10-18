@@ -49,6 +49,9 @@ func Load(path string) (File, error) {
 	}
 	body, err := os.ReadFile(path)
 	if err != nil {
+		if os.IsNotExist(err) {
+			return File{}, nil
+		}
 		return File{}, protocol.Fail("INVALID_INPUT", "Cannot read configuration file", map[string]any{"path": path})
 	}
 	var file File

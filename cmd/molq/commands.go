@@ -1,60 +1,32 @@
 package main
 
 import (
-	"bytes"
 	"encoding/json"
 	"fmt"
 	"io"
-	"net/http"
 	"os"
 	"strings"
 	"time"
 
+	"github.com/MolCrafts/molq/client"
 	"github.com/MolCrafts/molq/protocol"
-	"github.com/MolCrafts/molq/registry"
-	"github.com/MolCrafts/molq/serve"
 )
 
-type caller struct {
-	service  *serve.Service
-	endpoint string
-	token    string
-}
+type caller = client.Wire
+
+var clientExecutable = os.Executable
 
 func runCommand(command string, args []string) error {
 	flags, positionals := splitArgs(args)
-	file, configPath, err := resolveConfig(first(flags["--config"]))
+	if command == "transfer" {
+		flags, positionals = leadingGlobals(args)
+	}
+	wire, err := newCaller(flags)
 	if err != nil {
 		return err
 	}
-	endpoint := first(flags["--endpoint"])
-	if endpoint == "" {
-		endpoint = file.Client.Endpoint
-	}
-	token := first(flags["--token"])
-	if token == "" {
-		token = file.Client.Token
-	}
-	client := &caller{endpoint: endpoint, token: token}
-	if endpoint == "" {
-		path := first(flags["--registry"])
-		if path == "" {
-			path = file.Client.Registry
-		}
-		if path == "" {
-			path = registry.DefaultPath()
-		}
-		service, err := serve.Open(path)
-		if err != nil {
-			return err
-		}
-		defer service.Close()
-		if err := service.UseConfig(configPath); err != nil {
-			return err
-		}
-		client.service = service
-	}
-	result, err := dispatchCommand(client, command, flags, positionals)
+	defer wire.Close()
+	result, err := dispatchCommand(wire, command, flags, positionals)
 	if err != nil {
 		return err
 	}
@@ -64,10 +36,10 @@ func runCommand(command string, args []string) error {
 	}
 	fmt.Fprintln(os.Stdout, string(encoded))
 	if successful, ok := nestedBool(result, "completion", "successful"); ok && !successful {
-		os.Exit(9)
+		return commandExit{9}
 	}
 	if hasCoverageErrors(result) {
-		os.Exit(8)
+		return commandExit{8}
 	}
 	return nil
 }
@@ -75,17 +47,19 @@ func runCommand(command string, args []string) error {
 func dispatchCommand(client *caller, command string, flags map[string][]string, positionals []string) (any, error) {
 	switch command {
 	case "discover":
-		return client.call("schema.discover", map[string]any{})
+		return client.Call("schema.discover", map[string]any{})
 	case "clusters":
 		return clustersCommand(client, positionals, flags)
 	case "submit":
 		return submitCommand(client, positionals, flags)
+	case "transfer":
+		return transferCommand(client, positionals)
 	case "status":
 		ref, err := readJSON(required(flags, "--ref"))
 		if err != nil {
 			return nil, err
 		}
-		return client.call("jobs.get", map[string]any{"ref": ref, "consistency": orString(first(flags["--consistency"]), "live")})
+		return client.Call("jobs.get", map[string]any{"ref": ref, "consistency": orString(first(flags["--consistency"]), "live")})
 	case "cancel":
 		ref, err := readJSON(required(flags, "--ref"))
 		if err != nil {
@@ -95,13 +69,13 @@ func dispatchCommand(client *caller, command string, flags map[string][]string, 
 		if key := first(flags["--request-key"]); key != "" {
 			params["request_key"] = key
 		}
-		return client.call("jobs.cancel", params)
+		return client.Call("jobs.cancel", params)
 	case "logs":
 		ref, err := readJSON(required(flags, "--ref"))
 		if err != nil {
 			return nil, err
 		}
-		return client.call("logs.read", map[string]any{
+		return client.Call("logs.read", map[string]any{
 			"ref": ref, "stream": orString(first(flags["--stream"]), "stdout"),
 			"offset": numberOr(first(flags["--offset"]), 0), "limit": numberOr(first(flags["--limit"]), 262144),
 		})
@@ -118,7 +92,7 @@ func dispatchCommand(client *caller, command string, flags map[string][]string, 
 		if name := first(flags["--name"]); name != "" {
 			params["name"] = name
 		}
-		return client.call("jobs.list", params)
+		return client.Call("jobs.list", params)
 	case "observe":
 		if len(positionals) != 1 {
 			return nil, protocol.Fail("INVALID_INPUT", "usage: molq observe CLUSTER", nil)
@@ -127,11 +101,11 @@ func dispatchCommand(client *caller, command string, flags map[string][]string, 
 		if cursor := first(flags["--cursor"]); cursor != "" {
 			params["cursor"] = cursor
 		}
-		return client.call("jobs.observe", params)
+		return client.Call("jobs.observe", params)
 	case "history":
 		return historyCommand(client, positionals, flags)
 	default:
-		return nil, protocol.Fail("INVALID_INPUT", "usage: molq serve|rpc|watch|discover|clusters|submit|status|cancel|logs|wait|list|observe|history", nil)
+		return nil, protocol.Fail("INVALID_INPUT", "usage: molq serve|rpc|watch|discover|clusters|submit|transfer|status|cancel|logs|wait|list|observe|history", nil)
 	}
 }
 
@@ -141,18 +115,22 @@ func clustersCommand(client *caller, positionals []string, flags map[string][]st
 	}
 	switch positionals[0] {
 	case "list":
-		return client.call("clusters.list", map[string]any{})
+		return client.Call("clusters.list", map[string]any{})
 	case "get":
 		if len(positionals) != 2 {
 			return nil, protocol.Fail("INVALID_INPUT", "usage: molq clusters get CLUSTER", nil)
 		}
-		return client.call("clusters.get", map[string]any{"cluster": positionals[1]})
+		return client.Call("clusters.get", map[string]any{"cluster": positionals[1]})
 	case "register":
 		definition, err := readJSON(required(flags, "--definition"))
 		if err != nil {
 			return nil, err
 		}
-		return client.call("clusters.register", definition.(map[string]any))
+		object, ok := definition.(map[string]any)
+		if !ok {
+			return nil, protocol.Fail("INVALID_INPUT", "Cluster definition must be an object", nil)
+		}
+		return client.Call("clusters.register", object)
 	case "update":
 		if len(positionals) != 2 {
 			return nil, protocol.Fail("INVALID_INPUT", "usage: molq clusters update CLUSTER --definition JSON --revision N", nil)
@@ -161,14 +139,14 @@ func clustersCommand(client *caller, positionals []string, flags map[string][]st
 		if err != nil {
 			return nil, err
 		}
-		return client.call("clusters.update", map[string]any{
+		return client.Call("clusters.update", map[string]any{
 			"cluster": positionals[1], "definition": definition, "expected_revision": numberOr(required(flags, "--revision"), 0),
 		})
 	case "remove":
 		if len(positionals) != 2 {
 			return nil, protocol.Fail("INVALID_INPUT", "usage: molq clusters remove CLUSTER --revision N", nil)
 		}
-		return client.call("clusters.remove", map[string]any{
+		return client.Call("clusters.remove", map[string]any{
 			"cluster": positionals[1], "expected_revision": numberOr(required(flags, "--revision"), 0),
 		})
 	default:
@@ -219,7 +197,7 @@ func submitCommand(client *caller, positionals []string, flags map[string][]stri
 	if key := first(flags["--request-key"]); key != "" {
 		params["request_key"] = key
 	}
-	return client.call("jobs.submit", params)
+	return client.Call("jobs.submit", params)
 }
 
 func historyCommand(client *caller, positionals []string, flags map[string][]string) (any, error) {
@@ -248,7 +226,7 @@ func historyCommand(client *caller, positionals []string, flags map[string][]str
 	if limit := first(flags["--limit"]); limit != "" {
 		params["limit"] = numberOr(limit, 100)
 	}
-	return client.call("jobs.history", params)
+	return client.Call("jobs.history", params)
 }
 
 func waitCommand(client *caller, flags map[string][]string) (any, error) {
@@ -271,7 +249,7 @@ func waitCommand(client *caller, flags map[string][]string) (any, error) {
 		if cursor != "" {
 			params["cursor"] = cursor
 		}
-		result, err := client.call("jobs.observe", params)
+		result, err := client.Call("jobs.observe", params)
 		if err != nil {
 			return nil, err
 		}
@@ -290,38 +268,24 @@ func waitCommand(client *caller, flags map[string][]string) (any, error) {
 	}
 }
 
-func (c *caller) call(method string, params map[string]any) (any, error) {
-	if c.endpoint == "" {
-		return c.service.Call(method, params)
-	}
-	payload, err := json.Marshal(map[string]any{"jsonrpc": "2.0", "id": 1, "method": method, "params": params})
+func newCaller(flags map[string][]string) (*caller, error) {
+	file, resolved, err := resolveConfig(first(flags["--config"]))
 	if err != nil {
 		return nil, err
 	}
-	request, err := http.NewRequest(http.MethodPost, strings.TrimRight(c.endpoint, "/")+"/rpc", bytes.NewReader(payload))
-	if err != nil {
-		return nil, err
+	executable := file.Client.Executable
+	if executable == "" {
+		executable, err = clientExecutable()
+		if err != nil {
+			return nil, err
+		}
 	}
-	request.Header.Set("Authorization", "Bearer "+c.token)
-	request.Header.Set("Content-Type", "application/json")
-	response, err := http.DefaultClient.Do(request)
-	if err != nil {
-		return nil, protocol.Fail("RUNTIME_UNAVAILABLE", "RPC connection failed", nil)
-	}
-	defer response.Body.Close()
-	body, err := io.ReadAll(io.LimitReader(response.Body, 1048577))
-	if err != nil {
-		return nil, protocol.Fail("RUNTIME_UNAVAILABLE", "RPC connection failed", nil)
-	}
-	var envelope map[string]any
-	if err := json.Unmarshal(body, &envelope); err != nil {
-		return nil, protocol.Fail("RUNTIME_UNAVAILABLE", "RPC connection failed", nil)
-	}
-	if failure, ok := envelope["error"].(map[string]any); ok {
-		data, _ := failure["data"].(map[string]any)
-		return nil, protocol.FailOutcome(stringField(data["kind"]), stringField(data["message"]), stringField(data["outcome"]), mapValue(data["context"]))
-	}
-	return envelope["result"], nil
+	return client.New(client.Options{
+		Endpoint: orString(first(flags["--endpoint"]), file.Client.Endpoint),
+		Token:    orString(first(flags["--token"]), file.Client.Token),
+		Registry: orString(first(flags["--registry"]), file.Client.Registry),
+		Config:   resolved, Executable: executable,
+	}), nil
 }
 
 func splitArgs(args []string) (map[string][]string, []string) {

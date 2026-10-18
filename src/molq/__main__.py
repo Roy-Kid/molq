@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 import os
 import sys
 
@@ -13,16 +14,27 @@ def main() -> None:
     """Replace this process with the serve binary."""
     try:
         binary = executable()
-    except MolqError as exc:
+        os.execv(binary, [binary, *sys.argv[1:]])
+    except (MolqError, OSError) as cause:
+        exc = (
+            cause
+            if isinstance(cause, MolqError)
+            else MolqError("RUNTIME_UNAVAILABLE", str(cause))
+        )
         print(
-            '{"jsonrpc":"2.0","id":null,"error":{"code":-32000,"message":"'
-            + exc.kind
-            + '","data":'
-            + __import__("json").dumps(exc.to_wire())
-            + "}}"
+            json.dumps(
+                {
+                    "jsonrpc": "2.0",
+                    "id": None,
+                    "error": {
+                        "code": -32000,
+                        "message": str(exc),
+                        "data": exc.to_wire(),
+                    },
+                }
+            )
         )
         raise SystemExit(4) from None
-    os.execv(binary, [binary, *sys.argv[1:]])
 
 
 if __name__ == "__main__":

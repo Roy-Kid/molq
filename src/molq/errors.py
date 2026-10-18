@@ -35,9 +35,10 @@ class MolqError(Exception):
     @classmethod
     def from_wire(cls, data: dict[str, Any]) -> MolqError:
         """Construct a language façade error from runtime ErrorData."""
-        return cls(
+        error = cls(
             data["kind"],
             data["message"],
             outcome=data.get("outcome", "unknown"),
-            **data.get("context", {}),
         )
+        error.context = dict(data.get("context", {}))
+        return error

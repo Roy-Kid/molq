@@ -8,18 +8,18 @@ import (
 	"encoding/hex"
 	"errors"
 	"fmt"
-	"io"
-	"os"
 	"os/exec"
-	"path/filepath"
+	posixpath "path"
 	"strings"
-	"syscall"
+	"sync/atomic"
 	"time"
 
 	"github.com/MolCrafts/molq/protocol"
 )
 
 const outputLimit = 1048576
+const fileChunkLimit = 262144
+const fileBlockSize = 65536
 
 // Result is one bounded command result.
 type Result struct {
@@ -60,23 +60,31 @@ func (Local) Run(ctx context.Context, argv []string, timeout time.Duration, inpu
 	runCtx, cancel := context.WithTimeout(ctx, timeout)
 	defer cancel()
 	cmd := exec.CommandContext(runCtx, argv[0], argv[1:]...)
-	cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
+	configureCommand(cmd)
 	cmd.WaitDelay = 2 * time.Second
-	cmd.Cancel = func() error {
-		if cmd.Process != nil {
-			_ = syscall.Kill(-cmd.Process.Pid, syscall.SIGKILL)
-		}
-		return nil
-	}
 	var stdout, stderr bytes.Buffer
-	cmd.Stdout = limitWriter{&stdout, argv[0]}
-	cmd.Stderr = limitWriter{&stderr, argv[0]}
+	var exceeded atomic.Bool
+	cmd.Stdout = limitWriter{buf: &stdout, exceeded: &exceeded, cancel: cancel}
+	cmd.Stderr = limitWriter{buf: &stderr, exceeded: &exceeded, cancel: cancel}
 	if hasInput {
 		cmd.Stdin = bytes.NewReader(input)
 	}
 	err := cmd.Run()
-	if errors.Is(runCtx.Err(), context.DeadlineExceeded) {
-		return Result{}, protocol.Fail("TRANSPORT_UNAVAILABLE", "Target command deadline exceeded", map[string]any{"command": argv[0]})
+	dispatched := cmd.Process != nil
+	if errors.Is(err, exec.ErrWaitDelay) {
+		// The command exited, but a helper still owns an inherited output pipe.
+		// Stop only this command's process group; detached allocations own theirs.
+		_ = cmd.Cancel()
+	}
+	if exceeded.Load() {
+		return Result{}, protocol.Fail("PARTIAL_FAILURE", "Command output exceeds bounded frame size", map[string]any{"command": argv[0], "limit": outputLimit, "dispatched": dispatched})
+	}
+	if runCtx.Err() != nil {
+		message := "Target command cancelled"
+		if errors.Is(runCtx.Err(), context.DeadlineExceeded) {
+			message = "Target command deadline exceeded"
+		}
+		return Result{}, protocol.Fail("TRANSPORT_UNAVAILABLE", message, map[string]any{"command": argv[0], "dispatched": dispatched})
 	}
 	var exitErr *exec.ExitError
 	if errors.As(err, &exitErr) {
@@ -86,99 +94,79 @@ func (Local) Run(ctx context.Context, argv []string, timeout time.Duration, inpu
 		if _, ok := err.(*protocol.Error); ok {
 			return Result{}, err
 		}
-		if errors.Is(err, exec.ErrNotFound) || errors.Is(err, os.ErrNotExist) {
-			return Result{}, protocol.Fail("TRANSPORT_UNAVAILABLE", "Cannot start target command", map[string]any{"command": argv[0], "dispatched": false})
-		}
-		return Result{}, protocol.Fail("TRANSPORT_UNAVAILABLE", "Cannot start target command", map[string]any{"command": argv[0], "dispatched": false})
+		return Result{}, protocol.Fail("TRANSPORT_UNAVAILABLE", "Target command failed", map[string]any{"command": argv[0], "dispatched": dispatched})
 	}
 	return Result{Stdout: stdout.Bytes(), Stderr: stderr.Bytes()}, nil
 }
 
-func (Local) Read(_ context.Context, path string, offset, limit int) ([]byte, error) {
-	file, err := os.Open(path)
-	if err != nil {
-		return nil, protocol.Fail("FILE_UNAVAILABLE", "Cannot read target file", map[string]any{"path": path})
-	}
-	defer file.Close()
-	if _, err := file.Seek(int64(offset), io.SeekStart); err != nil {
-		return nil, protocol.Fail("FILE_UNAVAILABLE", "Cannot read target file", map[string]any{"path": path})
-	}
-	buf := make([]byte, limit)
-	n, err := file.Read(buf)
-	if err != nil && err != io.EOF {
-		return nil, protocol.Fail("FILE_UNAVAILABLE", "Cannot read target file", map[string]any{"path": path})
-	}
-	return buf[:n], nil
-}
-
-func (Local) Write(_ context.Context, path string, data []byte, offset *int) error {
-	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
-		return protocol.Fail("FILE_UNAVAILABLE", "Cannot write target file", map[string]any{"path": path})
-	}
-	if offset == nil {
-		var nonce [8]byte
-		_, _ = rand.Read(nonce[:])
-		temp := path + "." + hex.EncodeToString(nonce[:]) + ".tmp"
-		if err := os.WriteFile(temp, data, 0o600); err != nil {
-			_ = os.Remove(temp)
-			return protocol.Fail("FILE_UNAVAILABLE", "Cannot write target file", map[string]any{"path": path})
-		}
-		if err := os.Rename(temp, path); err != nil {
-			_ = os.Remove(temp)
-			return protocol.Fail("FILE_UNAVAILABLE", "Cannot write target file", map[string]any{"path": path})
-		}
-		return nil
-	}
-	flags := os.O_RDWR | os.O_CREATE
-	file, err := os.OpenFile(path, flags, 0o600)
-	if err != nil {
-		return protocol.Fail("FILE_UNAVAILABLE", "Cannot write target file", map[string]any{"path": path})
-	}
-	defer file.Close()
-	if _, err := file.Seek(int64(*offset), io.SeekStart); err != nil {
-		return protocol.Fail("FILE_UNAVAILABLE", "Cannot write target file", map[string]any{"path": path})
-	}
-	if _, err := file.Write(data); err != nil {
-		return protocol.Fail("FILE_UNAVAILABLE", "Cannot write target file", map[string]any{"path": path})
-	}
-	return nil
-}
-
 func (s SSH) Run(ctx context.Context, argv []string, timeout time.Duration, input []byte, hasInput bool) (Result, error) {
 	remote := shellJoin(argv)
-	return Local{}.Run(ctx, []string{"ssh", "-T", "-o", "BatchMode=yes", "--", s.Alias, remote}, timeout, input, hasInput)
+	args, err := SSHCommand(s.Alias)
+	if err != nil {
+		return Result{}, err
+	}
+	args = append(args, "--", s.Alias, remote)
+	result, err := (Local{}).Run(ctx, args, timeout, input, hasInput)
+	if err == nil && result.ReturnCode == 255 {
+		failure := sshFailure(result.Stderr)
+		if item, ok := failure.(*protocol.Error); ok {
+			item.Context["dispatched"] = item.Kind != "AUTH_REQUIRED"
+		}
+		return Result{}, failure
+	}
+	return result, err
 }
 
 func (s SSH) Read(ctx context.Context, path string, offset, limit int) ([]byte, error) {
-	result, err := s.Run(ctx, []string{"dd", "if=" + path, "bs=1", fmt.Sprintf("skip=%d", offset), fmt.Sprintf("count=%d", limit)}, 30*time.Second, nil, false)
+	if offset < 0 || limit < 0 || limit > fileChunkLimit {
+		return nil, protocol.Fail("INVALID_INPUT", "Invalid target file range", nil)
+	}
+	if limit == 0 {
+		return []byte{}, nil
+	}
+	// Read an aligned window using only portable dd operands. Slice the
+	// leading/trailing blocks locally to retain exact byte offset semantics.
+	blockSize := min(fileBlockSize, limit)
+	prefix := offset % blockSize
+	blocks := (prefix + limit + blockSize - 1) / blockSize
+	result, err := s.Run(ctx, []string{"dd", "if=" + path, fmt.Sprintf("bs=%d", blockSize), fmt.Sprintf("skip=%d", offset/blockSize), fmt.Sprintf("count=%d", blocks)}, 30*time.Second, nil, false)
 	if err != nil {
 		return nil, err
 	}
 	if result.ReturnCode != 0 {
 		return nil, protocol.Fail("FILE_UNAVAILABLE", "Cannot read remote target file", map[string]any{"path": path})
 	}
-	return result.Stdout, nil
+	start := min(prefix, len(result.Stdout))
+	end := min(start+limit, len(result.Stdout))
+	return result.Stdout[start:end], nil
 }
 
 func (s SSH) Write(ctx context.Context, path string, data []byte, offset *int) error {
-	parent := filepath.Dir(path)
-	if parent == "." {
-		parent = ""
-	}
+	parent := posixpath.Dir(path)
 	var nonce [8]byte
 	_, _ = rand.Read(nonce[:])
 	temp := path + "." + hex.EncodeToString(nonce[:]) + ".tmp"
 	q := func(value string) string { return "'" + strings.ReplaceAll(value, "'", `'\''`) + "'" }
 	script := fmt.Sprintf("umask 077; mkdir -p -- %s && cat > %s && mv -f -- %s %s", q(parent), q(temp), q(temp), q(path))
 	if offset != nil {
-		script = fmt.Sprintf("umask 077; mkdir -p -- %s && dd of=%s bs=1 seek=%d conv=notrunc", q(parent), q(path), *offset)
+		if *offset < 0 {
+			return protocol.Fail("INVALID_INPUT", "Invalid target file offset", nil)
+		}
+		blockSize := 1
+		if *offset%fileBlockSize == 0 {
+			blockSize = fileBlockSize
+		}
+		script = fmt.Sprintf("umask 077; mkdir -p -- %s && dd of=%s bs=%d seek=%d conv=notrunc", q(parent), q(path), blockSize, *offset/blockSize)
 	}
 	result, err := s.Run(ctx, []string{"sh", "-c", script}, 30*time.Second, data, true)
 	if err != nil {
+		if failure, ok := err.(*protocol.Error); ok && failure.Context["dispatched"] == true {
+			return protocol.FailOutcome("OUTCOME_UNKNOWN", "Target file write outcome is uncertain", "unknown", failure.Context)
+		}
 		return err
 	}
 	if result.ReturnCode != 0 {
-		return protocol.Fail("FILE_UNAVAILABLE", "Cannot write remote target file", map[string]any{"path": path})
+		return protocol.FailOutcome("FILE_UNAVAILABLE", "Cannot write remote target file", "unknown", map[string]any{"path": path})
 	}
 	return nil
 }
@@ -192,12 +180,15 @@ func shellJoin(argv []string) string {
 }
 
 type limitWriter struct {
-	buf     *bytes.Buffer
-	command string
+	buf      *bytes.Buffer
+	exceeded *atomic.Bool
+	cancel   context.CancelFunc
 }
 
 func (w limitWriter) Write(p []byte) (int, error) {
 	if w.buf.Len()+len(p) > outputLimit {
+		w.exceeded.Store(true)
+		w.cancel()
 		return 0, protocol.Fail("PARTIAL_FAILURE", "Command output exceeds bounded frame size", map[string]any{"limit": outputLimit})
 	}
 	return w.buf.Write(p)
