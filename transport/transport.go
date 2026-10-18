@@ -109,9 +109,7 @@ func (s SSH) Run(ctx context.Context, argv []string, timeout time.Duration, inpu
 	result, err := (Local{}).Run(ctx, args, timeout, input, hasInput)
 	if err == nil && result.ReturnCode == 255 {
 		failure := sshFailure(result.Stderr)
-		if item, ok := failure.(*protocol.Error); ok {
-			item.Context["dispatched"] = item.Kind != "AUTH_REQUIRED"
-		}
+		failure.Context["dispatched"] = failure.Kind != "AUTH_REQUIRED"
 		return Result{}, failure
 	}
 	return result, err

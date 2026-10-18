@@ -85,3 +85,27 @@ func TestAuthenticationTimeoutAndDisconnectedWrite(t *testing.T) {
 		t.Fatalf("write uncertainty lost: %v", err)
 	}
 }
+
+func TestAuthenticationPreservesBoundedDiagnosticWithoutResponse(t *testing.T) {
+
+	requirePOSIX(t)
+	dir := t.TempDir()
+	t.Setenv("TMPDIR", dir)
+	script := "#!/bin/sh\nresponse=$(\"$SSH_ASKPASS\")\nprintf 'unix_listener failed: %s\\n' \"$response\" >&2\nhead -c 4096 /dev/zero | tr '\\000' x >&2\nexit 255\n"
+	if err := os.WriteFile(filepath.Join(dir, "ssh"), []byte(script), 0700); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("PATH", dir+string(os.PathListSeparator)+os.Getenv("PATH"))
+	err := (SSH{Alias: "fixture"}).Authenticate(context.Background(), "sensitive-response")
+	failure, ok := err.(*protocol.Error)
+	if !ok || failure.Kind != "TRANSPORT_UNAVAILABLE" {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	diagnostic, ok := failure.Context["diagnostic"].(string)
+	if !ok || !strings.Contains(diagnostic, "unix_listener failed") {
+		t.Fatal("connection diagnostic was discarded")
+	}
+	if len(diagnostic) > 2048 || strings.Contains(diagnostic, "sensitive-response") {
+		t.Fatal("diagnostic exceeded its bound or exposed the response")
+	}
+}

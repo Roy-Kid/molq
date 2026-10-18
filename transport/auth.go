@@ -65,15 +65,23 @@ func (s SSH) Authenticate(ctx context.Context, code string) error {
 		return protocol.Fail("TRANSPORT_UNAVAILABLE", "Authentication connection failed", nil)
 	}
 	if result.ReturnCode != 0 {
-		return sshFailure(result.Stderr)
+		failure := sshFailure(result.Stderr)
+		// OpenSSH diagnostics can explain local setup failures as well as network
+		// failures. Redact the response before bounding or exposing that text.
+		diagnostic := strings.TrimSpace(strings.ReplaceAll(string(result.Stderr), code, "[redacted]"))
+		if len(diagnostic) > 2048 {
+			diagnostic = diagnostic[:2048]
+		}
+		failure.Context["diagnostic"] = strings.ToValidUTF8(diagnostic, "\uFFFD")
+		return failure
 	}
 	return nil
 }
 
-func sshFailure(stderr []byte) error {
+func sshFailure(stderr []byte) *protocol.Error {
 	text := strings.ToLower(string(stderr))
 	if strings.Contains(text, "permission denied") || strings.Contains(text, "authentication failed") || strings.Contains(text, "verification code") {
 		return protocol.Fail("AUTH_REQUIRED", "SSH authentication was rejected", nil)
 	}
-	return protocol.Fail("TRANSPORT_UNAVAILABLE", "SSH destination is unreachable", nil)
+	return protocol.Fail("TRANSPORT_UNAVAILABLE", "SSH connection failed", nil)
 }
