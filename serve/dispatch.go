@@ -3,7 +3,9 @@ package serve
 import (
 	"context"
 	"encoding/json"
+	"os"
 	"path"
+	"path/filepath"
 	"strings"
 	"time"
 
@@ -33,7 +35,7 @@ func (s *Service) cluster(name string) (map[string]any, scheduler.Scheduler, err
 	item := s.schedulers[id]
 	if item == nil {
 		target := transport.Create(mapValue(cluster["transport"]))
-		item, err = scheduler.Create(cluster, target)
+		item, err = scheduler.Create(cluster, target, s.archive(cluster))
 		if err != nil {
 			return nil, nil, err
 		}
@@ -155,6 +157,7 @@ func (s *Service) mutateCluster(method string, params map[string]any) (any, erro
 		return nil, err
 	}
 	s.schedulers = map[string]scheduler.Scheduler{}
+	s.homes = nil
 	s.mu.Unlock()
 	s.obs.Clear()
 	s.Notify()
@@ -169,11 +172,6 @@ func cleanDefinition(source map[string]any) (map[string]any, error) {
 	if definition["defaults"] == nil {
 		definition["defaults"] = map[string]any{}
 	}
-	root := stringField(definition["target_root"])
-	if !strings.HasPrefix(root, "/") || strings.Contains(root, "..") || strings.ContainsAny(root, "\n\r") {
-		return nil, protocol.Fail("INVALID_INPUT", "target_root must be an absolute target POSIX path", nil)
-	}
-	definition["target_root"] = path.Clean(root)
 	delete(definition, "id")
 	delete(definition, "revision")
 	return definition, nil
@@ -195,7 +193,11 @@ func (s *Service) submit(ctx context.Context, method string, params map[string]a
 	if method == "jobs.validate" {
 		return map[string]any{"spec": spec, "cluster_revision": revision}, nil
 	}
-	directory := path.Join(stringField(cluster["target_root"]), newHex())
+	root, err := s.jobRoot(ctx, cluster)
+	if err != nil {
+		return nil, err
+	}
+	directory := path.Join(root, newHex())
 	if method == "jobs.preview" {
 		script, err := item.Render(spec, directory)
 		if err != nil {
@@ -239,6 +241,50 @@ func (s *Service) submit(ctx context.Context, method string, params map[string]a
 	value := Snapshot(ref, &job, nil)
 	s.obs.Remember(value)
 	return map[string]any{"ref": ref, "snapshot": value, "cluster_revision": revision, "outcome": "accepted"}, nil
+}
+
+// jobRoot resolves scheduler.JobRoot against the target login's home, since
+// native directives need absolute paths. An SSH home is read once per alias.
+func (s *Service) jobRoot(ctx context.Context, cluster map[string]any) (string, error) {
+	binding := clusterTransport(cluster)
+	alias := stringField(binding["alias"])
+	s.mu.Lock()
+	home, known := s.homes[alias]
+	s.mu.Unlock()
+	if binding["kind"] != "ssh" {
+		local, err := os.UserHomeDir()
+		if err != nil {
+			return "", protocol.Fail("FILE_UNAVAILABLE", "Cannot resolve the home directory for job directories", nil)
+		}
+		home, known = filepath.ToSlash(local), true
+	}
+	if !known {
+		release, err := s.acquire(ctx, stringField(cluster["id"]))
+		if err != nil {
+			return "", err
+		}
+		result, err := transport.Create(binding).Run(ctx, []string{"sh", "-c", `printf '%s' "$HOME"`}, 30*time.Second, nil, false)
+		release()
+		if err != nil {
+			return "", err
+		}
+		if result.ReturnCode != 0 {
+			return "", protocol.Fail("TRANSPORT_UNAVAILABLE", "Cannot resolve the target home directory", map[string]any{"returncode": result.ReturnCode})
+		}
+		home = result.Text()
+	}
+	if !strings.HasPrefix(home, "/") || strings.ContainsAny(home, "\n\r") {
+		return "", protocol.Fail("TRANSPORT_UNAVAILABLE", "Target home is not an absolute POSIX path", map[string]any{"home": home})
+	}
+	if binding["kind"] == "ssh" {
+		s.mu.Lock()
+		if s.homes == nil {
+			s.homes = map[string]string{}
+		}
+		s.homes[alias] = home
+		s.mu.Unlock()
+	}
+	return path.Join(home, scheduler.JobRoot), nil
 }
 
 func (s *Service) ref(cluster map[string]any, job scheduler.Job) (map[string]any, error) {
@@ -286,8 +332,8 @@ func (s *Service) logs(ctx context.Context, params map[string]any) (any, error) 
 	if err != nil {
 		return nil, err
 	}
-	defer release()
 	job, err := s.identity(ctx, item, ref)
+	release()
 	if err != nil {
 		return nil, err
 	}
@@ -313,11 +359,25 @@ func (s *Service) logs(ctx context.Context, params map[string]any) (any, error) 
 	if !ok {
 		limit = 262144
 	}
-	data, err := transport.Create(mapValue(cluster["transport"])).Read(ctx, location, offset, limit)
+	var data []byte
+	if local, ok := collectedPath(s.collect(ctx, cluster, job), job.Workdir, location); ok {
+		data, err = transport.Local{}.Read(ctx, local, offset, limit)
+	} else {
+		data, err = s.readTarget(ctx, cluster, location, offset, limit)
+	}
 	if err != nil {
 		return nil, err
 	}
 	return map[string]any{"text": string(data), "next_offset": offset + len(data), "bytes_read": len(data)}, nil
+}
+
+func (s *Service) readTarget(ctx context.Context, cluster map[string]any, location string, offset, limit int) ([]byte, error) {
+	release, err := s.acquire(ctx, stringField(cluster["id"]))
+	if err != nil {
+		return nil, err
+	}
+	defer release()
+	return transport.Create(mapValue(cluster["transport"])).Read(ctx, location, offset, limit)
 }
 
 func nativeIDs(refs []map[string]any) []string {

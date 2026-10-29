@@ -43,7 +43,7 @@ func batchService(t *testing.T, count int, started chan<- string, proceed <-chan
 	var clusters []map[string]any
 	for i := range count {
 		registered, err := service.Call("clusters.register", map[string]any{
-			"name": fmt.Sprintf("cluster-%d", i), "scheduler": "shell", "target_root": filepath.Join(root, fmt.Sprintf("target-%d", i)),
+			"name": fmt.Sprintf("cluster-%d", i), "scheduler": "shell",
 		})
 		if err != nil {
 			t.Fatal(err)

@@ -16,7 +16,6 @@ def test_native_peer_registry_and_revision_rpc(tmp_path):
             name="remote",
             scheduler="slurm",
             transport={"kind": "ssh", "alias": "hpc"},
-            target_root="/scratch/molq",
         )
         definition = cluster.definition()
         assert definition["transport"] == {"kind": "ssh", "alias": "hpc"}
@@ -25,7 +24,6 @@ def test_native_peer_registry_and_revision_rpc(tmp_path):
                 "clusters.register",
                 name="bad",
                 scheduler="slurm",
-                target_root="/scratch",
                 capability={},
             )
         assert error.value.kind == "INVALID_INPUT"
@@ -40,7 +38,6 @@ def test_async_native_peer_without_local_scheduler(tmp_path):
                 name="remote",
                 scheduler="pbs",
                 transport={"kind": "ssh", "alias": "hpc"},
-                target_root="/scratch",
                 pbs_dialect="openpbs",
             )
             assert len(await mq.clusters.list()) == 1
@@ -88,7 +85,6 @@ def test_stdio_subscription_pushes_registry_reset(tmp_path):
                     {
                         "name": "remote",
                         "scheduler": "slurm",
-                        "target_root": "/scratch",
                         "transport": {"kind": "ssh", "alias": "hpc"},
                     },
                 )
@@ -122,7 +118,6 @@ def test_cli_partial_cached_batch_has_exit_eight(tmp_path):
         destination = mq.clusters.register(
             name="remote",
             scheduler="slurm",
-            target_root="/scratch",
             transport={"kind": "ssh", "alias": "hpc"},
         )
         ref = {

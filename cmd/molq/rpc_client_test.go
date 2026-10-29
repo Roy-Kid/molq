@@ -19,11 +19,7 @@ func TestRPCWatchAndDiagnosticsUseExplicitEndpoint(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer service.Close()
-	target := filepath.Join(root, "target")
-	if err := os.MkdirAll(target, 0o755); err != nil {
-		t.Fatal(err)
-	}
-	if _, err := service.Call("clusters.register", map[string]any{"name": "local", "scheduler": "shell", "target_root": target}); err != nil {
+	if _, err := service.Call("clusters.register", map[string]any{"name": "local", "scheduler": "shell"}); err != nil {
 		t.Fatal(err)
 	}
 	token := "0123456789abcdef"

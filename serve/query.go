@@ -80,6 +80,7 @@ func (s *Service) queryCluster(ctx context.Context, id string, refs []map[string
 	}
 	values := make([]map[string]any, 0, len(refs))
 	var failures []map[string]any
+	var matched []scheduler.Job
 	for _, ref := range refs {
 		job, ok := jobs[stringField(ref["native_id"])]
 		if ok && job.Incarnation != ref["incarnation"] {
@@ -91,11 +92,13 @@ func (s *Service) queryCluster(ctx context.Context, id string, refs []map[string
 		var observed *scheduler.Job
 		if ok {
 			observed = &job
+			matched = append(matched, job)
 		}
 		value := Snapshot(ref, observed, nil)
 		values = append(values, value)
 		s.obs.Remember(value)
 	}
+	s.collectTerminal(ctx, cluster, matched)
 	return Collection(values, failures)
 }
 
@@ -109,8 +112,8 @@ func (s *Service) listCluster(ctx context.Context, name string) (map[string]any,
 	if err != nil {
 		return nil, nil, err
 	}
-	defer release()
 	jobs, err := item.List(ctx)
+	release()
 	if err != nil {
 		return nil, nil, err
 	}
@@ -127,6 +130,7 @@ func (s *Service) listCluster(ctx context.Context, name string) (map[string]any,
 		s.obs.Remember(value)
 		values = append(values, value)
 	}
+	s.collectTerminal(ctx, cluster, jobs)
 	return cluster, values, nil
 }
 

@@ -23,9 +23,7 @@ from molq import (
 def test_cluster_generator_submits_real_jobs_and_preserves_return(tmp_path):
     mq = Molq(registry=tmp_path / "registry.db")
     try:
-        local = mq.clusters.register(
-            name="local", scheduler="shell", target_root=str(tmp_path / "jobs")
-        )
+        local = mq.clusters.register(name="local", scheduler="shell")
 
         @local
         def hello(name: str = "molq"):
@@ -58,9 +56,7 @@ def test_async_decorator_awaits_submission_through_generated_client(tmp_path):
     async def scenario():
         mq = AsyncMolq(registry=tmp_path / "registry.db")
         try:
-            local = await mq.clusters.register(
-                name="local", scheduler="shell", target_root=str(tmp_path / "jobs")
-            )
+            local = await mq.clusters.register(name="local", scheduler="shell")
 
             @local
             def hello(name):
@@ -263,7 +259,6 @@ def test_ordinary_function_preserves_old_return_without_rpc(monkeypatch):
 def test_old_submit_entry_registers_reuses_and_returns_jobs(tmp_path):
     settings = {
         "registry": tmp_path / "registry.db",
-        "target_root": str(tmp_path / "jobs"),
     }
     local = submit("dev", "local", **settings)
     try:
@@ -303,7 +298,6 @@ def test_async_submit_entry_has_the_same_generator_contract(tmp_path):
             "dev",
             "local",
             registry=tmp_path / "registry.db",
-            target_root=str(tmp_path / "jobs"),
         )
         try:
 
@@ -382,14 +376,23 @@ def test_local_binding_cannot_silently_select_ssh_execution(monkeypatch):
     assert calls == ["clusters.get"]
 
 
-def test_new_hpc_binding_requires_explicit_target_root(monkeypatch):
+def test_new_hpc_binding_registers_without_a_job_root(monkeypatch):
     calls = []
 
     def rpc(self, method, **params):
-        calls.append(method)
-        raise MolqError("CLUSTER_NOT_FOUND", "Unknown Cluster")
+        calls.append((method, params))
+        if method == "clusters.get":
+            raise MolqError("CLUSTER_NOT_FOUND", "Unknown Cluster")
+        return {"id": "cluster-id"}
 
     monkeypatch.setattr(Molq, "rpc", rpc)
-    with pytest.raises(MolqError, match="target_root"):
-        submit("hpc", "slurm", transport={"kind": "ssh", "alias": "hpc"})
-    assert calls == ["clusters.get"]
+    hpc = submit("hpc", "slurm", transport={"kind": "ssh", "alias": "hpc"})
+    hpc.close()
+    assert calls[1] == (
+        "clusters.register",
+        {
+            "name": "hpc",
+            "scheduler": "slurm",
+            "transport": {"kind": "ssh", "alias": "hpc"},
+        },
+    )

@@ -21,11 +21,19 @@ type Scheduler interface {
 	Cancel(ctx context.Context, job Job) (map[string]any, error)
 }
 
+// JobRoot holds every running job directory, relative to the target login's
+// home. Each directory is named by one random 32-digit hexadecimal identity.
+const JobRoot = ".molcrafts/molq/jobs"
+
 // Create selects the destination's scheduler. Unknown names are unsupported.
-func Create(cluster map[string]any, target transport.Transport) (Scheduler, error) {
+// archive is the serve-host directory holding job directories collected from
+// the target after a confirmed terminal state, or "" when nothing is collected.
+func Create(cluster map[string]any, target transport.Transport, archive string) (Scheduler, error) {
 	switch cluster["scheduler"] {
 	case "shell":
-		return NewShell(target, cluster), nil
+		shell := NewShell(target, cluster)
+		shell.archive = archive
+		return shell, nil
 	case "slurm":
 		return NewSlurm(target, cluster), nil
 	case "pbs":

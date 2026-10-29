@@ -1,26 +1,74 @@
-# Clusters, Scheduler and Transport
+# Clusters
 
-Register destinations explicitly. No unknown name silently becomes a local target.
+Bind a destination once, then select it with `submit("name")` or the CLI.
 
-```json
-{"name":"hpc","scheduler":"slurm","transport":{"kind":"ssh","alias":"research"},"target_root":"/scratch/user/molq","launcher":"srun","defaults":{"resources":{"tasks":4,"cpus_per_task":2}}}
+## Local execution
+
+```python
+from molq import submit
+
+local = submit("local", "local")
+local.close()
 ```
 
-OpenSSH resolves research using the user's configuration and manages authentication, jumps and multiplexing. System ssh is invoked in noninteractive BatchMode. Neither Cluster nor Transport copies connection settings or maintains a Python session pool.
+Shell launches detached Bash jobs. Use it for local commands; formal allocation
+resources such as memory, CPU counts, or queue accounts require a batch scheduler.
 
-Mappings in this release:
+## Slurm over SSH
 
-| Scheduler | Accurate mappings | Explicit restrictions |
+Set up an SSH alias in `~/.ssh/config` and confirm that you can connect without
+an interactive prompt. molq uses system OpenSSH in BatchMode; your SSH config
+owns authentication, jump hosts, and multiplexing.
+
+```python
+from molq import submit
+
+hpc = submit(
+    "hpc",
+    "slurm",
+    transport={"kind": "ssh", "alias": "research"},
+    launcher="srun",
+    defaults={
+        "resources": {"tasks": 1, "cpus_per_task": 2},
+        "scheduling": {"account": "your-project"},
+    },
+)
+hpc.close()
+```
+
+Replace the alias and account with your site's values. Paths in execution
+specs refer to the target filesystem. Sync inputs with `transfer`, then
+submit. The job runs in its execution working directory.
+
+For the CLI, save the equivalent definition as JSON:
+
+```sh
+molq clusters register --definition @hpc.json
+molq clusters list
+molq clusters get hpc
+```
+
+## Scheduler mappings
+
+| Scheduler | Supported representation | Limits in 0.9.0 |
 |---|---|---|
-| shell | Detached Bash execution, original launch/process/exit evidence | No formal batch resource/scheduling requests |
-| slurm | Nodes/tasks/threads, per-node memory, wall time, GPU total/per-node, per-node nvidia_mps, scheduling/dependencies, srun steps | One accelerator request; no after_started mapping |
-| pbs | Explicit openpbs JSON/select dialect, evenly distributed tasks, per-node memory/GPU, time, common scheduling/dependencies | No QoS/reservation/exclusive/model/MPS mapping |
-| lsf | Single-node single-thread task layout, time, common scheduling/dependencies, explicit site MPI | Memory, GPU/MPS and other layouts rejected without an exact site mapping |
+| `shell` | Detached commands and target receipts | No formal batch resources or queue policies |
+| `slurm` | Nodes, tasks, CPU budgets, memory, time, GPUs, MPS, dependencies, native steps | One accelerator request; no `after_started` dependency |
+| `pbs` | OpenPBS JSON/select dialect, even task layout, per-node memory/GPU, time, dependencies | Set `pbs_dialect="openpbs"`; no QoS, reservation, exclusive, model, or MPS mapping |
+| `lsf` | Single node, one CPU per task, time, common scheduling and dependencies | Other layouts, memory, GPU, and MPS requests are rejected |
 
-There is no capability inventory, probing or negotiation. jobs.validate verifies schema, layout and exact representation. Actual allocation resources/configuration/permissions remain the native scheduler's decision.
+Set `launcher` explicitly for MPI. Use `srun` for Slurm native steps, or a site
+`mpirun` / `mpiexec` binding for supported MPI layouts.
 
-Slurm reads queue then accounting; PBS reads retained extended job facts; LSF reads current/recent retained native history. Missing retention/evidence yields unknown/unavailable. HPC regression tests use fixtures, not a live cluster.
+`validate()` and `preview()` check whether a request can be represented exactly.
+The native scheduler decides whether resources and permissions are available.
 
-Native references: [Slurm squeue](https://slurm.schedmd.com/squeue.html), [Slurm sacct](https://slurm.schedmd.com/sacct.html), [LSF output fields](https://www.ibm.com/docs/en/spectrum-lsf/10.1.0?topic=information-customize-job-output).
+## Update a destination
 
-See [NVIDIA MPS](nvidia-mps.md) for native resource requests and user-managed execution examples.
+Read the definition and its `revision`, then pass a complete replacement to
+`cluster.update(definition, expected_revision=revision)`. CLI equivalents use
+`--definition` and `--revision`.
+
+Rename preserves the cluster ID. Changing its scheduler, transport, or target
+root requires a new cluster. Removing a definition leaves native jobs running;
+keep the definition if you need to query those jobs later.

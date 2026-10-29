@@ -30,6 +30,8 @@ assert not importlib.resources.files("molq.protocol").joinpath("v1.json").is_fil
 
 with tempfile.TemporaryDirectory() as temp:
     root = Path(temp)
+    # Job directories live under the target home; keep them out of the real one.
+    os.environ["HOME"] = str(root / "home")
     for args in (["--version"], ["--help"], ["submit", "--help"]):
         command = subprocess.run(
             [sys.executable, "-m", "molq", *args],
@@ -44,9 +46,7 @@ with tempfile.TemporaryDirectory() as temp:
             assert envelope["result"]["version"] == "0.9.0"
     with Molq(registry=root / "registry.db", config=root / "config.json") as mq:
         if os.name != "nt":
-            mq.clusters.register(
-                name="local", scheduler="shell", target_root=str(root / "target")
-            )
+            mq.clusters.register(name="local", scheduler="shell")
             job = mq.cluster("local").submit(JobSpec.argv(["echo", "installed-wheel"]))
             assert job.wait(timeout=10, interval=0.05)["completion"]["successful"]
             assert "installed-wheel" in job.logs()["text"]
@@ -54,7 +54,6 @@ with tempfile.TemporaryDirectory() as temp:
             mq.clusters.register(
                 name="hpc",
                 scheduler="slurm",
-                target_root="/scratch",
                 transport={"kind": "ssh", "alias": "hpc"},
             )
         assert len(mq.clusters.list()) == 1

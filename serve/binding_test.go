@@ -14,7 +14,7 @@ func TestConcurrentClusterRevisionKeepsSchedulerBinding(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer service.Close()
-	definition := map[string]any{"name": "hpc", "scheduler": "slurm", "target_root": "/scratch", "launcher": "srun"}
+	definition := map[string]any{"name": "hpc", "scheduler": "slurm", "launcher": "srun"}
 	if _, err := service.Call("clusters.register", definition); err != nil {
 		t.Fatal(err)
 	}
@@ -52,7 +52,7 @@ func TestConcurrentClusterRevisionKeepsSchedulerBinding(t *testing.T) {
 		if revision%2 == 0 {
 			launcher = "srun"
 		}
-		update := map[string]any{"name": "hpc", "scheduler": "slurm", "target_root": "/scratch", "launcher": launcher}
+		update := map[string]any{"name": "hpc", "scheduler": "slurm", "launcher": launcher}
 		if _, err := service.Call("clusters.update", map[string]any{"cluster": "hpc", "expected_revision": revision, "definition": update}); err != nil {
 			t.Fatal(err)
 		}

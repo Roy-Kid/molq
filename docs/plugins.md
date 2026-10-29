@@ -1,12 +1,47 @@
 # Watch and notifications
 
-There is no plugin host. `molq watch` asks the serve process for observations and forwards changes that the process already produced. It owns cadence, bounded backoff and the notification URL. None of that is stored on a Cluster. A repeated scheduler failure is printed once until that cluster succeeds again. On resync it also reports each terminal accounting job from the last 24 hours once.
+Follow registered destinations from the command line:
 
 ```sh
-molq watch --config ./config.json --cluster hpc --interval 5
-molq watch --config ./config.json --once
+molq watch --cluster hpc --interval 5
+molq watch --cluster hpc --once
 ```
 
-Set `client.watch.nerve_endpoint` in the configuration file when a receiver should get the same JSON envelopes. A failed notification does not affect submit, query or cancel.
+`watch` samples job state, prints changes as JSON, and backs off after failures.
+The first sample establishes a baseline; it does not replay historical
+completions. Use `molq history hpc` to inspect earlier jobs.
 
-Other clients use the same RPC. They may choose sampling cadence and route events. They do not reimplement snapshot diff or completion.
+## Defaults
+
+Add a watcher configuration to your configuration file:
+
+```json
+{
+  "client": {
+    "watch": {
+      "clusters": ["hpc"],
+      "interval": 5
+    }
+  }
+}
+```
+
+```sh
+molq watch --config ./config.json
+```
+
+Pass `--cluster` repeatedly to watch several destinations. If no clusters are
+selected, the watcher uses registered destinations.
+
+## Notifications
+
+Set `client.watch.nerve_endpoint` to your receiver URL. The receiver gets the
+same JSON envelopes that the watcher prints. Cadence and notification routing
+belong to the watcher configuration, not to a cluster definition.
+
+Delivery failures do not block observations. Slow receivers may miss notifications;
+stdout remains the record of observed changes. A repeated scheduler error is
+printed once until the destination succeeds again.
+
+Use a [shared service](configuration.md#shared-service) when other clients should
+receive the same observed events.

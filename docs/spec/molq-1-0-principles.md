@@ -9,7 +9,7 @@
 1. **molq 的业务逻辑只允许实现一次。**
    Scheduler、Transport、Job schema interpretation、资源映射、脚本渲染、Cluster registry、状态标准化等核心能力只能存在于唯一的 molq runtime 中。
 
-2. **CLI、Python SDK、TypeScript SDK、Web UI、Observer 地位完全平等。**
+2. **CLI、Python 同步/异步 SDK、TypeScript SDK、Observer 地位完全平等。**
    它们都是 molq client，不互相包装，也不拥有独立的 scheduler/transport 实现。
 
 3. **RPC 是唯一稳定的跨进程、跨语言边界。**
@@ -19,7 +19,7 @@
    Python/TypeScript 等 SDK 只实现 RPC client、类型映射和符合语言习惯的 façade。可以生成的协议类型和 client code 应尽量从统一协议定义生成。
 
 5. **Python SDK 必须提供 OOP 用户体验。**
-   用户应操作 `Molq`、`Cluster`、`Job`、`JobCollection` 等领域对象，而不是裸 RPC 或大量顶层函数。RPC 是实现细节，不是 Python 用户模型。
+   用户应操作 `Cluster`、`Job`、`JobCollection` 等领域对象；`submit(...)` / `asubmit(...)` 构造 Cluster 装饰器，保留 `yield JobSpec` 的使用风格。`Molq` / `AsyncMolq` 提供连接、注册与批量操作。RPC 是实现细节，不是 Python 用户模型。
 
 6. **CLI 是 Agent-first 的正式接口，但不高于 SDK。**
    CLI 必须具备稳定 structured output、稳定 error/exit semantics、非交互运行和良好 discoverability；Agent 不应解析人类表格输出。
@@ -48,7 +48,7 @@
     不能因为接入方式不同而产生不同业务语义。
 
 11. **Runtime 的实现语言不是公共契约。**
-    1.0 可以继续使用 Python；未来如果迁移 Go/Rust，只替换唯一 runtime implementation，不重新设计 CLI/SDK/API。
+    0.9.0 的唯一 runtime implementation 使用 Go。Python 与 TypeScript 只提供 RPC clients；公共 CLI/SDK/API 不依赖内部实现语言，不在 Python 中恢复业务实现。
 
 ---
 
@@ -102,7 +102,7 @@
 ## 五、Cluster 是显式配置，不做智能猜测
 
 23. **Cluster 是 molq 持久化的一等领域对象。**
-    它仅持久化计算目的地：stable ID/name、Scheduler binding、Transport kind/SSH alias、defaults、必要 site-specific Scheduler/rendering 配置与 target paths。Cluster 不含 monitor preferences、observation cadence、notification preferences 或 polling intervals；这些策略归 Observer/client 配置，Web、前台 wait 与后台 Observer 可以用不同频率。
+    它仅持久化计算目的地：stable ID/name、Scheduler binding、Transport kind/SSH alias、defaults、必要 site-specific Scheduler/rendering 配置与 target paths。Cluster 不含 monitor preferences、observation cadence、notification preferences 或 polling intervals；这些策略归 Observer/client 配置，SDK、前台 wait 与后台 Observer 可以用不同频率。
 
 24. **Cluster 与 SSH Host 是不同概念。**
     SSH alias 描述“如何连接”；Cluster 描述“这是什么计算目标、绑定哪个 Scheduler、有哪些 molq 语义”。
@@ -225,7 +225,7 @@
 
 **Molq 的业务逻辑只能有一份实现。**
 
-**CLI、SDK、Web 和 Observer 都只是平等 client。**
+**CLI、SDK 和 Observer 都只是平等 client。**
 
 **RPC 是公共边界，runtime 是 molq 本体。**
 

@@ -148,10 +148,36 @@ func openTransferService(t *testing.T, root string) *Service {
 	t.Cleanup(func() { service.Close() })
 	for _, name := range []string{"from", "to"} {
 		if _, err := service.Call("clusters.register", map[string]any{
-			"name": name, "scheduler": "shell", "target_root": filepath.Join(root, "jobs", name),
+			"name": name, "scheduler": "shell",
 		}); err != nil {
 			t.Fatal(err)
 		}
 	}
 	return service
+}
+
+func TestSSHTransferKeepsRshBeforeOperands(t *testing.T) {
+	loopbackSSH(t)
+	root := t.TempDir()
+	service := openTransferService(t, root)
+	if _, err := service.Call("clusters.register", map[string]any{
+		"name": "remote", "scheduler": "shell",
+		"transport": map[string]any{"kind": "ssh", "alias": "fixture"},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	source := filepath.Join(root, "note.txt")
+	if err := os.WriteFile(source, []byte("over ssh"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	destination := filepath.Join(root, "remote-note.txt")
+	if _, err := service.Call("files.transfer", map[string]any{
+		"sources":     []any{map[string]any{"path": source}},
+		"destination": map[string]any{"cluster": "remote", "path": destination},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if body, err := os.ReadFile(destination); err != nil || string(body) != "over ssh" {
+		t.Fatalf("remote copy = %q, %v", body, err)
+	}
 }

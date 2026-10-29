@@ -23,7 +23,7 @@ func TestEventStreamCatchesRegistrationGapAndStopsOnWriteFailure(t *testing.T) {
 	service, cursor := changedService(t)
 	// A config/destination change invalidates the cursor while no listener exists.
 	_, err := service.Call("clusters.register", map[string]any{
-		"name": "local", "scheduler": "shell", "target_root": t.TempDir(),
+		"name": "local", "scheduler": "shell",
 	})
 	if err != nil {
 		t.Fatal(err)

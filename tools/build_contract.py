@@ -186,12 +186,11 @@ defs = {
             "name": identifier,
             "scheduler": {"enum": ["shell", "slurm", "pbs", "lsf"]},
             "transport": ref("TransportDefinition"),
-            "target_root": string,
             "defaults": ref("Defaults"),
             "launcher": {"enum": ["srun", "mpirun", "mpiexec"]},
             "pbs_dialect": {"enum": ["openpbs"]},
         },
-        ["name", "scheduler", "target_root"],
+        ["name", "scheduler"],
     ),
 }
 defs.update(
@@ -328,7 +327,7 @@ defs.update(
                 "id": string,
                 "revision": positive,
             },
-            ["name", "scheduler", "target_root", "id", "revision"],
+            ["name", "scheduler", "id", "revision"],
         ),
     }
 )

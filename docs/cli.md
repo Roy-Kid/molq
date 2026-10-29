@@ -1,58 +1,103 @@
-# Agent-first CLI
+# Command line
 
-`molq --help` lists the commands in plain text. `molq <command> --help` explains one command. `molq ping` asks the selected serve process for one hello. `molq health` reports ready or not. `molq doctor` explains a failed check. None of them submits a job.
+All commands, including help and version, print JSON responses with either
+`result` or `error`. Watch streams one JSON response per line. Diagnostics go to
+stderr; stdout contains no banners, progress bars, tables or raw logs.
 
-Business commands print one JSON object, including errors. `discover` returns the method catalog, request schemas, and result types. `rpc METHOD --params JSON`, `@file`, or `@-` calls any public operation.
+## Connections
 
-Job commands: clusters, submit, status, list, observe, history, cancel, logs, and wait. `--ref` is the JobRef, not the whole submit response. Submit takes argv after `--`, or `--spec`. Use one of those, not both.
-
-| Exit | Meaning |
-|---|---|
-| 0 | Successful operation; cancellation acceptance is not task completion |
-| 1 | Unexpected internal failure |
-| 2 | Invalid input / unknown method |
-| 3 | Missing destination, file or cache |
-| 4 | Runtime, Scheduler or Transport unavailable |
-| 5 | Unsupported representation/protocol/channel |
-| 6 | Wait/operation deadline |
-| 7 | Authentication, permission or native rejection |
-| 8 | Partial batch failure |
-| 9 | Wait confirms terminal execution failure |
-| 10 | Conflict, uncertain mutation or identity mismatch |
-
-No endpoint means a temporary stdio serve process. The endpoint and token come from the configuration file or the SDK constructor. `--registry` selects a stdio registry. Failed auth, protocol, or registry checks do not open another process.
-
-## Names, comments and history
-
-Simple argv submission accepts `--name` and `--comment` before `--`. With `--spec`,
-set `scheduling.name/comment` in the spec; mixing convenience fields with a spec
-is rejected. Slurm sends comment as a native argv value, LSF uses native `-Jd`;
-PBS and Shell reject user comments. The preview script does not encode the comment:
-it remains in the returned spec and is supplied as a native submit argument.
+Without an endpoint, commands use a temporary stdio service. Select an HTTP
+service with `--endpoint` and `--token`, or the configuration's `client` section.
 
 ```sh
-molq submit Arrhenius --name smoke-cpu --comment "CPU smoke test" -- hostname
-molq list Arrhenius --state running --name smoke-cpu
-molq history Arrhenius --state failed --since 2026-10-06T00:00:00Z --until 2026-10-08T00:00:00Z
-molq history Arrhenius --refs @refs.json
+molq --config ./config.json clusters list
+molq --registry ./registry.db clusters list
+```
+
+The same connection applies to diagnostics, generic RPC, and `watch`.
+
+## Jobs
+
+```sh
+molq submit local -- echo hello
+molq submit hpc --spec @job.json
+molq transfer -a --delete --exclude build/ ./project/ hpc:/scratch/you/project/
+molq status --ref @ref.json
+molq wait --ref @ref.json --timeout 600 --interval 2
+molq logs --ref @ref.json --stream stderr --offset 0 --limit 65536
+molq cancel --ref @ref.json
+```
+
+`transfer` is rsync syntax: options, then `SRC... DEST`. `CLUSTER:PATH` names a
+registered cluster the way rsync's `HOST:PATH` names a host; a plain path is
+local. See [Files and logs](remote-files.md#transfer-files).
+
+Use either `--spec` or argv after `--`. Simple argv submissions accept `--name`
+and `--comment` before `--`; with a spec, put them in `scheduling` instead.
+Comments require a scheduler mapping: Slurm and LSF support them; PBS and Shell
+reject them.
+
+`--ref` accepts a saved JobRef, not the complete submit response. The
+[quickstart](getting-started.md#command-line) shows how to extract it.
+Wait timeouts and intervals are in seconds.
+
+## Queue and history
+
+```sh
+molq list hpc --state running --name simulation
+molq history hpc --state failed --limit 100
+molq history hpc --refs @refs.json
+molq observe hpc
+molq watch --cluster hpc --interval 5
+```
+
+`--state` is repeatable. Slurm range history accepts `--since` and `--until` as
+RFC3339 timestamps and filters completion time in `[since, until)`; the default
+window is 24 hours. `--refs` takes a JSON array and excludes range filters.
+See [monitoring](monitoring.md) for coverage and cursor semantics.
+
+## Destinations and diagnostics
+
+```sh
+molq clusters register --definition @hpc.json
+molq clusters get hpc
+molq clusters update hpc --definition @hpc.json --revision 1
+molq ping
+molq health
+molq doctor
+molq discover
 molq rpc config.reload
 ```
 
-Range history queries the target login account. Time bounds require RFC3339
-with timezone and filter ended-at `[since, until)`; default is the preceding
-24 hours. `--state` is repeatable and distinguishes failed/cancelled/timed_out.
-`--limit` defaults to 100 and may be 1–1024. Ref mode is mutually exclusive with
-range fields. Slurm range discovery requires native JSON output; there is no text
-fallback. PBS/LSF/Shell range queries return unsupported, while explicit refs work.
+`ping`, `health`, and `doctor` do not submit work. `rpc METHOD --params` accepts
+inline JSON, `@file`, or `@-` for stdin.
 
-History results include query bounds, source, observation time, freshness and
-coverage. Truncated results or bounded native output return incomplete coverage;
-narrow the window. A successful empty result means no retained matching records,
-not proof that no historical task failed. Native outages are explicit errors.
-Slurm comment retention requires site accounting configuration such as
-`AccountingStoreFlags=job_comment`; see [Slurm accounting](https://slurm.schedmd.com/sacctmgr.html).
+## Output contract
 
-Global `--config` chooses the JSON/YAML file. `serve`, `rpc` and `watch` accept
-it too. When it is omitted, the CLI loads `~/.molcrafts/molq/config.json` if
-that file exists.
-A database that is not the current registry layout is rejected and not migrated.
+`molq --version` returns the product version in `result.version`.
+`molq --help` returns `result.command`, `result.description` and the command
+catalog. `molq COMMAND --help` returns that command’s structured help.
+Arguments after `--` belong to your executable, including `--help`.
+
+SDK methods return values and produce no console output. Python examples use
+`json.dumps(...)`; TypeScript examples use `JSON.stringify(...)`. Logs remain
+inside a JSON `text` field with offsets for bounded reads.
+
+## Exit codes
+
+| Exit | Meaning |
+|---|---|
+| 0 | Successful operation |
+| 1 | Unexpected internal failure |
+| 2 | Invalid input or unknown method |
+| 3 | Missing destination, file, or cache |
+| 4 | Service, scheduler, or transport unavailable |
+| 5 | Unsupported representation, protocol, or channel |
+| 6 | Wait or operation deadline |
+| 7 | Authentication, permission, or native rejection |
+| 8 | Partial batch failure |
+| 9 | Confirmed terminal execution failure |
+| 10 | Conflict, uncertain mutation, or identity mismatch |
+
+Cancellation acceptance does not confirm task completion. Check the JSON outcome
+and later status. An unknown mutation outcome needs reconciliation before resend.

@@ -5,6 +5,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strings"
 	"testing"
 )
 
@@ -30,6 +31,18 @@ func TestMain(m *testing.M) {
 		os.Exit(1)
 	}
 	clientExecutable = func() (string, error) { return binary, nil }
+	// Job directories live under the target home; keep them out of the real
+	// one, while tests that build binaries keep the real Go caches.
+	caches, err := exec.Command("go", "env", "GOCACHE", "GOMODCACHE", "GOPATH").Output()
+	if err != nil {
+		fmt.Fprintln(os.Stderr, err)
+		os.RemoveAll(root)
+		os.Exit(1)
+	}
+	for i, value := range strings.Split(strings.TrimSpace(string(caches)), "\n") {
+		os.Setenv([]string{"GOCACHE", "GOMODCACHE", "GOPATH"}[i], value)
+	}
+	os.Setenv("HOME", filepath.Join(root, "home"))
 	code := m.Run()
 	os.RemoveAll(root)
 	os.Exit(code)

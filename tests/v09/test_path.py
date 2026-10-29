@@ -45,9 +45,7 @@ def test_local_path_uses_this_filesystem(tmp_path):
 @posix_only
 def test_cluster_path_io_goes_through_files_rpc(tmp_path):
     with Molq(registry=tmp_path / "registry.db") as client:
-        client.clusters.register(
-            name="box", scheduler="shell", target_root=str(tmp_path / "jobs")
-        )
+        client.clusters.register(name="box", scheduler="shell")
         run = mq.Path(f"box:{tmp_path}/run", molq=client)
         assert not run.exists()
         (run / "sub").mkdir(parents=True)
@@ -91,9 +89,7 @@ def test_path_transfer_makes_destination_a_copy(tmp_path):
     (source / "input.xyz").write_text("2\n")
     (source / "build" / "obj").write_text("skip")
     with Molq(registry=tmp_path / "registry.db") as client:
-        client.clusters.register(
-            name="box", scheduler="shell", target_root=str(tmp_path / "jobs")
-        )
+        client.clusters.register(name="box", scheduler="shell")
         remote = mq.Path(f"box:{tmp_path}/scratch/project", molq=client)
         result = mq.Path(source, molq=client).transfer(remote, "-a", "--exclude=build/")
         assert result["outcome"] == "applied"

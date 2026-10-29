@@ -2,7 +2,9 @@ package scheduler
 
 import (
 	"context"
+	"os"
 	"path"
+	"path/filepath"
 	"strconv"
 	"strings"
 	"time"
@@ -11,12 +13,18 @@ import (
 	"github.com/MolCrafts/molq/transport"
 )
 
-// Shell is a detached Bash allocation. Truth is the target receipt.
-type Shell struct{ core }
+// Shell is a detached Bash allocation. Truth is the target receipt, or its
+// collected copy in archive once the job directory left the target.
+type Shell struct {
+	core
+	archive string
+	// root overrides the target's JobRoot; only archive reads set it.
+	root string
+}
 
 // NewShell binds one Shell destination.
 func NewShell(target transport.Transport, cluster map[string]any) *Shell {
-	return &Shell{core{transport: target, cluster: cluster}}
+	return &Shell{core: core{transport: target, cluster: cluster}}
 }
 
 func (s *Shell) Validate(spec map[string]any) error {
@@ -74,19 +82,57 @@ func (s *Shell) Submit(ctx context.Context, spec map[string]any, directory strin
 	return Job{}, protocol.FailOutcome("OUTCOME_UNKNOWN", "Shell launch evidence unavailable", "unknown", map[string]any{"native_id": identity})
 }
 
+// rootWord is the job root as one target shell word, expanded by the target.
+func (s *Shell) rootWord() string {
+	if s.root != "" {
+		return quote(s.root)
+	}
+	return `"$HOME"/` + quote(JobRoot)
+}
+
+// directory is a job directory as one target shell word.
 func (s *Shell) directory(identity string) string {
-	root, _ := s.cluster["target_root"].(string)
-	return path.Join(root, identity)
+	return s.rootWord() + "/" + quote(identity)
 }
 
 func (s *Shell) QueryMany(ctx context.Context, ids []string) (map[string]Job, error) {
+	jobs, err := s.receipts(ctx, ids)
+	if err != nil || s.archive == "" {
+		return jobs, err
+	}
+	var collected []string
+	for _, identity := range ids {
+		if _, ok := jobs[identity]; ok || identity == "." || identity == ".." || path.Base(identity) != identity {
+			continue
+		}
+		if info, err := os.Stat(filepath.Join(s.archive, identity)); err == nil && info.IsDir() {
+			collected = append(collected, identity)
+		}
+	}
+	if len(collected) == 0 {
+		return jobs, nil
+	}
+	// Only directories with an exit receipt are collected, so the local copy
+	// answers without probing a target process.
+	local := NewShell(transport.Local{}, s.cluster)
+	local.root = filepath.ToSlash(s.archive)
+	archived, err := local.receipts(ctx, collected)
+	if err != nil {
+		return nil, err
+	}
+	for identity, job := range archived {
+		jobs[identity] = job
+	}
+	return jobs, nil
+}
+
+func (s *Shell) receipts(ctx context.Context, ids []string) (map[string]Job, error) {
 	if len(ids) == 0 {
 		return map[string]Job{}, nil
 	}
 	var commands []string
 	for _, identity := range ids {
-		d := quote(s.directory(identity))
-		commands = append(commands, `d=`+d+`; if [ -f "$d/launch" ]; then
+		commands = append(commands, `d=`+s.directory(identity)+`; if [ -f "$d/launch" ]; then
 read -r pid < "$d/launch"
 start=$(sed -n '2p' "$d/launch")
 state=unknown; code=''
@@ -96,7 +142,7 @@ if [ -f "$d/exit" ]; then
   if [ -f "$d/cancel_requested" ] && { [ "$code" = 143 ] || [ "$code" = 130 ]; }; then state=cancelled; fi
 elif [ "$(LC_ALL=C ps -p "$pid" -o lstart= 2>/dev/null)" = "$start" ]; then state=running
 fi
-printf '%s|%s|%s|%s|%s\n' `+quote(identity)+` "$pid" "$start" "$state" "$code"
+printf '%s|%s|%s|%s|%s|%s\n' `+quote(identity)+` "$pid" "$start" "$state" "$code" "$d"
 fi`)
 	}
 	text, err := s.native(ctx, []string{"bash", "-c", strings.Join(commands, "\n")}, false, nil, false)
@@ -108,8 +154,8 @@ fi`)
 		if line == "" {
 			continue
 		}
-		parts := strings.Split(line, "|")
-		if len(parts) != 5 {
+		parts := strings.SplitN(line, "|", 6)
+		if len(parts) != 6 || !strings.HasPrefix(parts[5], "/") {
 			return nil, protocol.Fail("SCHEDULER_UNAVAILABLE", "Invalid Shell launch receipt", nil)
 		}
 		identity, pid, start, state, code := parts[0], parts[1], parts[2], parts[3], parts[4]
@@ -124,7 +170,7 @@ fi`)
 			}
 			exitCode = &number
 		}
-		dir := s.directory(identity)
+		dir := parts[5]
 		jobs[identity] = Job{
 			NativeID: identity, Incarnation: pid + ":" + start, State: state, Source: "shell_receipt",
 			RawState: state, ExitCode: exitCode, Workdir: &dir,
@@ -134,8 +180,7 @@ fi`)
 }
 
 func (s *Shell) List(ctx context.Context) ([]Job, error) {
-	root, _ := s.cluster["target_root"].(string)
-	text, err := s.native(ctx, []string{"bash", "-c", `for d in ` + quote(root) + `/*; do [ -f "$d/launch" ] && [ ! -f "$d/exit" ] && basename "$d"; done; true`}, false, nil, false)
+	text, err := s.native(ctx, []string{"bash", "-c", `for d in ` + s.rootWord() + `/*; do [ -f "$d/launch" ] && [ ! -f "$d/exit" ] && basename "$d"; done; true`}, false, nil, false)
 	if err != nil {
 		return nil, err
 	}
@@ -173,8 +218,7 @@ func (s *Shell) Cancel(ctx context.Context, job Job) (map[string]any, error) {
 	if Terminal(job.State) {
 		return map[string]any{"outcome": "already_terminal"}, nil
 	}
-	d := quote(s.directory(job.NativeID))
-	script := `d=` + d + `
+	script := `d=` + s.directory(job.NativeID) + `
 [ -f "$d/launch" ] || exit 2
 read -r pid < "$d/launch"
 start=$(sed -n '2p' "$d/launch")

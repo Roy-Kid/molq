@@ -1,8 +1,6 @@
 /** Native Node stdio transport calls Runtime, never another client. */
 import { spawn, ChildProcessWithoutNullStreams } from "node:child_process";
 import { Wire, MolqError, unwrap, isMutation, invalidInput, encodeRequest, decodeFrame } from "./wire.js";
-import { homedir } from "node:os";
-import { join } from "node:path";
 import { Molq, HttpWire, bindDestination, type SubmitOptions, type Destination, type ClusterDefinition } from "./index.js";
 export * from "./index.js";
 export type NodeSubmitOptions = SubmitOptions & {
@@ -26,7 +24,7 @@ export async function submit(name: string, kindOrOptions?: ClusterDefinition["sc
     if (config)
         argv.push("--config", config);
     const wire = shared.endpoint !== undefined ? new HttpWire(shared.endpoint, shared.token, shared.timeout) : new StdioWire(argv, shared.timeout);
-    return bindDestination(new Molq(wire, shared.registryId), name, kind, shared, join(homedir(), ".molcrafts", "molq", "jobs"));
+    return bindDestination(new Molq(wire, shared.registryId), name, kind, shared);
 }
 export class StdioWire implements Wire {
     private process?: ChildProcessWithoutNullStreams;

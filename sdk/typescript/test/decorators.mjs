@@ -5,10 +5,13 @@ import {tmpdir} from 'node:os';
 import {join, resolve} from 'node:path';
 import {submit, JobSpec, Job, Molq, MolqError, bindDestination} from '@molcrafts/molq';
 
+// Job directories live under the target home; keep them out of the real one.
+process.env.HOME = await mkdtemp(join(tmpdir(), 'molq-ts-home-'));
+
 test('Node destination decorator submits yielded JobSpecs and preserves return', async () => {
   const temp = await mkdtemp(join(tmpdir(), 'molq-ts-decorator-'));
   const python = process.env.MOLQ_TEST_PYTHON || resolve('../../.venv/bin/python');
-  const options = {registry: join(temp, 'registry.db'), target_root: join(temp, 'jobs'), command: [python, '-m', 'molq', 'serve', '--stdio']};
+  const options = {registry: join(temp, 'registry.db'), command: [python, '-m', 'molq', 'serve', '--stdio']};
   let local;
   try {
     local = await submit('dev', 'local', options);
@@ -73,7 +76,7 @@ test('Destination binding does not resend uncertain registration or silently sel
     if (method === 'clusters.get') throw new MolqError({kind: 'CLUSTER_NOT_FOUND', message: 'missing', outcome: 'not_applied', context: {}});
     throw failure;
   };
-  await assert.rejects(bindDestination(mq, 'dev', 'local', {}, '/tmp/molq'), error => error === failure);
+  await assert.rejects(bindDestination(mq, 'dev', 'local'), error => error === failure);
   assert.deepEqual(calls, ['clusters.get', 'clusters.register', 'close']);
   mq.rpc = async () => ({scheduler: 'shell', transport: {kind: 'ssh', alias: 'hpc'}});
   await assert.rejects(bindDestination(mq, 'dev', 'local'), /differs: transport/);

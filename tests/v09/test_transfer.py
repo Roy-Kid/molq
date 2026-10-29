@@ -18,12 +18,8 @@ def test_cluster_transfer_passes_rsync_options(tmp_path):
     destination.mkdir()
     (source / "note.txt").write_text("copied")
     with Molq(registry=tmp_path / "registry.db") as mq:
-        origin = mq.clusters.register(
-            name="from", scheduler="shell", target_root=str(tmp_path / "jobs" / "from")
-        )
-        target = mq.clusters.register(
-            name="to", scheduler="shell", target_root=str(tmp_path / "jobs" / "to")
-        )
+        origin = mq.clusters.register(name="from", scheduler="shell")
+        target = mq.clusters.register(name="to", scheduler="shell")
         with pytest.raises(MolqError, match="Cluster"):
             origin.transfer(
                 str(source / "note.txt"), "to", str(destination / "note.txt")

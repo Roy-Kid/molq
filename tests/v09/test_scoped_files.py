@@ -16,9 +16,7 @@ def test_scoped_pagination_batches_and_mutations(tmp_path):
     for name in ["-dash", ".hidden", "a", "b"]:
         (root / name).write_text(name)
     with Molq(registry=tmp_path / "registry.db") as client:
-        cluster = client.clusters.register(
-            name="files", scheduler="shell", target_root=str(tmp_path / "jobs")
-        )
+        cluster = client.clusters.register(name="files", scheduler="shell")
         path = Path(f"{cluster.name}:{root}", molq=client, root=str(root))
         first = path.list_page(with_stat=True, limit=2)
         second = path.list_page(with_stat=True, limit=3, after=first["next_after"])
@@ -58,9 +56,7 @@ def test_batch_limits_are_explicit(tmp_path):
     root.mkdir()
     (root / "large").write_bytes(b"x" * 20)
     with Molq(registry=tmp_path / "registry.db") as client:
-        cluster = client.clusters.register(
-            name="files", scheduler="shell", target_root=str(tmp_path / "jobs")
-        )
+        cluster = client.clusters.register(name="files", scheduler="shell")
         path = Path(f"{cluster.name}:{root}", molq=client, root=str(root))
         item = path.read_many([str(root / "large")], max_bytes=10)["items"][0]
         assert item["error"]["context"]["reason"] == "limit" and "data" not in item
@@ -74,9 +70,7 @@ def test_scoped_unlink_preserves_the_symlink_target(tmp_path):
     (root / "original").write_text("preserve me")
     (root / "link").symlink_to(root / "original")
     with Molq(registry=tmp_path / "registry.db") as client:
-        cluster = client.clusters.register(
-            name="files", scheduler="shell", target_root=str(tmp_path / "jobs")
-        )
+        cluster = client.clusters.register(name="files", scheduler="shell")
         link = Path(f"{cluster.name}:{root / 'link'}", molq=client, root=str(root))
         relative = link.with_name("relative")
         relative.symlink_to("original")
@@ -109,7 +103,6 @@ def test_read_many_executes_one_target_command(tmp_path, monkeypatch):
             name="ssh-files",
             scheduler="slurm",
             transport={"kind": "ssh", "alias": "fixture"},
-            target_root=str(tmp_path / "jobs"),
         )
         calls.write_text("")
         path = Path(f"{cluster.name}:{root}", molq=client, root=str(root))
@@ -129,9 +122,7 @@ def test_scoped_transfer_rejects_nested_escaping_symlinks(tmp_path):
     source.mkdir()
     (source / "escape").symlink_to(outside)
     with Molq(registry=tmp_path / "registry.db") as client:
-        cluster = client.clusters.register(
-            name="files", scheduler="shell", target_root=str(tmp_path / "jobs")
-        )
+        cluster = client.clusters.register(name="files", scheduler="shell")
         path = Path(f"{cluster.name}:{source}", molq=client, root=str(root))
         with pytest.raises(MolqError) as error:
             path.transfer(Path(tmp_path / "copy", molq=client), "-aL")

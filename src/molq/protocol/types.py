@@ -180,7 +180,6 @@ class ClusterDefinition(TypedDict):
     name: str
     scheduler: Literal["shell", "slurm", "pbs", "lsf"]
     transport: NotRequired[TransportDefinition]
-    target_root: str
     defaults: NotRequired[Defaults]
     launcher: NotRequired[Literal["srun", "mpirun", "mpiexec"]]
     pbs_dialect: NotRequired[Literal["openpbs"]]
@@ -280,7 +279,6 @@ class ClusterRecord(TypedDict):
     name: str
     scheduler: Literal["shell", "slurm", "pbs", "lsf"]
     transport: NotRequired[TransportDefinition]
-    target_root: str
     defaults: NotRequired[Defaults]
     launcher: NotRequired[Literal["srun", "mpirun", "mpiexec"]]
     pbs_dialect: NotRequired[Literal["openpbs"]]

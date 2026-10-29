@@ -12,9 +12,9 @@ Scheduler is the implementation abstraction. SlurmScheduler/PBSScheduler/LSFSche
 
 No capability inventory, probing, feature negotiation or fallback. Validation proves schema validity and exact representation only; real scheduling resources and permissions remain native decisions.
 
-SQLite persists exactly schema_meta and clusters. Settings and presets live in a JSON or YAML file, default `~/.molcrafts/molq/config.json`; clients change them through RPC. There is no earlier registry schema and no migration. No mirrored Job state/history, event, lease or retry tables. Native scheduler/accounting is task truth. Shell launch/exit receipts are original target execution evidence. Clients never open the registry. Do not read `MOLQ_*` environment variables.
+SQLite persists exactly schema_meta and clusters. Settings and presets live in a JSON or YAML file, default `~/.molcrafts/molq/config.json`; clients change them through RPC. There is no earlier registry schema and no migration. No mirrored Job state/history, event, lease or retry tables. Native scheduler/accounting is task truth. Shell launch/exit receipts are original target execution evidence. Job directories live at the fixed `~/.molcrafts/molq/jobs` on the target; Cluster has no job root. An SSH target keeps no molq files after a job ends: serve moves each confirmed-terminal job directory to the serve host's `collected/` archive and reads logs/receipts there. Clients never open the registry. Do not read `MOLQ_*` environment variables.
 
-Cluster stores destination semantics only: ID/name, Scheduler/Transport binding, SSH alias, target root, defaults and necessary site launcher/dialect configuration. No cadence or notification policies. One registry normally has one active serve process; temporary stdio is the no-service mode. Independent instances do not share cache/events/cursors.
+Cluster stores destination semantics only: ID/name, Scheduler/Transport binding, SSH alias, defaults and necessary site launcher/dialect configuration. No cadence or notification policies. One registry normally has one active serve process; temporary stdio is the no-service mode. Independent instances do not share cache/events/cursors.
 
 The serve process owns canonical snapshots/completion and scoped diff/events. `molq watch` chooses cadence, backoff and notification and uses RPC only. Notifications fail open. Subscriptions passively deliver already observed events.
 
@@ -24,9 +24,9 @@ Use asynchronous bounded subprocesses and Cluster/batch concurrency. No permanen
 
 Job is one allocation, with independent Resources/Scheduling/Execution. Execution units compose through UnitRef/Sequence/Parallel; each unit appears once. Single-unit argv stays simple. Memory is decimal-string bytes per node. MPI and CPU/task budgets are explicit. nvidia_mps is a formal Scheduler resource; no automatic MPS launch or whole-GPU fallback.
 
-Python request values are frozen dataclasses. Molq/Cluster/Job/JobCollection are RPC-only OOP handles. Protocol major 1 uses JSON-RPC 2.0 with named params, 1 MiB frames, 128-request batches and structured errors. CLI outputs JSON with stable exit semantics.
+Python request values are frozen dataclasses. Molq/Cluster/Job/JobCollection are RPC-only OOP handles. Before 1.0, the protocol has no independent version and no backward compatibility. RPC uses JSON-RPC 2.0 with named params, 1 MiB frames, 128-request batches and structured errors. CLI outputs JSON with stable exit semantics.
 
-Edit tools/build_contract.py for schemas and src/molq/client/objects.py for the Python projection. Regenerate protocol/v1.json, protocol/types.py, async_objects.py and TypeScript types; do not edit generated files directly. The TypeScript build compiles the SDK only.
+Edit tools/build_contract.py for schemas and src/molq/client/objects.py for the Python projection. Regenerate protocol/contract.json, protocol/types.py, async_objects.py and TypeScript types; do not edit generated files directly. The TypeScript build compiles the SDK only.
 
 ## Required checks
 

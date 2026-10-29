@@ -6,13 +6,16 @@ import {join,resolve} from 'node:path';
 import {StdioWire} from '../dist/node.js';
 import {Molq,methods,MolqError,HttpWire,submit as browserSubmit,JobSpec} from '../dist/index.js';
 
+// Job directories live under the target home; keep them out of the real one.
+process.env.HOME = await mkdtemp(join(tmpdir(), 'molq-ts-home-'));
+
 test('Native TS client uses the same Runtime and schema',async()=>{
   const temp=await mkdtemp(join(tmpdir(),'molq-ts-'));
   const python=process.env.MOLQ_TEST_PYTHON || resolve('../../.venv/bin/python');
   const mq=new Molq(new StdioWire([python,'-m','molq','serve','--stdio','--registry',join(temp,'registry.db')]));
   try{
     const hello=await mq.connect();assert.equal(hello.release,'0.9.0');assert.deepEqual(hello.methods,methods);
-    const destination=await mq.clusters.register({name:'local',scheduler:'shell',target_root:join(temp,'target')});
+    const destination=await mq.clusters.register({name:'local',scheduler:'shell'});
     const job=await destination.submit(JobSpec.argv([python,'-c','print("typescript")']));
     const result=await job.wait(10,0.05);assert.equal(result.completion.successful,true);
     assert.match((await job.logs()).text,/typescript/);
@@ -64,7 +67,7 @@ test('HTTP peer shares Runtime semantics and structured authentication errors', 
     await denied.close();
     mq=new Molq(new HttpWire(endpoint,token));
     assert.equal((await mq.connect()).release,'0.9.0');
-    const destination=await mq.clusters.register({name:'local',scheduler:'shell',target_root:join(temp,'target')});
+    const destination=await mq.clusters.register({name:'local',scheduler:'shell'});
     const hpc=await browserSubmit('local',{endpoint,token});
     let job;
     try {
@@ -73,7 +76,7 @@ test('HTTP peer shares Runtime semantics and structured authentication errors', 
     } finally { await hpc.close(); }
     assert.equal((await job.wait(10,0.05)).completion.successful,true);
     assert.match((await job.logs()).text,/http-peer/);
-    await assert.rejects(()=>mq.rpc('clusters.register',{name:'bad',scheduler:'shell',target_root:'/target',supports_gpu:true}),error=>error instanceof MolqError && error.kind==='INVALID_INPUT');
+    await assert.rejects(()=>mq.rpc('clusters.register',{name:'bad',scheduler:'shell',supports_gpu:true}),error=>error instanceof MolqError && error.kind==='INVALID_INPUT');
   }finally{
     if(mq)await mq.close();
     const exited=once(child,'exit');

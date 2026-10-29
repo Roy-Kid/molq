@@ -18,8 +18,7 @@ func TestSubmitEcho(t *testing.T) {
 		t.Fatalf("build: %v\n%s", err, output)
 	}
 	registry := filepath.Join(root, "registry.db")
-	target := filepath.Join(root, "target")
-	definition := `{"name":"local","scheduler":"shell","target_root":"` + target + `"}`
+	definition := `{"name":"local","scheduler":"shell"}`
 	register := exec.Command(binary, "--registry", registry, "clusters", "register", "--definition", definition)
 	if output, err := register.CombinedOutput(); err != nil {
 		t.Fatalf("register: %v\n%s", err, output)
@@ -56,7 +55,7 @@ func TestTransferTakesRsyncSyntax(t *testing.T) {
 		t.Fatal(err)
 	}
 	for _, name := range []string{"from", "to"} {
-		definition := `{"name":"` + name + `","scheduler":"shell","target_root":"` + filepath.Join(root, "jobs", name) + `"}`
+		definition := `{"name":"` + name + `","scheduler":"shell"}`
 		register := exec.Command(binary, "--registry", registry, "clusters", "register", "--definition", definition)
 		if output, err := register.CombinedOutput(); err != nil {
 			t.Fatalf("register %s: %v\n%s", name, err, output)

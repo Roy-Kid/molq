@@ -14,9 +14,7 @@ from molq.protocol.types import JobsHistoryParams1, JobSnapshot
 def test_no_service_submit_wait_restart_and_no_job_tables(tmp_path):
     registry = tmp_path / "registry.db"
     with Molq(registry=registry) as mq:
-        mq.clusters.register(
-            name="local", scheduler="shell", target_root=str(tmp_path / "target")
-        )
+        mq.clusters.register(name="local", scheduler="shell")
         job = mq.cluster("local").submit(
             JobSpec.argv([sys.executable, "-c", 'print("molq09")'])
         )

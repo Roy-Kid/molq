@@ -8,7 +8,6 @@ destination = submit(
     "research",
     "slurm",
     transport={"kind": "ssh", "alias": "hpc"},
-    target_root="/scratch/user/molq",
     launcher="srun",
 )
 try:

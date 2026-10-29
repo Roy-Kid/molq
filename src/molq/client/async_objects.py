@@ -61,10 +61,11 @@ async def asubmit(
         token (str | None): HTTP bearer credential.
         timeout (float): Per-RPC response deadline in seconds.
         registry_id (str | None): Expected registry identity.
-        **definition (Any): Destination fields such as target_root, transport,
-            defaults and launcher. New local destinations default to local
-            transport and ~/.molcrafts/molq/jobs; other destinations require a
-            target_root. Existing bindings must match the supplied fields.
+        **definition (Any): Destination fields such as transport, defaults and
+            launcher. New local destinations default to local transport. Jobs
+            run under ~/.molcrafts/molq/jobs on the target; an SSH target's job
+            directory moves to the serve host after the job ends. Existing
+            bindings must match the supplied fields.
 
     Returns:
         AsyncCluster: Callable destination owning its connection. Call close() when
@@ -118,15 +119,6 @@ async def asubmit(
             if error.kind != "CLUSTER_NOT_FOUND":
                 raise
             binding: dict[str, Any] = {"name": cluster_name, **expected}
-            if "target_root" not in binding:
-                if (
-                    scheduler != "shell"
-                    or binding.get("transport", {}).get("kind", "local") != "local"
-                ):
-                    raise MolqError(
-                        "INVALID_INPUT", "New destinations require target_root"
-                    ) from error
-                binding["target_root"] = str(Path.home() / ".molcrafts/molq/jobs")
             registered = await mq.rpc("clusters.register", **binding)
             return mq.cluster(registered["id"])
         for field, value in expected.items():
@@ -272,7 +264,7 @@ class AsyncClusterRegistry:
 
         Args:
             **definition (Any): Canonical cluster fields, including name, scheduler,
-                transport and target_root, plus required transport/site settings.
+                and transport, plus required transport/site settings.
 
         Returns:
             AsyncCluster: A handle using the new cluster's stable ID.

@@ -1,51 +1,103 @@
-# Durable configuration
+# Configuration
 
-SQLite schema 2 contains exactly `schema_meta` and `clusters`: registry identity,
-schema version, and explicit destination definitions. Job states, history,
-events, leases and retries are absent.
+The default configuration is `~/.molcrafts/molq/config.json`. Select another JSON
+or YAML file with `--config`. Configuration files are used individually, not merged.
 
-The default file is `~/.molcrafts/molq/config.json`. `--config` selects another
-`.json`, `.yaml` or `.yml` file. When `--config` is omitted and the default
-file exists, the CLI loads it. A missing default leaves the configuration
-empty. An unreadable or invalid file is an error. Files are never combined.
-Importing molq creates no configuration directories or files. Connection
-settings are not read from the environment.
+## Temporary service
+
+With no endpoint, the CLI starts a temporary stdio service. Python does the same
+with `Molq()`. Cluster definitions persist in the default registry at
+`~/.molcrafts/molq/registry.db`.
+
+Choose separate files for a project:
+
+```python
+import json
+
+from molq import Molq
+
+mq = Molq(registry="./registry.db", config="./config.json")
+print(json.dumps(mq.clusters.list(), ensure_ascii=False))
+mq.close()
+```
+
+```sh
+molq --registry ./registry.db --config ./config.json clusters list
+```
+
+Keep the registry on local disk. Use one active service per registry when sharing
+observations; independent instances do not share caches or cursors.
+
+## Shared service
+
+Save this as `config.json`. Replace the example token with your own token of at
+least 16 characters; server and client tokens must match.
+
+```json
+{
+  "serve": {
+    "host": "127.0.0.1",
+    "port": 17891,
+    "token": "replace-with-your-own-token"
+  },
+  "client": {
+    "endpoint": "http://127.0.0.1:17891",
+    "token": "replace-with-your-own-token"
+  }
+}
+```
+
+Start the service in one terminal:
+
+```sh
+molq serve --config ./config.json
+```
+
+Use it from another:
+
+```sh
+molq --config ./config.json clusters list
+```
+
+Python and TypeScript take the endpoint and token explicitly:
+
+```python
+import json
+
+mq = Molq(endpoint="http://127.0.0.1:17891", token="replace-with-your-own-token")
+print(json.dumps(mq.clusters.list(), ensure_ascii=False))
+mq.close()
+```
+
+For HTTP connections, the registry and settings file belong to the service.
+`Molq(config=...)` selects a temporary service's file; it does not select an HTTP
+endpoint from the file's `client` section. The CLI does read that section.
+
+## Settings and presets
+
+Cluster defaults apply to submissions on that destination. Presets are reusable
+request fragments; retrieve one and apply its fields explicitly.
 
 ```json
 {
   "settings": {"cache_max_entries": 4096, "cache_max_age": 5},
-  "presets": {"small": {"resources": {"tasks": 1}}}
+  "presets": {"small": {"resources": {"tasks": 1, "cpus_per_task": 2}}}
 }
 ```
 
-Registry selection is `--registry`, `client.registry`, or
-`~/.molcrafts/molq/registry.db`. Configuration and the registry live in the same
-directory.
+Manage these through the service:
 
-`config.get/set` manages `cache_max_entries`, `cache_max_age`, and
-`default_cluster` (saved preference; RPC scopes remain explicit).
-`presets.list/get/set` manages validated Defaults values; clients select and pass
-preset fields explicitly. These methods use the Runtime's configuration file,
-not the client's filesystem. Startup validates the whole file; `config.reload`
-loads external edits and invalidates disposable observations. Invalid reloads
-preserve the previous configuration. Reload applies cache settings and resets
-observation cursors. Credentials, cadence and notification routes remain
-client/deployment configuration. SSH connection details belong to OpenSSH.
+```sh
+molq rpc config.get --params '{"key":"cache_max_age"}'
+molq rpc config.set --params '{"key":"cache_max_age","value":5}'
+molq rpc presets.get --params '{"key":"small"}'
+molq rpc config.reload
+```
 
-RPC writes lock the file, re-read it, validate all namespaces, and replace it
-atomically using a flushed temporary file in the same directory. Lock contention
-is bounded and returns `STATE_BUSY`. Other Runtime instances must explicitly
-reload; file writes do not create a multi-Runtime synchronization service.
+`config.reload` applies external edits and resets observation cursors. Invalid
+edits leave the previous settings active. `default_cluster` is a saved preference;
+RPC operations still require an explicit scope.
 
-## Registry file
-
-1.0 is the first registry layout. There is no older API schema to migrate.
-A database that is not `schema_meta` plus `clusters` at the current schema
-marker is rejected with `STATE_SCHEMA_INCOMPATIBLE` and left unchanged.
-
-Cluster updates/removal require `expected_revision`; rename preserves identity.
-Scheduler, Transport and target_root changes require a new Cluster. Removing
-configuration never cancels jobs, but restore the definition to access them.
-One registry normally has one active Runtime. SQLite uses short WAL transactions;
-no transaction encompasses SSH/scheduler operations. Use local disk, not shared
-NFS, and do not expect cross-process observation synchronization.
+SSH connection options belong in OpenSSH configuration. molq does not read
+`MOLQ_*` environment variables. See [watch configuration](plugins.md#defaults)
+for cadence and notification routes.

@@ -520,11 +520,6 @@
         "transport": {
           "$ref": "#/$defs/TransportDefinition"
         },
-        "target_root": {
-          "type": "string",
-          "minLength": 1,
-          "maxLength": 4096
-        },
         "defaults": {
           "$ref": "#/$defs/Defaults"
         },
@@ -543,8 +538,7 @@
       },
       "required": [
         "name",
-        "scheduler",
-        "target_root"
+        "scheduler"
       ],
       "additionalProperties": false
     },
@@ -875,11 +869,6 @@
         "transport": {
           "$ref": "#/$defs/TransportDefinition"
         },
-        "target_root": {
-          "type": "string",
-          "minLength": 1,
-          "maxLength": 4096
-        },
         "defaults": {
           "$ref": "#/$defs/Defaults"
         },
@@ -909,7 +898,6 @@
       "required": [
         "name",
         "scheduler",
-        "target_root",
         "id",
         "revision"
       ],

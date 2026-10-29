@@ -21,9 +21,9 @@ try {
 ```
 
 Install `molcrafts-molq` so the `molq` executable is on PATH. Node starts a
-temporary service; the local job root defaults to `~/.molcrafts/molq/jobs`.
-Use `submit("dev")` to reuse a registered destination. Pass `registry`, `config`
-and `target_root` when you need separate paths.
+temporary service; jobs run in `~/.molcrafts/molq/jobs` on the execution
+machine. Use `submit("dev")` to reuse a registered destination. Pass `registry`
+and `config` when you need separate paths.
 
 For a browser or shared service, use the same entry with explicit settings:
 

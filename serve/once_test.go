@@ -14,7 +14,7 @@ func TestRequestKeyRepeatsTheSameSubmission(t *testing.T) {
 	}
 	defer service.Close()
 	registered, err := service.Call("clusters.register", map[string]any{
-		"name": "local", "scheduler": "shell", "target_root": filepath.Join(root, "target"),
+		"name": "local", "scheduler": "shell",
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -51,7 +51,7 @@ func TestRequestKeyWaitsForTheInflightCall(t *testing.T) {
 	}
 	defer service.Close()
 	registered, err := service.Call("clusters.register", map[string]any{
-		"name": "local", "scheduler": "shell", "target_root": filepath.Join(root, "target"),
+		"name": "local", "scheduler": "shell",
 	})
 	if err != nil {
 		t.Fatal(err)

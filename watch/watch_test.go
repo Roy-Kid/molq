@@ -96,7 +96,7 @@ func TestShellWatchOnceIgnoresUnsupportedHistory(t *testing.T) {
 	}
 	defer service.Close()
 	if _, err := service.Call("clusters.register", map[string]any{
-		"name": "local", "scheduler": "shell", "target_root": filepath.Join(root, "target"),
+		"name": "local", "scheduler": "shell",
 	}); err != nil {
 		t.Fatal(err)
 	}

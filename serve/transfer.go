@@ -64,11 +64,11 @@ func (s *Service) transfer(ctx context.Context, params map[string]any) (any, err
 			return nil, protocol.Fail("INVALID_INPUT", "All transfer sources must be on one host", nil)
 		}
 	}
-	runner, operands, err := transferRoute(sources, destination)
+	runner, rsh, operands, err := transferRoute(sources, destination)
 	if err != nil {
 		return nil, err
 	}
-	args = append(append(args, "--"), operands...)
+	args = append(append(append(args, rsh...), "--"), operands...)
 	release, err := s.acquireTransfer(ctx, sources[0], destination)
 	if err != nil {
 		return nil, err
@@ -102,20 +102,21 @@ func (s *Service) transfer(ctx context.Context, params map[string]any) (any, err
 
 // transferRoute chooses the side that runs rsync. One shared host runs it
 // there with plain paths; otherwise the serve host runs it and names the SSH
-// side by alias, as rsync itself allows exactly one remote side.
-func transferRoute(sources []location, destination location) (transport.Transport, []string, error) {
+// side by alias, as rsync itself allows exactly one remote side. The returned
+// rsh options must precede the operand separator.
+func transferRoute(sources []location, destination location) (transport.Transport, []string, []string, error) {
 	operands := make([]string, 0, len(sources)+1)
 	if sameTransport(sources[0].transport, destination.transport) {
 		for _, source := range sources {
 			operands = append(operands, source.operand(false))
 		}
 		if len(sources) == 1 && path.Clean(sources[0].operand(false)) == path.Clean(destination.operand(false)) {
-			return nil, nil, protocol.Fail("INVALID_INPUT", "Transfer source and destination are the same path", nil)
+			return nil, nil, nil, protocol.Fail("INVALID_INPUT", "Transfer source and destination are the same path", nil)
 		}
-		return transport.Create(sources[0].transport), append(operands, destination.operand(false)), nil
+		return transport.Create(sources[0].transport), nil, append(operands, destination.operand(false)), nil
 	}
 	if sources[0].ssh() && destination.ssh() {
-		return nil, nil, protocol.Fail("TRANSFER_UNSUPPORTED", "Two distinct SSH targets require explicit staging; no remote alias guessing", nil)
+		return nil, nil, nil, protocol.Fail("TRANSFER_UNSUPPORTED", "Two distinct SSH targets require explicit staging; no remote alias guessing", nil)
 	}
 	for _, source := range sources {
 		operands = append(operands, source.operand(source.ssh()))
@@ -127,13 +128,13 @@ func transferRoute(sources []location, destination location) (transport.Transpor
 	}
 	sshArgs, err := transport.SSHCommand(alias)
 	if err != nil {
-		return nil, nil, err
+		return nil, nil, nil, err
 	}
 	quoted := make([]string, len(sshArgs))
 	for i, word := range sshArgs {
 		quoted[i] = "'" + strings.ReplaceAll(word, "'", "'\"'\"'") + "'"
 	}
-	return transport.Local{}, append([]string{"-e", strings.Join(quoted, " ")}, operands...), nil
+	return transport.Local{}, []string{"--rsh=" + strings.Join(quoted, " ")}, operands, nil
 }
 
 // location resolves one wire FileLocation. A path on a cluster follows rsync's

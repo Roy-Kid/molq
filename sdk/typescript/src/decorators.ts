@@ -16,11 +16,11 @@ function invalid(message: string): MolqError {
     return new MolqError({ kind: "INVALID_INPUT", message, outcome: "not_applied", context: {} });
 }
 /** Bind or select a destination; registration is explicit and never resent. */
-export async function bindDestination(mq: Molq, name: string, kind?: ClusterDefinition["scheduler"] | "local", options: SubmitOptions = {}, localRoot?: string): Promise<Destination> {
+export async function bindDestination(mq: Molq, name: string, kind?: ClusterDefinition["scheduler"] | "local", options: SubmitOptions = {}): Promise<Destination> {
     let cluster = mq.cluster(name);
     const { endpoint, token, timeout, registryId, ...definition } = options;
     try {
-        const allowed = new Set(["transport", "target_root", "defaults", "launcher", "pbs_dialect"]);
+        const allowed = new Set(["transport", "defaults", "launcher", "pbs_dialect"]);
         if (Object.keys(definition).some(key => !allowed.has(key)))
             throw invalid("Unknown destination fields");
         if (kind && !["local", "shell", "slurm", "pbs", "lsf"].includes(kind))
@@ -47,10 +47,7 @@ export async function bindDestination(mq: Molq, name: string, kind?: ClusterDefi
                 }
             }
             else {
-                const target_root = definition.target_root ?? (scheduler === "shell" && (!definition.transport || definition.transport.kind === "local") ? localRoot : undefined);
-                if (!target_root)
-                    throw invalid("New destinations require target_root");
-                cluster = await mq.clusters.register({ name, ...expected, target_root });
+                cluster = await mq.clusters.register({ name, ...expected });
             }
         }
         const decorate = function <Args extends unknown[], Result>(builder: (...args: Args) => Generator<JobSpec, Result, Job>): (...args: Args) => Promise<Result> {

@@ -84,7 +84,7 @@ func (r *Registry) Mutate(definition map[string]any, key string, expectedRevisio
 				return nil, registryWriteError(err)
 			}
 		} else {
-			for _, field := range []string{"scheduler", "transport", "target_root"} {
+			for _, field := range []string{"scheduler", "transport"} {
 				if !jsonEqual(old[field], definition[field]) {
 					return nil, protocol.Fail("INVALID_INPUT", "Changed compute destination requires a new Cluster ID", map[string]any{"field": field})
 				}

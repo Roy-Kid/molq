@@ -1,57 +1,106 @@
-## Quickstart
+# Quickstart
 
-Install Python 3.12 or later:
+Run a local command, wait for it, and save its reference so you can return later.
+Install molq with `pip install molcrafts-molq`.
 
-```sh
-pip install molcrafts-molq
-molq --registry ./registry.db clusters register --definition '{"name":"local","scheduler":"shell","target_root":"/tmp/molq-target"}'
-molq --registry ./registry.db submit local -- echo hello
-```
+## Python
 
-The submit response contains a stable registry-qualified JobRef. Save it and pass it to status, logs, cancel or wait:
-
-```sh
-molq --registry ./registry.db status --ref @job-ref.json
-molq --registry ./registry.db wait --ref @job-ref.json --timeout 60
-molq discover
-```
-
-Use the OOP Python client without starting a service:
+Register a local destination, then use it as a decorator:
 
 ```python
-from molq import Molq
+import json
 
-with Molq(registry="registry.db") as mq:
-    mq.clusters.register(
-        name="local", scheduler="shell", target_root="/tmp/molq-python"
-    )
-    job = mq.cluster("local").submit(argv=["echo", "hello"])
-    print(job.wait(timeout=60)["completion"])
-    print(job.logs()["text"])
+from molq import JobSpec, submit
+
+local = submit("local", "local")
+
+
+@local
+def hello(name):
+    job = yield JobSpec.argv(["echo", f"hello {name}"])
+    return job
+
+
+job = hello("molq")
+result = job.wait(timeout=30)
+print(json.dumps(job.logs(), ensure_ascii=False))
+local.close()
 ```
 
-When no endpoint is configured, native clients start a temporary stdio Runtime. Accepted Shell jobs detach from the client and retain original target launch/exit receipts; scheduler jobs already belong to the scheduler. Restarting a client can query a saved JobRef.
-
-## Shared serve process
-
-Put the listen address and token in the configuration file, then start serve:
+Output:
 
 ```json
-{"serve": {"host": "127.0.0.1", "port": 17891, "token": "replace-with-your-own-long-secret"}}
+{"text": "hello molq\n", "next_offset": 11, "bytes_read": 11}
 ```
+
+The decorated function runs on your submission machine. Each `yield JobSpec` submits an
+allocation to the destination and receives its `Job`; `return` sets the function's
+result. Calling `hello()` again submits another allocation.
+
+Later scripts use `local = submit("local")` with the same `@local` decorator.
+`local.close()` releases the connection and leaves jobs running.
+
+Save a job's reference before closing if you want to return later:
+
+```python
+import json
+from pathlib import Path
+
+Path("ref.json").write_text(json.dumps(job.ref))
+```
+
+## Command line
+
+Save this as `local.json`. Jobs run in `~/.molcrafts/molq/jobs` on the
+execution machine.
+
+```json
+{
+  "name": "local",
+  "scheduler": "shell",
+  "transport": {"kind": "local"}
+}
+```
+
+Register it and submit a command:
 
 ```sh
-molq serve --registry ./registry.db --config ./config.json
+molq clusters register --definition @local.json
+molq submit local -- echo "hello molq" > submit.json
 ```
 
-Clients set `client.endpoint` and `client.token` in that same kind of file, or pass them to the SDK constructor. HTTP and WebSocket use the same RPC implementation as stdio. A token is required even on loopback; deploy HTTPS/WSS through existing infrastructure. There is no web UI.
-
-One registry normally has one active serve process. Temporary stdio instances have separate cache, event rings and cursors. SQLite protects short accidental write overlap and does not synchronize their observations.
-
-Periodic observation is optional:
+Extract the reference from the JSON response:
 
 ```sh
-molq watch --registry ./registry.db --config ./config.json --cluster local
+python - <<'PY'
+import json
+from pathlib import Path
+response = json.loads(Path("submit.json").read_text())
+Path("ref.json").write_text(json.dumps(response["result"]["ref"]))
+PY
+molq wait --ref @ref.json --timeout 30
+molq logs --ref @ref.json
 ```
 
-`watch` chooses cadence and notification delivery. The serve process computes snapshots, completion and changes. Subscriptions deliver changes that were already observed.
+Business commands return JSON. `--ref` accepts the reference itself, rather than
+the complete submission response. See [CLI reference](cli.md) for exit codes.
+
+## Return to a job
+
+Keep the registry and reference. Closing a client leaves accepted jobs running.
+
+```python
+import json
+from pathlib import Path
+
+from molq import Molq
+
+mq = Molq()
+job = mq.job(json.loads(Path("ref.json").read_text()))
+result = job.status()
+print(json.dumps(result["snapshots"][0]["state"], ensure_ascii=False))
+mq.close()
+```
+
+Use the registry that accepted the job. Next, [register an HPC destination](schedulers.md)
+or [describe an allocation](jobs.md).

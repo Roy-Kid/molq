@@ -1,6 +1,8 @@
 # Files and logs
 
-`target_root` holds the job script, stdout, stderr, and shell receipts for each submission. A transfer path is an absolute path on that cluster's filesystem. The SSH account's permissions are the boundary.
+Each submission gets one job directory, `~/.molcrafts/molq/jobs/<directory>/` under the execution machine's login home, holding the job script, stdout, stderr, and shell receipts. It is the job's default working directory. A transfer path is an absolute path on that cluster's filesystem. The SSH account's permissions are the boundary.
+
+On an SSH cluster that job directory exists only while the job runs. The first time serve observes a confirmed terminal state (a status query, `wait`, `watch` or `logs`), it moves the directory to the serve host with one rsync, at `collected/<cluster-id>/<directory>/` next to the registry (by default `~/.molcrafts/molq/collected/`), and removes it from the target. rsync deletes each remote file only after copying it, so an interrupted move keeps every file on one side and resumes at the next observation; a failure leaves the remote copy in place and is reported on serve's stderr. Logs of a collected job are read from the local copy. Files a job writes into its own job directory, which is its default working directory, move with it; anything that must stay on the cluster belongs in an explicit execution `cwd` elsewhere.
 
 ## Read job output
 
