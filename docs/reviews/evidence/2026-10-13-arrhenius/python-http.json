@@ -1,0 +1,13 @@
+{
+  "concurrent_requests": 8,
+  "all_successful": true,
+  "elapsed_seconds": 0.343,
+  "cached_status": {
+    "age_seconds": 0.001161209,
+    "status": "cached"
+  },
+  "wait_completion": {
+    "all_confirmed_terminal": true,
+    "successful": true
+  }
+}

@@ -1,0 +1,13 @@
+{
+  "id": 1,
+  "jsonrpc": "2.0",
+  "result": {
+    "outcome": "already_terminal",
+    "ref": {
+      "cluster_id": "4b1a9e11-97ee-4546-8c67-da153fecaa32",
+      "incarnation": "2026-10-13T13:00:27Z",
+      "native_id": "3777168",
+      "registry_id": "315058e9-7be2-4dcf-bd16-31bfe4eb6952"
+    }
+  }
+}

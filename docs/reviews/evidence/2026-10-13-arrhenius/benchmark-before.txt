@@ -1,0 +1,12 @@
+goos: darwin
+goarch: arm64
+pkg: observationbench
+cpu: Apple M4
+BenchmarkObservationCacheParallel-10    	   21492	     16797 ns/op	   12122 B/op	     269 allocs/op
+BenchmarkObservationCacheParallel-10    	   20990	     16918 ns/op	   12122 B/op	     269 allocs/op
+BenchmarkObservationCacheParallel-10    	   21349	     16673 ns/op	   12121 B/op	     269 allocs/op
+BenchmarkObservationBaseline1024-10     	      39	   8726625 ns/op	 8563774 B/op	  174167 allocs/op
+BenchmarkObservationBaseline1024-10     	      39	   8745481 ns/op	 8644507 B/op	  174170 allocs/op
+BenchmarkObservationBaseline1024-10     	      39	   8797280 ns/op	 8617582 B/op	  174170 allocs/op
+PASS
+ok  	observationbench	3.145s

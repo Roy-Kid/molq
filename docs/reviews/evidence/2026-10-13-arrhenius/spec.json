@@ -1,0 +1,36 @@
+{
+  "resources": {
+    "nodes": 1,
+    "tasks": 1,
+    "cpus_per_task": 8,
+    "memory_bytes": "16000000000",
+    "time_limit_seconds": 900
+  },
+  "scheduling": {
+    "name": "molq-atv-core-20261013",
+    "partition": "cpu",
+    "comment": "molq 0.9 foundation acceptance; Atomiverse 420c2e46 core unit tests",
+    "account": "naiss2026-1-53-cpu"
+  },
+  "execution": {
+    "cwd": "/home/jicli594/work/molcrafts/Atomiverse",
+    "units": [
+      {
+        "id": "atomiverse",
+        "command": {
+          "kind": "argv",
+          "argv": [
+            "bash",
+            "-l",
+            "/home/jicli594/work/molq-acceptance-20261013/atomiverse-core.sh"
+          ]
+        },
+        "stdout": "/home/jicli594/work/molq-acceptance-20261013/stdout.log",
+        "stderr": "/home/jicli594/work/molq-acceptance-20261013/stderr.log",
+        "launch": {
+          "kind": "direct"
+        }
+      }
+    ]
+  }
+}

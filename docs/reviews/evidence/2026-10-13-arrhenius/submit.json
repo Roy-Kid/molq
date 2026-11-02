@@ -1,0 +1,37 @@
+{
+  "id": 1,
+  "jsonrpc": "2.0",
+  "result": {
+    "cluster_revision": 1,
+    "outcome": "accepted",
+    "ref": {
+      "cluster_id": "4b1a9e11-97ee-4546-8c67-da153fecaa32",
+      "incarnation": "2026-10-13T13:00:27Z",
+      "native_id": "3777168",
+      "registry_id": "315058e9-7be2-4dcf-bd16-31bfe4eb6952"
+    },
+    "snapshot": {
+      "comment": "molq 0.9 foundation acceptance; Atomiverse 420c2e46 core unit tests",
+      "ended_at": null,
+      "exit_code": null,
+      "freshness": {
+        "age_seconds": 0,
+        "status": "live"
+      },
+      "name": "molq-atv-core-20261013",
+      "observed_at": "2026-10-13T13:00:27.295253Z",
+      "raw_state": "PENDING",
+      "ref": {
+        "cluster_id": "4b1a9e11-97ee-4546-8c67-da153fecaa32",
+        "incarnation": "2026-10-13T13:00:27Z",
+        "native_id": "3777168",
+        "registry_id": "315058e9-7be2-4dcf-bd16-31bfe4eb6952"
+      },
+      "source": "queue",
+      "started_at": null,
+      "state": "queued",
+      "submitted_at": "2026-10-13T13:00:27Z",
+      "terminal": false
+    }
+  }
+}
